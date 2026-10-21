@@ -302,9 +302,9 @@ def test_when_eligible_futures_do_not_fit_in_the_room_the_cash_clip_is_what_boun
     assert result["ADA"] == (D(0), D(0))
     assert [result[name] for name in ("BTC", "ETH", "SOL")] == [(D(0), D(3000))] * 3
 
-    # Free cash is 2006 on both terms (no futures open yet). With no slippage and a fee of
-    # 0.1%, a futures increase of 3000 consumes 3000 / 3 + 3 = 1003 of the first term and
-    # 3 + 0.04 x 3000 = 123 of the second. BTC takes 1003 and ETH the other 1003; SOL is cut to 0.
+    # Free cash is 2006 (both terms, no futures open yet). With no slippage and a fee of 0.1%, a
+    # futures increase of 3000 needs 3000 / 3 + 3 = 1003. BTC takes 1003 (term 1 is then
+    # 2003 - 1000 = 1003, term 2 is 2003 - 120 = 1883) and ETH the other 1003; SOL is cut to 0.
     admitted = clip_increases(
         [("BTC", "futures", D(3000)), ("ETH", "futures", D(3000)), ("SOL", "futures", D(3000))],
         cash=D(2006),
@@ -388,19 +388,20 @@ def check_book(equity: Decimal, book: list[CoinState], result: Mapping[str, LegT
 
 
 def test_cash_clip_never_takes_the_margin_ratio_below_4() -> None:
-    # Normal costs: spot fee 0.001, slippage 0.0005; futures fee 0.0005, slippage 0.0005.
-    # A spot buy of n (notional at the unslipped open) consumes n x 1.0005 x 1.001 = 1.0015005 n
-    # of cash and of backing. A futures increase of n consumes, of free term 1 (cash less
-    # initial margin) n / 3 + 1.0005 x 0.0005 n = 0.33383358333.. n, and of free term 2 (backing
-    # less 4 x maintenance) its fee 0.00050025 n, its slippage loss at the open 0.0005 n and 4
-    # times the added 1% maintenance 0.04 n: 0.04100025 n.
+    # The spec's rule, literally. Free cash is min(term 1, term 2) with term 1 = cash - open
+    # initial margin and term 2 = backing - 4 x maintenance. Normal costs: spot fee 0.001 and
+    # slippage 0.0005; futures fee 0.0005 and slippage 0.0005.
+    # A spot buy of n (notional at the unslipped open) needs n x 1.0005 x 1.001 = 1.0015005 n.
+    # A futures increase needs n / 3 plus its fee on its own slipped notional: a long (a buy) at
+    # n x 1.0005, a short (a sell) at n x 0.9995. Per unit of n that is
+    # 1/3 + 0.0005 x 1.0005 = 1/3 + 0.00050025 for a long and 1/3 + 0.00049975 for a short.
     spot_rate = Fraction("1.0015005")
-    first_rate = Fraction(1, 3) + Fraction("0.00050025")
-    second_rate = Fraction("0.04100025")
+    long_rate = Fraction(1, 3) + Fraction("0.00050025")
+    short_rate = Fraction(1, 3) + Fraction("0.00049975")
 
-    # Spot buy, the cushion binds. 30000 of futures are open (initial margin 10000, maintenance
-    # 300 so 4 x maintenance = 1200). Cash 12000, backing 2500 (the longs are 9500 down).
-    # Term 1 = 12000 - 10000 = 2000 and term 2 = 2500 - 1200 = 1300, so the buy is cut to
+    # Spot buy, the cushion is the smaller term. 30000 of futures are open (initial margin 10000,
+    # maintenance 300 so 4 x maintenance = 1200). Cash 12000, backing 2500 (the longs are 9500
+    # down). Term 1 = 12000 - 10000 = 2000 and term 2 = 2500 - 1200 = 1300, so the buy is cut to
     # 1300 / 1.0015005 = 1298.05..: backing falls to 1200 = 4 x maintenance, a ratio of exactly 4.
     (spot,) = clip_increases(
         [("ADA", "spot", D(5000))], D(12000), D(10000), D(2500), D(300), NORMAL
@@ -409,51 +410,62 @@ def test_cash_clip_never_takes_the_margin_ratio_below_4() -> None:
     assert 2500 - to_fraction(spot[2]) * spot_rate >= 4 * 300  # ratio >= 4 after the buy
     assert 12000 - to_fraction(spot[2]) * spot_rate >= 10000
 
-    # Futures increase, the cash term binds. No position yet, cash = backing = 5000.
-    # n = 5000 / 0.33383358333.. = 14977.52..; the cushion would allow 5000 / 0.04100025 =
-    # 121950.4.. so it does not bind. Afterwards cash - margin is 0 and the ratio is
-    # (5000 - 0.00100025 n) / (0.01 n) = 33.3.. >= 4.
+    # Futures long, the cash term is the smaller. No position yet, cash = backing = 5000, so free
+    # cash is 5000 and n = 5000 / 0.33383358333.. = 14977.52.. Afterwards cash - margin is 0 and
+    # the ratio is (5000 - 0.00100025 n) / (0.01 n) = 33.3.. >= 4.
     (cash_bound,) = clip_increases(
         [("BTC", "futures", D(20000))], D(5000), D(0), D(5000), D(0), NORMAL
     )
-    assert cut_to(cash_bound[2], Fraction(5000) / first_rate)
+    assert cash_bound[:2] == ("BTC", "futures")
+    assert cut_to(cash_bound[2], Fraction(5000) / long_rate)
     n = to_fraction(cash_bound[2])
     assert (5000 - n * Fraction("0.00100025")) / (Fraction("0.01") * n) >= 4
 
-    # Futures increase, the cushion binds: cash 20000, initial margin 10000 and maintenance 300
-    # (30000 open), backing 2000 (the longs are 18000 down). Term 1 = 10000 and term 2 =
-    # 2000 - 1200 = 800. The cushion allows 800 / 0.04100025 = 19512.07.. and the first term
-    # 10000 / 0.33383358333.. = 29955, so 19512.07.. is admitted of the 25000 asked: backing
-    # becomes 2000 - 0.00100025 n and 4 x maintenance 1200 + 0.04 n, equal. The ratio is 4.
-    # Counting only "notional / 3 plus fee" against min(term 1, term 2) = 800 would have
-    # admitted just 800 / 0.33383358333.. = 2396.
+    # Futures long, the cushion is the smaller term: cash 20000, initial margin 10000 and
+    # maintenance 300 (30000 open), backing 2000 (the longs are 18000 down). Term 1 = 10000 and
+    # term 2 = 2000 - 1200 = 800, so free cash is 800 and the increase is cut to
+    # 800 / 0.33383358333.. = 2396.4.. Its fee, slippage loss and added maintenance take
+    # 0.04100025 n = 98.2.. of the 800 of term 2, so the ratio stays above 4.
     (cushion_bound,) = clip_increases(
         [("BTC", "futures", D(25000))], D(20000), D(10000), D(2000), D(300), NORMAL
     )
-    assert cut_to(cushion_bound[2], Fraction(800) / second_rate)
+    assert cut_to(cushion_bound[2], Fraction(800) / long_rate)
     n = to_fraction(cushion_bound[2])
     backing = 2000 - n * Fraction("0.00100025")
-    assert backing >= 4 * (300 + Fraction("0.01") * n)
-    assert backing - 4 * (300 + Fraction("0.01") * n) < Fraction(1, 10**40)  # and no room is left
+    assert backing / (300 + Fraction("0.01") * n) > 4  # a ratio above 4 ...
+    assert n / 3 + n * Fraction("0.00050025") <= 800  # ... and the need fits in free cash
 
-    # An increase small enough is admitted as asked, the very same Decimal.
-    asked = D("100.5")
-    ((_, _, whole),) = clip_increases(
-        [("ADA", "spot", asked)], D(12000), D(0), D(12000), D(0), NORMAL
+    # A short increase is a negative notional; its fee is charged on the sell price n x 0.9995,
+    # so the same free cash pays for a little more of it. Admitted amounts keep the sign.
+    (short,) = clip_increases([("BTC", "futures", D(-20000))], D(5000), D(0), D(5000), D(0), NORMAL)
+    assert short[2] < 0 and cut_to(short[2].copy_abs(), Fraction(5000) / short_rate)
+    assert short[2].copy_abs() > cash_bound[2]
+    n = to_fraction(short[2].copy_abs())
+    assert (5000 - n * Fraction("0.00099975")) / (Fraction("0.01") * n) >= 4
+
+    # An increase small enough is admitted as asked, the very same Decimal (a short too).
+    asked, asked_short = D("100.5"), D("-100.5")
+    ((_, _, whole), (_, _, whole_short)) = clip_increases(
+        [("ADA", "spot", asked), ("ADA", "futures", asked_short)],
+        D(12000),
+        D(0),
+        D(12000),
+        D(0),
+        NORMAL,
     )
-    assert whole is asked
+    assert whole is asked and whole_short is asked_short
 
     # Below a ratio of 4 (backing 1100 against maintenance 300) nothing is made, spot or futures,
     # however much cash there is: term 2 = 1100 - 1200 = -100.
     below = clip_increases(
-        [("ADA", "spot", D(100)), ("ADA", "futures", D(100))],
+        [("ADA", "spot", D(100)), ("ADA", "futures", D(100)), ("ADA", "futures", D(-100))],
         D(50000),
         D(10000),
         D(1100),
         D(300),
         NORMAL,
     )
-    assert below == (("ADA", "spot", D(0)), ("ADA", "futures", D(0)))
+    assert below == (("ADA", "spot", D(0)), ("ADA", "futures", D(0)), ("ADA", "futures", D(0)))
     # Likewise when the wallet is below the initial margin (term 1 = 9000 - 10000 < 0).
     short_of_margin = clip_increases(
         [("ADA", "spot", D(100))], D(9000), D(10000), D(9000), D(0), NORMAL
@@ -463,11 +475,10 @@ def test_cash_clip_never_takes_the_margin_ratio_below_4() -> None:
 
 def test_cash_clip_order_is_alphabetical_spot_before_futures() -> None:
     # No slippage, fee 0.1% on both venues. Cash = backing = 2004, nothing open.
-    # ADA spot 1000: consumes 1000 x 1.001 = 1001 of both terms: admitted 1000. Cash and backing
-    # are now 1003.
-    # ADA futures 3000: consumes 3000 / 3 + 3 = 1003 of term 1 and 3 + 0.04 x 3000 = 123 of term
-    # 2: admitted 3000. Cash is now 1000, initial margin 1000, backing 1000, maintenance 30:
-    # term 1 = 0 and term 2 = 1000 - 120 = 880.
+    # ADA spot 1000: needs 1000 x 1.001 = 1001 of free cash 2004: admitted 1000. Cash and
+    # backing are now 1003.
+    # ADA futures 3000: needs 3000 / 3 + 3 = 1003 of free cash 1003: admitted 3000. Cash is now
+    # 1000, initial margin 1000, backing 1000, maintenance 30: term 1 = 0 and term 2 = 880.
     # BTC spot and BTC futures then find term 1 empty: 0, kept in the result so the caller can
     # record each cut.
     ordered = [
@@ -516,9 +527,10 @@ def test_cash_clip_order_is_alphabetical_spot_before_futures() -> None:
 def test_cash_clip_updates_every_term_before_the_next_increase() -> None:
     # A futures increase raises the initial margin and the maintenance, which the later spot buy
     # must see. No slippage, fee 0.1%. Cash = backing = 1500, nothing open.
-    # BTC futures 3000 consumes 1003 of term 1 (cash 1497, initial margin 1000) and
-    # 3 + 120 = 123 of term 2 (backing 1497, maintenance 30, 4 x 30 = 120): term 1 = 497 and
-    # term 2 = 1377. ETH spot 1000 then needs 1001 against 497: admitted 497 / 1.001 = 496.5..
+    # BTC futures 3000 needs 1000 + 3 = 1003 of free cash 1500 and is admitted. Then cash is 1497
+    # (its fee), initial margin 1000, backing 1497 and maintenance 30: term 1 = 497 and term 2 =
+    # 1497 - 4 x 30 = 1377. ETH spot 1000 needs 1001 against free cash 497: admitted
+    # 497 / 1.001 = 496.5..
     admitted = clip_increases(
         [("BTC", "futures", D(3000)), ("ETH", "spot", D(1000))],
         D(1500),
@@ -533,12 +545,13 @@ def test_cash_clip_updates_every_term_before_the_next_increase() -> None:
 
     # The maintenance and the backing it adds up to are carried too. 3000 of futures are open
     # (initial margin 1000, maintenance 30), cash 3000 and backing 1300 (a loss of 1700), so
-    # term 1 = 2000 and term 2 = 1300 - 4 x 30 = 1180. Normal costs. BTC futures 600 consumes
-    # 600 / 3 + 600 x 0.00050025 = 200.30015 of term 1 and 600 x 0.04100025 = 24.60015 of term 2:
-    # cash 2999.69985, initial margin 1200, backing 1299.39985 and maintenance 30 + 6 = 36 give
-    # term 1 = 1799.69985 and term 2 = 1299.39985 - 144 = 1155.39985. The ETH spot buy of 2000
-    # is then bound by term 2: 1155.39985 / 1.0015005 = 1153.67.. (term 1 alone would allow
-    # 1797.0).
+    # term 1 = 2000 and term 2 = 1300 - 4 x 30 = 1180, so free cash is 1180. Normal costs. BTC
+    # futures 600 needs 600 / 3 + 600 x 0.00050025 = 200.30015 and is admitted. Its fee comes off
+    # cash and its fee plus its slippage loss at the open, 600 x 0.0005 = 0.3, off backing; it
+    # adds 200 of initial margin and 6 of maintenance: cash 2999.69985, initial margin 1200,
+    # backing 1299.39985 and maintenance 36 give term 1 = 1799.69985 and term 2 = 1299.39985 -
+    # 144 = 1155.39985. The ETH spot buy of 2000 is then bound by free cash 1155.39985 (term 2):
+    # 1155.39985 / 1.0015005 = 1153.67.. (term 1 alone would allow 1797.0).
     admitted = clip_increases(
         [("BTC", "futures", D(600)), ("ETH", "spot", D(2000))],
         D(3000),
@@ -629,14 +642,15 @@ def random_account(
 
 
 def test_admitted_increases_keep_the_ledgers_cash_and_cushion_terms_non_negative() -> None:
-    # The cash clip's consumption model against the real ledger. Random accounts hold futures
-    # and spot; random increases are clipped, floored to a step like the caller does, and booked
-    # at their slipped fill price with their fee. After every fill, cash - initial margin and
-    # backing - 4 x maintenance must both be >= 0.
+    # The literal rule's admission against the real ledger. Random accounts hold futures and
+    # spot; random increases (futures ones signed, a short being negative) are clipped, floored
+    # to a step like the caller does, and booked at their slipped fill price with their fee.
+    # After every fill, cash - initial margin and backing - 4 x maintenance must both be >= 0,
+    # and after every futures increase the margin ratio must be >= 4.
     rng = random.Random(20261020)
     rules = VenueRules(D("0.1"), D("0.1"), D(100000), D(5), D("0.01"))
     tolerance = D("1e-40")  # the initial margin / 3 is a 60-digit Decimal
-    blocked = cut = filled = futures_cut_by_cushion = 0
+    blocked = cut = filled = shorts = cushion_smaller = 0
     for _ in range(300):
         ledger, opens, sides, prices = random_account(rng)
         clock = 1000 * HOUR_MS
@@ -647,35 +661,37 @@ def test_admitted_increases_keep_the_ledgers_cash_and_cushion_terms_non_negative
         asks: list[tuple[str, Venue, Decimal]] = []
         for name in NAMES:
             asks.append((name, "spot", D(rng.choice((0, rng.randint(0, 20000))))))
-            asks.append((name, "futures", D(rng.randint(0, 40000))))
+            asks.append((name, "futures", sides[name] * D(rng.randint(0, 40000))))
         admitted = clip_increases(asks, mark.cash, margin, mark.backing, mark.maintenance, NORMAL)
         assert [(a, v) for a, v, _ in admitted] == [(a, v) for a, v, _ in asks]
         for (name, venue, amount), (_, _, wanted) in zip(admitted, asks, strict=True):
-            assert 0 <= amount <= wanted
+            size, asked = amount.copy_abs(), wanted.copy_abs()
+            assert 0 <= size <= asked
+            assert amount == 0 or (amount < 0) == (wanted < 0)  # the sign is kept
             if not starts_clear:
                 assert amount == 0
                 continue
-            if amount < wanted:
-                cut += 1
-            quantity = floor_quantity(to_venue_quantity(amount, opens[name]), rules)
+            cut += size < asked
+            quantity = floor_quantity(to_venue_quantity(size, opens[name]), rules)
             if quantity < rules.min_qty:
                 continue
+            before = ledger.mark(prices)
+            term_one = before.cash - initial_margin(ledger, opens)
+            term_two = before.backing - 4 * before.maintenance
+            cushion_smaller += venue == "futures" and size < asked and term_two < term_one
             side = 1 if venue == "spot" else sides[name]
+            shorts += side < 0
             book_fill(ledger, clock, venue, name, side, quantity, opens[name])
             clock += HOUR_MS
             filled += 1
             now = ledger.mark(prices)
-            term_one = now.cash - initial_margin(ledger, opens)
-            term_two = now.backing - 4 * now.maintenance
-            assert term_one >= -tolerance
-            assert term_two >= -tolerance
-            # A futures increase the cushion stopped: term 2 is used up, term 1 has plenty left.
-            futures_cut_by_cushion += (
-                venue == "futures" and amount < wanted and term_two < 5 and term_one > 100
-            )
+            assert now.cash - initial_margin(ledger, opens) >= -tolerance
+            assert now.backing - 4 * now.maintenance >= -tolerance
+            if venue == "futures":
+                assert now.ratio is not None and now.ratio >= 4 - tolerance
         blocked += not starts_clear
     # The run does reach the cases it is there for.
-    assert filled > 300 and cut > 100 and blocked > 0 and futures_cut_by_cushion > 20
+    assert filled > 300 and cut > 100 and blocked > 0 and shorts > 50 and cushion_smaller > 10
 
 
 # --- the venue's units ----------------------------------------------------------------------
@@ -817,6 +833,10 @@ def test_the_clip_and_the_quantity_helper_refuse_bad_input() -> None:
         clip([("ADA", "spot", D(-1))])
     with pytest.raises(ValueError, match="notional"):
         clip([("ADA", "spot", 1.5)])
+    clip([("ADA", "futures", D(-1))])  # a short increase is a negative futures notional
+    wild = Costs(D("0.0005"), D("0.3"), D("0.5"))  # a slippage above 1/3 - 0.04
+    with pytest.raises(ValueError, match="slippage"):
+        clip([("ADA", "futures", D(1))], costs={"spot": NORMAL["spot"], "futures": wild})
     with pytest.raises(ValueError, match="symbol"):
         clip([("ada", "spot", D(1))])
     with pytest.raises(ValueError, match="increase"):

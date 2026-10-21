@@ -17,23 +17,28 @@ cushion). Both are pure functions: they see no ledger, no market and no clock.
   Nothing is redistributed, and nothing here scales the E coins to the room: when they do not
   fit, the cash clip bounds them.
 * **Cash clip.** ``clip_increases`` takes the increases in the order given (alphabetical by
-  symbol, the spot leg before the futures leg within a coin: the caller's order) and admits
-  to each the largest notional that keeps both terms of free cash at or above 0 after the
-  increase's own effect, so no increase takes the margin ratio below 4 and none is made while
-  it is below 4. The terms are ``cash - open initial margin`` (1) and ``backing - 4 x
-  maintenance`` (2). With ``n`` the notional at the unslipped open, ``s`` the slippage rate
-  and ``f`` the fee rate of the venue:
+  symbol, the spot leg before the futures leg within a coin: the caller's order) and applies
+  the spec's rule literally. Free cash is ``min(cash - open initial margin, backing - 4 x
+  maintenance)``, recomputed from the updated account before each increase. An increase is cut
+  to the largest notional whose need fits in it, where, for a notional ``n`` at the unslipped
+  open, a slippage rate ``s`` and a fee rate ``f``:
 
-  - a spot buy consumes ``n (1 + s)(1 + f)`` from both terms (spend plus fee);
-  - a futures increase consumes ``n / 3 + n (1 + s) f`` from term 1 (the initial margin it
-    adds and its fee), and ``n (1 + s) f + n s + 4 x 0.01 n`` from term 2 (its fee, its
-    slippage loss when marked at the open, and 4 times the maintenance it adds). A short's fee
-    is on a price below the open, so the figure is a safe upper bound for it.
+  - a spot buy needs its slipped notional plus its fee, ``n (1 + s)(1 + f)``;
+  - a futures increase needs its initial margin plus its fee, ``n / 3 + fee``, the fee being
+    ``f`` times the increase's own slipped notional: ``n (1 + s)`` for a buy (a long) and
+    ``n (1 - s)`` for a sell (a short).
 
-  Cash, initial margin, backing and maintenance are updated by what was admitted before the
-  next increase. The result keeps the input order and its zeros, so the caller can record
-  each cut; the caller converts the admitted notional to a quantity, rounds it to the step and
-  skips an increase that is now below the filters.
+  The side of a futures increase is the sign of its notional (negative for a short); a spot
+  buy is never negative. The admitted amount keeps the sign. So no increase takes the margin
+  ratio below 4 and none is made while it is below 4: what a futures increase takes from
+  ``backing - 4 x maintenance`` is its fee, its slippage loss at the open ``n s`` and 4 x the
+  1% maintenance it adds, which is no more than its need when ``s + 0.04 <= 1/3`` (checked).
+  After each admitted increase the account is updated: a spot buy takes its cost from cash and
+  backing; a futures increase takes its fee from cash, adds ``n / 3`` to the initial margin,
+  takes its fee and slippage loss from backing and adds 1% of ``n`` to the maintenance. The
+  result keeps the input order and its zeros, so the caller can record each cut; the caller
+  converts the admitted notional to a quantity, rounds it to the step and skips an increase
+  that is now below the filters.
 * **Venue units.** ``to_venue_quantity`` is ``notional / price`` in the venue's own units,
   truncated toward zero to ``CONTEXT.prec`` significant digits (and to 100 decimal places, the
   bound of the order helpers), so a later floor to the step never exceeds the true quotient.
@@ -41,8 +46,8 @@ cushion). Both are pure functions: they see no ledger, no market and no clock.
   ``multiplier`` times the coin's.
 
 ``allocate`` computes under ``CONTEXT``. The clip does its arithmetic in exact ``Fraction``s,
-so that an admitted amount can never leave a term below 0 by a rounding, and returns Decimals
-truncated toward zero.
+so that an admitted amount can never need more than the free cash by a rounding, and returns
+Decimals truncated toward zero.
 """
 
 from __future__ import annotations
@@ -222,14 +227,17 @@ def clip_increases(
 ) -> tuple[tuple[str, Venue, Decimal], ...]:
     """Cut each increase to what the free cash pays for, in the order given.
 
-    ``increases`` are ``(coin, venue, notional)`` at the unslipped opens, ``notional`` at
-    least 0. ``cash``, ``open_initial_margin`` (the open futures' notional at the open / 3),
-    ``backing`` and ``maintenance`` are the account after the hour's reductions. Returns
+    ``increases`` are ``(coin, venue, notional)`` at the unslipped opens. A spot ``notional`` is
+    at least 0; a futures one is signed, negative for a short increase (its sign is its side,
+    which sets the price the fee is charged on). ``cash``, ``open_initial_margin`` (the open
+    futures' notional at the open / 3), ``backing`` and ``maintenance`` are the account after
+    the hour's reductions. Free cash is ``min(cash - open initial margin, backing - 4 x
+    maintenance)``, and an increase is admitted up to the largest amount whose need fits in it
+    (a spot buy ``n (1 + s)(1 + f)``, a futures increase ``n / 3`` plus its fee). Returns
     ``(coin, venue, admitted)`` for every increase, in the same order, with the zeros kept;
-    ``admitted`` is the whole ``notional`` (the same Decimal) when it fits, and otherwise
-    the largest amount that keeps ``cash - open initial margin`` and ``backing - 4 x
-    maintenance`` at or above 0 after the increase, truncated toward zero. Refuses a venue
-    that ``costs`` lacks.
+    ``admitted`` is the whole ``notional`` (the same Decimal) when it fits, and otherwise the
+    cut amount, with the notional's sign, truncated toward zero. Refuses a venue that
+    ``costs`` lacks.
     """
     cash_now = _amount(cash, "cash", signed=True)
     margin_now = _amount(open_initial_margin, "open_initial_margin")
@@ -237,38 +245,40 @@ def clip_increases(
     upkeep_now = _amount(maintenance, "maintenance")
     maintenance_rate = to_fraction(MAINTENANCE_RATE)
     margin_rate = Fraction(1, INITIAL_MARGIN_DIVISOR)
+    # A futures increase takes fee + n s + 4 x 0.01 n from term 2 and needs n / 3 + fee.
+    slippage_limit = margin_rate - CUSHION_TARGET * maintenance_rate
     rates: dict[str, tuple[Fraction, Fraction]] = {}
     admitted: list[tuple[str, Venue, Decimal]] = []
     for item in increases:
         coin, venue, notional = _increase(item)
         if venue not in rates:
             rates[venue] = _costs(costs, venue)
+            if venue == "futures" and rates[venue][1] > slippage_limit:
+                raise ValueError(
+                    f"the futures slippage rate {rates[venue][1]} is above {slippage_limit}: an "
+                    "increase's need would no longer cover what it takes from the cushion"
+                )
         fee_rate, slippage_rate = rates[venue]
-        wanted = to_fraction(notional)
-        fee_paid = (1 + slippage_rate) * fee_rate  # the fee on a unit of notional
-        if venue == "spot":
-            spent = (1 + slippage_rate) * (1 + fee_rate)  # cash and backing per unit bought
-            used_cash = used_backing = spent
-        else:
-            used_cash = margin_rate + fee_paid  # term 1: the margin it adds, and its fee
-            # Term 2: its fee, its slippage loss at the open, and 4 times the maintenance it adds.
-            used_backing = fee_paid + slippage_rate + CUSHION_TARGET * maintenance_rate
-        room_cash = max(cash_now - margin_now, Fraction(0))  # term 1, floored at 0
-        room_backing = max(backing_now - CUSHION_TARGET * upkeep_now, Fraction(0))  # term 2
-        cap = min(room_cash / used_cash, room_backing / used_backing)
+        side = -1 if notional < 0 else 1
+        wanted = abs(to_fraction(notional))
+        # What the increase costs per unit of notional: for a spot buy, cash and backing alike.
+        fee_paid = fee_rate * (1 + side * slippage_rate)  # the fee on its own slipped notional
+        need = (1 + slippage_rate) * (1 + fee_rate) if venue == "spot" else margin_rate + fee_paid
+        free = min(cash_now - margin_now, backing_now - CUSHION_TARGET * upkeep_now)
+        cap = max(free, Fraction(0)) / need
         if cap >= wanted:
             amount, taken = notional, wanted
         else:
-            amount = _truncate(cap)
-            taken = to_fraction(amount)
+            amount = _truncate(side * cap)
+            taken = abs(to_fraction(amount))
         admitted.append((coin, venue, amount))
         if venue == "spot":
-            cash_now -= taken * spent
-            backing_now -= taken * spent
+            cash_now -= taken * need
+            backing_now -= taken * need
         else:
             cash_now -= taken * fee_paid
             margin_now += taken * margin_rate
-            backing_now -= taken * (fee_paid + slippage_rate)
+            backing_now -= taken * (fee_paid + slippage_rate)  # the fee, and the loss at the open
             upkeep_now += taken * maintenance_rate
     return tuple(admitted)
 
@@ -302,8 +312,9 @@ def _increase(item: object) -> tuple[str, Venue, Decimal]:
         raise ValueError(f"each increase must be a (coin, venue, notional) tuple, got {item!r:.60}")
     coin, venue, notional = item
     _symbol(coin, "coin")
-    _check(notional, "notional")
-    return coin, _venue(venue), notional
+    kind = _venue(venue)
+    _check(notional, "notional", signed=kind == "futures")
+    return coin, kind, notional
 
 
 def _costs(costs: Mapping[Venue, Costs], venue: Venue) -> tuple[Fraction, Fraction]:
