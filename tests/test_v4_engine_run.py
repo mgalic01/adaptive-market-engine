@@ -1,6 +1,7 @@
 """V4 engine task 12: the hour loop of the V4 arms (part 12a: the loop, the open marks, the
 records, the 00:00 decisions, the audit and the error paths; part 12b: the fill phase and the
-window-end close).
+window-end close; part 12c: the synthetic closes, the post-fill and funding checks and cuts,
+funding, the adverse-extreme liquidation and the stops).
 
 Each test replays a small synthetic world from ``tests/v4_synthetic.py`` through
 ``run_v4_cell``. ``seed`` books fills into the cell's ledger and opens their lifecycles before
@@ -8,7 +9,10 @@ the first hour, through the module's ``Ledger`` and ``Lifecycles`` names, for a 
 position the rules would not make on their own (a dust holding, a profitable short). The 12a
 tests check only hours and records that the fills cannot change (an open mark comes before the
 hour's fills, and a daily record is the decision's, not the fill's). Every world trading in a
-12b test has a funding rate of 0, so part 12c's funding cannot move what these tests pin.
+12b test has a funding rate of 0, so part 12c's funding cannot move what these tests pin. The 12c
+tests mostly use "static" coins: a coin whose spot hours 00:00 to 04:59 are masked every day has
+no daily bar (fewer than 20 usable hours), so it never gets a target and keeps exactly the legs
+``seed`` gives it, which lets a test put the account where a safety rule acts.
 
 Expected signals and weights are recomputed here the plain way: one ``CoinSignals`` pass over
 the market's daily bars, and ``size_book`` on each coin's whole return series. So the engine's
@@ -23,7 +27,7 @@ import ast
 import dataclasses
 import socket
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
@@ -49,6 +53,7 @@ from v4_synthetic import (
     write_world,
 )
 
+from crypto_grid_bot.v4.data.bars import FundingRow
 from crypto_grid_bot.v4.data.pack import coin_pack_file
 from crypto_grid_bot.v4.engine import run
 from crypto_grid_bot.v4.engine.allocation import clip_increases
@@ -59,7 +64,7 @@ from crypto_grid_bot.v4.engine.market import HourBar, Market
 from crypto_grid_bot.v4.engine.numbers import to_decimal
 from crypto_grid_bot.v4.engine.pending import PendingBook
 from crypto_grid_bot.v4.engine.records import read_receipt, read_records
-from crypto_grid_bot.v4.engine.safety import DeadMarkets
+from crypto_grid_bot.v4.engine.safety import DeadMarkets, ceiling_factor, cushion_factor
 from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading
 from crypto_grid_bot.v4.engine.sizing import SizingResult, daily_returns, size_book
 
@@ -961,6 +966,7 @@ def test_a_funding_month_exit_closes_the_futures_and_places_the_replacement_buy(
     order = order_event(rows, at, "SOLUSDT")
     assert order["source"] == "replacement buy" and order["eligible"] is False
     assert order["exits"] == [["futures", "funding-month exit"]] and order["target"] == "0.30"
+    assert order["decision_ms"] == LAST_JAN  # the decision whose target the buy uses
     assert abs(F(D(order["split"]["spot"])) - spot_target) < F(1, 10**40)
     assert D(order["split"]["futures"]) == 0
     spot_leg, futures_leg = order["legs"]
@@ -1398,6 +1404,795 @@ def test_dust_back_in_the_universe_keeps_its_leg_and_its_offset_order_waits_for_
     assert spot_leg["orders"] == [] and D(spot_leg["target"]) == D("0.001")  # it holds its dust
     assert futures_leg["orders"] == [] and futures_leg["refusal"] == "min_notional"
     assert D(futures_leg["target"]) == D("-0.001")
+
+
+# ---- 12c: synthetic closes, funding, cuts and stops ---------------------------------------
+
+DEC = month_start("2024-12")
+JAN_END = month_start("2025-02")  # the open after January's last hour
+CRASH = T0 + 9 * DAY + 10 * HOUR  # 2025-01-10 10:00, the bar in which a static price jumps
+AFTER = CRASH + HOUR  # the first open that shows the jump
+FUND_HOUR = T0 + 9 * DAY + 8 * HOUR  # 2025-01-10 08:00
+FUNDED = FUND_HOUR + 30_000  # a funding record 30 seconds after that slot
+FEE = {venue: F(COSTS[venue].fee_rate) for venue in ("spot", "futures")}
+PENALTY_LONG, PENALTY_SHORT = F(9, 10), F(11, 10)  # spec "Delisting": 10% against the leg
+
+
+def static_mask(end: str) -> tuple[int, ...]:
+    """Hours 00:00 to 04:59 of every day from December to the end of ``end``: a coin masked so
+    has fewer than 20 usable hours a day, so no daily bar and never a target."""
+    days = range(DEC, DEC + hours_in("2024-12", end) * HOUR, DAY)
+    return tuple(stamp for day in days for stamp in day_hours(day, range(5)))
+
+
+def flat(price: str, end: str = "2025-01") -> tuple[Decimal, ...]:
+    """Hourly closes at ``price`` from December to the end of ``end``."""
+    return path(price, (hours_in("2024-12", end), "0"))
+
+
+def jump(price: str, at_ms: int, rate: str, end: str = "2025-01") -> tuple[Decimal, ...]:
+    """Closes at a flat ``price`` from December; the bar that opens at ``at_ms`` closes ``rate``
+    away from it, and the price stays there."""
+    before = (at_ms - DEC) // HOUR
+    return path(price, (before, "0"), (1, rate), (hours_in("2024-12", end) - before - 1, "0"))
+
+
+def static_coin(
+    symbol: str,
+    closes: Sequence[Decimal],
+    *,
+    perpetual: bool = False,
+    funding: str = "0",
+    months: Mapping[str, str] | None = None,
+    perp_masked: Sequence[int] = (),
+    perp_hours: int | None = None,
+    perp_extremes: Mapping[int, tuple[str, str]] | None = None,
+    funding_rows: Sequence[FundingRow] | None = None,
+    spot_dark: Sequence[int] = (),
+    spot_extremes: Mapping[int, tuple[str, str]] | None = None,
+    end: str = "2025-01",
+) -> CoinSpec:
+    """A static coin from December (module docstring) at ``closes``. With ``perpetual``, its
+    perpetual has the same closes (only the first ``perp_hours``, for one that dies early), its
+    own masks and extremes, the funding rate ``funding`` at every slot (or exactly the records
+    ``funding_rows``) and the given month statuses."""
+    masked = sorted(set(static_mask(end)) | set(spot_dark))
+    spot = Series(DEC, closes, masked=tuple(masked), extremes=dict(spot_extremes or {}))
+    if not perpetual:
+        return CoinSpec(symbol, spot)
+    perp_closes = closes if perp_hours is None else closes[:perp_hours]
+    series = Series(DEC, perp_closes, masked=tuple(perp_masked), extremes=dict(perp_extremes or {}))
+    spec = PerpetualSpec(
+        series=series,
+        funding_rate=funding,
+        funding=None if funding_rows is None else tuple(funding_rows),
+        months=dict(months or {}),
+    )
+    return CoinSpec(symbol, spot, spec)
+
+
+def static_world(coins: Sequence[CoinSpec]) -> World:
+    """January 2025, every coin selected."""
+    return World("2025-01", tuple(coins), {"2025-01": tuple(coin.symbol for coin in coins)})
+
+
+def hourly_at(rows: Iterable[tuple[str, dict[str, Any]]], hour_ms: int) -> dict[str, Any]:
+    (found,) = [h for h in of_kind(rows, "hourly") if h["open_ms"] == hour_ms]
+    return found
+
+
+def residuals_hold(rows: Iterable[tuple[str, dict[str, Any]]]) -> bool:
+    return all(D(h["equity_residual"]).copy_abs() <= D("1e-18") for h in of_kind(rows, "hourly"))
+
+
+def downtrend(start: str = "2024-10", end: str = "2025-01") -> tuple[Decimal, ...]:
+    """BTCUSDT's falling closes: shorted on its perpetual from 01:00 on January 1, at -0.30."""
+    return path("50000", (hours_in(start, end), "-0.0003"), noise="0.002", seed=12)
+
+
+def test_funding_is_charged_on_the_held_quantity_at_the_open(monkeypatch, tmp_path):
+    """Spec "Shorts on futures": each funding record is charged on the contracts held at its
+    time, times the published rate, times the perpetual's open of the settlement hour (its
+    carried mark, the last close, when that hour is masked), after the hour's trading. Longs pay
+    a positive rate and shorts receive it. BTCUSDT shorts from 01:00 on January 1, so January
+    1's 00:00 record finds it flat and charges nothing; its perpetual is masked at 08:00 on
+    January 5. ETHUSDT (static) holds a seeded long. The wallet and the lifecycles carry every
+    payment."""
+    start = month_start("2024-10")
+    masked_slot = T0 + 4 * DAY + 8 * HOUR
+    closes = downtrend()
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, closes),
+        PerpetualSpec(series=Series(start, closes, masked=(masked_slot,)), funding_rate="0.0003"),
+    )
+    eth = static_coin("ETHUSDT", flat("100"), perpetual=True, funding="0.0002")
+    market = load(tmp_path, static_world((btc, eth)))
+    seeded = [("futures", "ETHUSDT", "2")]
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [("ETHUSDT", seed_fill(T0 - HOUR, "futures", "ETHUSDT", 1, "2", "100"))],
+    )
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    records = {(r["perpetual"], r["timestamp_ms"]): r for r in of_kind(rows, "funding")}
+    charged = 0
+    for hour in range(T0, JAN_END, HOUR):
+        for perpetual, time_ms, rate in market.funding_events(hour):
+            held = holdings(rows, time_ms, seeded).get(("futures", perpetual), F(0))
+            if held == 0:
+                assert (perpetual, time_ms) not in records  # a flat leg is not charged
+                continue
+            record = records[perpetual, time_ms]
+            spec = market.coin(perpetual).perpetual
+            assert spec is not None
+            bar = spec.store.bar(hour)
+            price = bar.open if bar is not None else spec.store.last_close_before(hour)
+            assert price is not None
+            assert (record["hour_ms"], record["coin"]) == (hour, perpetual)
+            assert F(D(record["quantity"])) == held and D(record["rate"]) == rate
+            assert D(record["price"]) == price and record["carried"] is (bar is None)
+            assert F(D(record["amount"])) == -held * F(rate) * F(price)
+            charged += 1
+    assert len(records) == charged
+    assert ("BTCUSDT", T0) not in records and ("ETHUSDT", T0) in records
+    assert records["BTCUSDT", masked_slot]["carried"] is True
+    btc_paid = [D(r["amount"]) for r in records.values() if r["coin"] == "BTCUSDT"]
+    eth_paid = [D(r["amount"]) for r in records.values() if r["coin"] == "ETHUSDT"]
+    assert btc_paid and all(amount > 0 for amount in btc_paid)  # the short receives
+    assert eth_paid and all(amount < 0 for amount in eth_paid)  # the long pays
+    total = F(0)
+    for coin, paid in (("BTCUSDT", btc_paid), ("ETHUSDT", eth_paid)):
+        lifecycles = [r for r in of_kind(rows, "lifecycle") if r["coin"] == coin]
+        assert sum(F(D(r["funding"])) for r in lifecycles) == sum(map(F, paid))
+        assert sum(F(D(r["venues"]["futures"]["funding"])) for r in lifecycles) == sum(map(F, paid))
+        total += sum(map(F, paid))
+    assert F(result.final_after_close) == cash_after(rows, JAN_END, F(CAPITAL)) + total
+
+
+@pytest.mark.parametrize("case", ["margin cut", "ceiling cut", "funding cut", "liquidation"])
+def test_a_crash_at_3x_cuts_or_liquidates_as_specified(case, monkeypatch, tmp_path):
+    """Spec "Safety", on hedged accounts of static coins: spot held (spot does not back futures),
+    a BTCUSDT short on its perpetual, and the wallet's rest, all seeded.
+    * margin cut: BTCUSDT jumps 17% in the bar at CRASH. At the next open the margin ratio is
+      below 3, but the account is not liquidated and gross is under 3. The post-fill check cuts
+      the tradable futures to ``held x k``, ``k = (backing / 4 - untradable maintenance) /
+      tradable maintenance`` (SOLUSDT's small short is masked there, so untradable and kept),
+      computed exactly and floored to the step, by a reduce-only buy at that open with slippage
+      and fee. The new mark is back near 4.
+    * ceiling cut: a bigger short and a 5% jump take gross exposure above 3 (the ratio is fine).
+      Every tradable position is cut by ``k' = (2.7 x equity - untradable gross) / tradable
+      gross``: the short by a buy and ETHUSDT's spot by a sale, alphabetical, at that open.
+      SOLUSDT's spot (masked then) and DOGEUSDT's unsellable dust are untradable and stay.
+    * funding cut: the price never moves, but a funding record of -18% on the short, 30 seconds
+      after 08:00 on January 10, takes the ratio below 3. The checks after the payment cut the
+      short at that hour's open, stamped at the record's time.
+    * liquidation: the short's bar at CRASH has a high of 120 though it opens and closes at 100,
+      so only the adverse-extreme check sees it, every leg at its extreme at once (spot at its
+      low of 95 too). Backing at or below maintenance there ends the cell at those prices."""
+    rate = {"margin cut": "0.17", "ceiling cut": "0.05"}.get(case, "0")
+    high = {CRASH: ("120", "100")} if case == "liquidation" else {}
+    low = {CRASH: ("100", "95")} if case == "liquidation" else {}
+    records = [FundingRow(FUNDED, D("-0.18"), 8)] if case == "funding cut" else None
+    btc = static_coin(
+        "BTCUSDT",
+        jump("100", CRASH, rate),
+        perpetual=True,
+        perp_extremes=high,
+        funding_rows=records,
+    )
+    coins = [btc]
+    if case == "ceiling cut":
+        spot = {"ETHUSDT": ("50", "100"), "SOLUSDT": ("10", "100"), "DOGEUSDT": ("20", "0.1")}
+        short = "220"
+        coins += [
+            static_coin("ETHUSDT", flat("100")),
+            static_coin("SOLUSDT", flat("100"), spot_dark=(AFTER,)),
+            static_coin("DOGEUSDT", flat("0.1")),
+        ]
+    else:
+        spot, short = {"ETHUSDT": ("90", "100")}, "50"
+        coins.append(static_coin("ETHUSDT", flat("100"), spot_extremes=low))
+    fills = [(c, seed_fill(T0 - HOUR, "spot", c, 1, qty, p)) for c, (qty, p) in spot.items()]
+    fills.append(("BTCUSDT", seed_fill(T0 - HOUR, "futures", "BTCUSDT", -1, short, "100")))
+    if case == "margin cut":
+        coins.append(static_coin("SOLUSDT", flat("100"), perpetual=True, perp_masked=(AFTER,)))
+        fills.append(("SOLUSDT", seed_fill(T0 - HOUR, "futures", "SOLUSDT", -1, "5", "100")))
+    market = load(tmp_path, static_world(coins))
+    seed(monkeypatch, T0 - HOUR, fills)
+
+    result, rows = cell_run(market, tmp_path)
+
+    q = F(D(short))
+    value = {coin: F(D(qty)) * F(D(p)) for coin, (qty, p) in spot.items()}  # flat prices
+    cash = F(CAPITAL) - sum(value.values())
+    assert residuals_hold(rows)
+    if case == "liquidation":
+        final = cash + 90 * 95 + q * (100 - 120)
+        assert result.outcome == "liquidated" and result.reason is None
+        assert result.stop_ms == CRASH and F(result.final_equity) == final
+        assert result.final_after_close is None and of_kind(rows, "fill") == []
+        assert result.open_marks[-1] == (CRASH, D(CAPITAL), True)  # the open saw nothing
+        outcome = rows[-1][1]
+        assert outcome["check"] == "adverse_extremes" and F(D(outcome["mark"]["equity"])) == final
+        assert F(D(outcome["mark"]["backing"])) <= F(D(outcome["mark"]["maintenance"]))
+        assert F(D(hourly_at(rows, CRASH)["equity"])) == final
+        ended = {r["coin"]: r for r in of_kind(rows, "lifecycle")}
+        assert all(r["exit_reason"] == "liquidation" and r["censored"] for r in ended.values())
+        assert {r["exit_ms"] for r in ended.values()} == {CRASH}
+        assert F(D(ended["BTCUSDT"]["unrealised"])) == q * (100 - 120)
+        assert F(D(ended["ETHUSDT"]["unrealised"])) == 90 * (95 - 100)
+        return
+    assert result.outcome == "complete"
+    kind = "ceiling_cut" if case == "ceiling cut" else "margin_cut"
+    hour, point, stamp = (
+        (FUND_HOUR, "funding", FUNDED) if case == "funding cut" else (AFTER, "post_fill", AFTER)
+    )
+    cuts = [e for e in of_kind(rows, "event") if e["type"] in ("margin_cut", "ceiling_cut")]
+    assert [(e["type"], e["hour_ms"], e["check"], e["timestamp_ms"]) for e in cuts] == [
+        (kind, hour, point, stamp)
+    ]
+    (cut,) = cuts
+    booked = fills_at(rows, stamp)
+    price = (1 + F(D(rate))) * 100  # BTCUSDT's open at the cut: 117, 105 or 100
+    backing = cash + q * (100 - price)
+    if case == "funding cut":
+        (payment,) = of_kind(rows, "funding")
+        assert F(D(payment["amount"])) == q * F(D("-0.18")) * 100  # the short pays -18%
+        backing += F(D(payment["amount"]))
+    maintenance = F(D("0.01")) * q * price
+    if case == "ceiling cut":
+        equity = backing + sum(value.values())
+        untradable = value["SOLUSDT"] + value["DOGEUSDT"]
+        tradable = value["ETHUSDT"] + q * price
+        assert untradable + tradable > 3 * equity and backing > 3 * maintenance
+        k = ceiling_factor(to_decimal(equity), to_decimal(untradable), to_decimal(tradable))
+        assert k is not None and 0 < k < 1
+        futures, sale = booked  # BTCUSDT before ETHUSDT
+        check_fill(futures, "futures", 1, q - floor_to(q * F(k), FUTURES_STEP), to_decimal(price))
+        check_fill(sale, "spot", -1, 50 - floor_to(50 * F(k), SPOT_STEP), D(100))
+        assert sale["coin"] == "ETHUSDT"
+        assert futures["reason"] == sale["reason"] == "ceiling cut"
+        assert D(cut["factor"]) == k and F(D(cut["equity"])) == equity
+        assert F(D(cut["tradable_gross"])) == tradable
+        assert F(D(cut["untradable_gross"])) == untradable
+        assert cut["untradable"] == [["spot", "DOGEUSDT"], ["spot", "SOLUSDT"]]
+        assert D(hourly_at(rows, AFTER)["gross"]) < D("2.71")  # 2.7 before the cut's costs
+    else:
+        untradable = F(D("0.01")) * 5 * 100 if case == "margin cut" else F(0)
+        assert maintenance + untradable < backing < 3 * (maintenance + untradable)
+        k = cushion_factor(to_decimal(backing), to_decimal(untradable), to_decimal(maintenance))
+        assert k is not None and 0 < k < 1
+        (fill,) = booked
+        check_fill(fill, "futures", 1, q - floor_to(q * F(k), FUTURES_STEP), to_decimal(price))
+        assert (fill["coin"], fill["reason"], fill["hour_ms"]) == ("BTCUSDT", "margin cut", hour)
+        assert D(cut["factor"]) == k and F(D(cut["backing"])) == backing
+        assert F(D(cut["tradable_maintenance"])) == maintenance
+        assert F(D(cut["untradable_maintenance"])) == untradable
+        assert cut["untradable"] == ([["futures", "SOLUSDT"]] if case == "margin cut" else [])
+        assert 3 < D(hourly_at(rows, hour)["margin_ratio"]) < 4  # near 4, less the cut's costs
+    assert [(leg["coin"], leg["venue"]) for leg in cut["legs"]] == [
+        (f["coin"], f["venue"]) for f in booked
+    ]
+    # A partial cut ends no lifecycle: each runs to the window end.
+    assert {r["exit_reason"] for r in of_kind(rows, "lifecycle")} <= {
+        "window end",
+        "window end (dust)",
+    }
+
+
+@pytest.mark.parametrize("case", ["nothing tradable", "still breached"])
+def test_a_margin_cushion_that_cannot_be_restored_ends_the_cell(case, monkeypatch, tmp_path):
+    """Spec "Safety", the cushion cannot be restored. As in the margin-cut case, BTCUSDT's short
+    jumps 17% at CRASH, but its perpetual is masked at the next open: it cannot trade there and
+    is valued at its carried mark, the jump's close.
+    * nothing tradable: no futures position can trade, so the post-fill check ends the cell with
+      ``limit_unrestorable``, reason ``margin_cushion``, before any cut.
+    * still breached: a small SOLUSDT short can trade, but the masked leg's maintenance alone
+      exceeds backing / 4, so k <= 0 closes every tradable futures position, and the ratio is
+      still below 3 at the new mark. SOLUSDT's lifecycle ends with the cut ("margin cut").
+    The others are censored at the stopping check's prices, and that mark is the final equity."""
+    eth = static_coin("ETHUSDT", flat("100"))
+    btc = static_coin("BTCUSDT", jump("100", CRASH, "0.17"), perpetual=True, perp_masked=(AFTER,))
+    coins = [btc, eth]
+    fills = [
+        ("ETHUSDT", seed_fill(T0 - HOUR, "spot", "ETHUSDT", 1, "90", "100")),
+        ("BTCUSDT", seed_fill(T0 - HOUR, "futures", "BTCUSDT", -1, "50", "100")),
+    ]
+    if case == "still breached":
+        coins.append(static_coin("SOLUSDT", flat("100"), perpetual=True))
+        fills.append(("SOLUSDT", seed_fill(T0 - HOUR, "futures", "SOLUSDT", -1, "5", "100")))
+    market = load(tmp_path, static_world(coins))
+    seed(monkeypatch, T0 - HOUR, fills)
+
+    result, rows = cell_run(market, tmp_path)
+
+    cash, untradable = F(1000), F(D("0.01")) * 50 * 117
+    assert result.outcome == "limit_unrestorable" and result.reason == "margin_cushion"
+    assert result.stop_ms == AFTER and result.final_after_close is None
+    assert result.open_marks[-1][0] == AFTER and result.open_marks[-1][2] is False  # carried
+    (cut,) = events(rows, "margin_cut")
+    assert cut["hour_ms"] == AFTER and cut["untradable"] == [["futures", "BTCUSDT"]]
+    assert F(D(cut["untradable_maintenance"])) == untradable
+    outcome = rows[-1][1]
+    ended = {r["coin"]: r for r in of_kind(rows, "lifecycle")}
+    if case == "nothing tradable":
+        assert cut["factor"] is None and cut["legs"] == []
+        assert of_kind(rows, "fill") == [] and outcome["check"] == "post_fill"
+        final = cash + 90 * 100 + 50 * (100 - 117)
+    else:
+        backing = cash + 50 * (100 - 117)
+        k = cushion_factor(to_decimal(backing), to_decimal(untradable), D(5))
+        assert k is not None and k <= 0 and D(cut["factor"]) == k
+        (fill,) = of_kind(rows, "fill")
+        check_fill(fill, "futures", 1, F(5), D(100))  # the whole tradable short
+        assert (fill["coin"], fill["reason"], fill["hour_ms"]) == ("SOLUSDT", "margin cut", AFTER)
+        assert outcome["check"] == "post_fill_margin_cut"
+        sol = ended.pop("SOLUSDT")
+        assert (sol["exit_reason"], sol["exit_ms"], sol["censored"]) == ("margin cut", AFTER, False)
+        final = cash_after(rows, AFTER, cash) + 90 * 100 + 50 * (100 - 117)
+        assert F(D(outcome["mark"]["backing"])) < 3 * F(D(outcome["mark"]["maintenance"]))
+    assert F(result.final_equity) == final and F(D(outcome["mark"]["equity"])) == final
+    assert set(ended) == {"BTCUSDT", "ETHUSDT"}
+    assert all(r["censored"] and r["exit_reason"] == "limit_unrestorable" for r in ended.values())
+    assert F(D(ended["BTCUSDT"]["unrealised"])) == 50 * (100 - 117)
+    assert residuals_hold(rows)
+
+
+def test_a_perpetual_that_dies_is_closed_after_168_hours_with_the_penalty(tmp_path):
+    """Spec "Delisting or a dead market": BTCUSDT is short on its perpetual from January 1, and
+    the perpetual's last bar opens at 23:00 on January 14 while spot trades on. After 168 hours
+    with no bar on its own venue, the short closes at the open time of the next hour, 00:00 on
+    January 22, as that hour's first event: at the last close plus the 10% penalty, with no
+    slippage and the normal futures fee. The coin's deferred order (January 21's short, which
+    needed the perpetual) is cancelled before that hour's decision, whose own order (target 0,
+    as the perpetual is no longer eligible) survives and comes due at 01:00. The lifecycle ends
+    as "delisting"."""
+    dies = T0 + 14 * DAY
+    close_h = dies + 168 * HOUR
+    start = month_start("2024-10")
+    closes = downtrend()
+    perpetual = PerpetualSpec(
+        series=Series(start, closes[: (dies - start) // HOUR]), funding_rate="0"
+    )
+    market = load(
+        tmp_path,
+        World(
+            "2025-01",
+            (CoinSpec("BTCUSDT", Series(start, closes), perpetual),),
+            {"2025-01": ("BTCUSDT",)},
+        ),
+    )
+    perp = market.coin("BTCUSDT").perpetual
+    assert perp is not None
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    held = holdings(rows, dies - HOUR)[("futures", "BTCUSDT")]
+    assert held < 0  # short when the perpetual dies
+    # The dead-market rule read off the store: due at close_h, not an hour earlier.
+    assert perp.store.last_open_at_or_before(close_h - 1) == dies - HOUR
+    assert dies - HOUR < close_h - 168 * HOUR and not dies - HOUR < close_h - HOUR - 168 * HOUR
+    futures = [f for f in of_kind(rows, "fill") if f["venue"] == "futures"]
+    assert [f["hour_ms"] for f in futures if f["hour_ms"] >= dies] == [close_h]
+    (fill,) = [f for f in futures if f["hour_ms"] == close_h]
+    last_close = perp.store.last_close_before(close_h)
+    last_bar = perp.store.bar(dies - HOUR)
+    assert last_bar is not None and last_close == last_bar.close
+    price = F(last_close) * PENALTY_SHORT
+    assert (fill["side"], F(D(fill["quantity"]))) == (1, -held)
+    assert F(D(fill["price"])) == F(D(fill["unslipped_price"])) == price  # no slippage
+    assert F(D(fill["fee"])) == -held * price * FEE["futures"]
+    assert (fill["timestamp_ms"], fill["reason"]) == (close_h, "delisting")
+    (batch,) = events(rows, "synthetic_closes")
+    assert batch["hour_ms"] == close_h
+    assert [(leg["coin"], leg["venue"], leg["symbol"], leg["reason"]) for leg in batch["legs"]] == [
+        ("BTCUSDT", "futures", "BTCUSDT", "delisting")
+    ]
+    assert D(batch["legs"][0]["last_close"]) == last_close
+    assert F(D(batch["legs"][0]["price"])) == price
+    # The pending short is cancelled before January 22's decision, whose order survives.
+    (cancelled,) = events(rows, "order_cancelled")
+    assert (cancelled["hour_ms"], cancelled["decision_ms"]) == (close_h, close_h - DAY)
+    assert cancelled["reason"] == "delisting" and D(cancelled["target"]) < 0
+    decision = daily_by(rows)[(close_h, "BTCUSDT")]
+    assert decision["target"] == "0" and not decision["eligible"]
+    assert order_event(rows, close_h + HOUR, "BTCUSDT")["decision_ms"] == close_h
+    assert not [e for e in events(rows, "order") if e["decision_ms"] == close_h - DAY]
+    (lifecycle,) = of_kind(rows, "lifecycle")
+    assert (lifecycle["side"], lifecycle["exit_reason"]) == ("short", "delisting")
+    assert lifecycle["exit_ms"] == close_h and not lifecycle["censored"]
+    # The close comes first in the hour: that hour's open mark already holds only cash.
+    assert open_equity(result, close_h) == cash_after(rows, close_h, F(CAPITAL))
+
+
+@pytest.mark.parametrize("close", ["at 01:00", "synthetic", "synthetic, no bar"])
+def test_an_incomplete_funding_month_moves_the_long_to_spot_before_it_starts(
+    close, monkeypatch, tmp_path
+):
+    """Spec "Data": February is incomplete for both perpetuals, so no futures exposure is held in
+    it. BTCUSDT (rising, target 0.30) holds a seeded futures long that the band keeps through
+    January; ETHUSDT (static) holds a seeded short. At the decision at 00:00 on January 31 the
+    precondition holds for both: no eligible perpetual, BTCUSDT's order cancelled, each futures
+    leg scheduled to close from 01:00.
+    * at 01:00: both perpetuals have that bar, so both legs close then, and only the long gets a
+      replacement buy, placed on spot in the same batch from January 31's target.
+    * synthetic: both perpetuals are masked from 01:00 to 23:00, so no bar comes before February.
+      At 00:00 on February 1, before anything else and before any of February's funding, both
+      legs close in one synthetic batch at the last close with the 10% penalty, the normal fee
+      and no slippage. Only the long schedules a replacement buy; February 1's decision gives
+      BTCUSDT a newer target (spot-only), which supersedes it, and the long is bought on spot at
+      01:00. The stale exits come due at 00:00 on flat legs and are no-ops.
+    * synthetic, no bar: the same, but BTCUSDT has no daily bar for January 31, so February 1's
+      decision gives it no target: the replacement buy is placed at 00:00, from January 31's
+      target."""
+    start = month_start("2024-10")
+    closes = path("50000", (hours_in("2024-10", "2025-02"), "0.0002"), noise="0.002", seed=70)
+    perp_masked = () if close == "at 01:00" else day_hours(LAST_JAN, range(1, 24))
+    spot_masked = day_hours(LAST_JAN, range(18, 24)) if close == "synthetic, no bar" else ()
+    incomplete = {"2025-02": "missing_slot"}
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, closes, masked=spot_masked),
+        PerpetualSpec(
+            series=Series(start, closes, masked=perp_masked),
+            months=incomplete,
+            funding_rate="0.0001",
+        ),
+    )
+    eth = static_coin(
+        "ETHUSDT",
+        flat("100", end="2025-02"),
+        perpetual=True,
+        funding="0.0001",
+        months=incomplete,
+        perp_masked=perp_masked,
+        end="2025-02",
+    )
+    universes = every_month("2025-01", "2025-02", ("BTCUSDT", "ETHUSDT"))
+    market = load(tmp_path, World("2025-02", (btc, eth), universes))
+    seed_price = closes[(T0 - HOUR - start) // HOUR]
+    long = to_decimal(floor_to(F(3000) / F(seed_price), FUTURES_STEP))  # about 0.30 of equity
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [
+            ("BTCUSDT", Fill(T0 - HOUR, "futures", "BTCUSDT", 1, long, seed_price, D(0), "seed")),
+            ("ETHUSDT", seed_fill(T0 - HOUR, "futures", "ETHUSDT", -1, "30", "100")),
+        ],
+    )
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    daily = daily_by(rows)
+    for coin in ("BTCUSDT", "ETHUSDT"):
+        assert daily[(LAST_JAN, coin)]["funding_month_exit"]
+        assert not daily[(LAST_JAN, coin)]["eligible"]
+    assert D(daily[(LAST_JAN, "BTCUSDT")]["target"]) == D("0.30")
+    (cancelled,) = events(rows, "order_cancelled")
+    assert (cancelled["coin"], cancelled["hour_ms"]) == ("BTCUSDT", LAST_JAN)
+    assert cancelled["reason"] == "funding-month exit"
+    assert [(e["coin"], e["venue"], e["after_ms"]) for e in events(rows, "exit_scheduled")] == [
+        ("BTCUSDT", "futures", LAST_JAN + HOUR),
+        ("ETHUSDT", "futures", LAST_JAN + HOUR),
+    ]
+    assert not [
+        o
+        for o in events(rows, "order")
+        if o["coin"] == "BTCUSDT" and o["band"] == "trade" and o["hour_ms"] < LAST_JAN
+    ]
+    futures = [f for f in of_kind(rows, "fill") if f["venue"] == "futures"]
+    (btc_close,) = [f for f in futures if f["coin"] == "BTCUSDT"]
+    (eth_close,) = [f for f in futures if f["coin"] == "ETHUSDT"]
+    assert btc_close["reason"] == eth_close["reason"] == "funding-month exit"
+    # Only the long is replaced; a short's target moves to 0, with no buy.
+    assert [e["coin"] for e in events(rows, "replacement_scheduled")] == ["BTCUSDT"]
+    replacement = [e for e in of_kind(rows, "event") if e["type"].startswith("replacement")]
+    assert all(e["coin"] == "BTCUSDT" for e in replacement)
+    # No futures exposure in February: no funding charged from its first instant on.
+    assert not [r for r in of_kind(rows, "funding") if r["timestamp_ms"] >= FEB]
+    lifecycles = of_kind(rows, "lifecycle")
+    (eth_life,) = [r for r in lifecycles if r["coin"] == "ETHUSDT"]
+    assert eth_life["exit_reason"] == "funding-month exit"
+    assert eth_life["exit_ms"] == btc_close["hour_ms"]
+    spot_buys = [f for f in of_kind(rows, "fill") if f["venue"] == "spot" and f["side"] == 1]
+    if close == "at 01:00":
+        at = LAST_JAN + HOUR
+        check_fill(btc_close, "futures", -1, F(long), perp_bar(market, "BTCUSDT", at).open)
+        check_fill(eth_close, "futures", 1, F(30), D(100))
+        assert btc_close["hour_ms"] == eth_close["hour_ms"] == at
+        assert events(rows, "synthetic_closes") == []
+        order = order_event(rows, at, "BTCUSDT")
+        assert (order["source"], order["decision_ms"]) == ("replacement buy", LAST_JAN)
+        assert [(f["hour_ms"], f["reason"]) for f in spot_buys] == [(at, "replacement buy")]
+        (btc_life,) = [r for r in lifecycles if r["coin"] == "BTCUSDT"]
+        assert btc_life["exit_reason"] == "window end"  # the move to spot is one lifecycle
+        return
+    perps = {coin: market.coin(coin).perpetual for coin in ("BTCUSDT", "ETHUSDT")}
+    for fill, coin, side, quantity, penalty in (
+        (btc_close, "BTCUSDT", -1, F(long), PENALTY_LONG),
+        (eth_close, "ETHUSDT", 1, F(30), PENALTY_SHORT),
+    ):
+        perp = perps[coin]
+        assert perp is not None and perp.store.bar(FEB) is not None
+        last_close = perp.store.last_close_before(FEB)
+        assert last_close is not None and last_close == perp_bar(market, coin, LAST_JAN).close
+        price = F(last_close) * penalty
+        assert (fill["hour_ms"], fill["timestamp_ms"], fill["side"]) == (FEB, FEB, side)
+        assert F(D(fill["quantity"])) == quantity
+        assert F(D(fill["price"])) == F(D(fill["unslipped_price"])) == price
+        assert F(D(fill["fee"])) == quantity * price * FEE["futures"]
+    (batch,) = events(rows, "synthetic_closes")
+    assert batch["hour_ms"] == FEB
+    assert [(leg["coin"], leg["reason"]) for leg in batch["legs"]] == [
+        ("BTCUSDT", "funding-month exit"),
+        ("ETHUSDT", "funding-month exit"),
+    ]
+    skipped = events(rows, "exit_skipped")
+    assert [(e["coin"], e["hour_ms"], e["why"]) for e in skipped] == [
+        ("BTCUSDT", FEB, "flat"),
+        ("ETHUSDT", FEB, "flat"),
+    ]
+    assert events(rows, "replacement_scheduled")[0]["hour_ms"] == FEB
+    # January 31's funding met masked perpetuals: their carried marks.
+    for coin in ("BTCUSDT", "ETHUSDT"):
+        (record,) = [
+            r
+            for r in of_kind(rows, "funding")
+            if r["coin"] == coin and r["hour_ms"] == LAST_JAN + 8 * HOUR
+        ]
+        assert record["carried"] is True
+    btc_lives = [r for r in lifecycles if r["coin"] == "BTCUSDT"]
+    assert [(r["exit_ms"], r["exit_reason"]) for r in btc_lives] == [
+        (FEB, "funding-month exit"),
+        (LAST_HOUR, "window end"),
+    ]
+    if close == "synthetic":
+        assert [e["coin"] for e in events(rows, "replacement_superseded")] == ["BTCUSDT"]
+        decision = daily[(FEB, "BTCUSDT")]
+        assert D(decision["target"]) > 0 and not decision["eligible"]
+        order = order_event(rows, FEB + HOUR, "BTCUSDT")
+        assert (order["source"], order["decision_ms"], order["band"]) == ("signal", FEB, "trade")
+        assert [(f["hour_ms"], f["reason"]) for f in spot_buys] == [(FEB + HOUR, "signal")]
+    else:
+        assert events(rows, "replacement_superseded") == []
+        assert daily[(FEB, "BTCUSDT")]["no_bar"] and daily[(FEB, "BTCUSDT")]["target"] is None
+        order = order_event(rows, FEB, "BTCUSDT")
+        assert (order["source"], order["decision_ms"]) == ("replacement buy", LAST_JAN)
+        assert order["target"] == daily[(LAST_JAN, "BTCUSDT")]["target"]
+        assert [(f["hour_ms"], f["reason"]) for f in spot_buys] == [(FEB, "replacement buy")]
+
+
+@pytest.mark.parametrize("short", ["45", "40"])
+def test_the_synthetic_closes_of_one_instant_are_one_batch_with_one_liquidation_check(
+    short, monkeypatch, tmp_path
+):
+    """Spec "Solvency at the penalised price": BTCUSDT's and ETHUSDT's perpetuals both die at
+    00:00 on January 10, so their shorts are due together at 00:00 on January 17. The check
+    values both at their penalised prices at once, SOLUSDT's live short and XRPUSDT's spot at
+    their marks.
+    * 45 contracts each: backing is then at or below maintenance, so the cell is liquidated
+      there, before its open mark, with no fill at all; either leg penalised alone would not
+      have done it.
+    * 40 each: the account survives, and both closes are booked together at that instant."""
+    dies = T0 + 9 * DAY
+    close_h = dies + 168 * HOUR
+    perp_hours = (dies - DEC) // HOUR
+    coins = (
+        static_coin("BTCUSDT", flat("100"), perpetual=True, perp_hours=perp_hours),
+        static_coin("ETHUSDT", flat("100"), perpetual=True, perp_hours=perp_hours),
+        static_coin("SOLUSDT", flat("100"), perpetual=True),
+        static_coin("XRPUSDT", flat("100")),
+    )
+    market = load(tmp_path, static_world(coins))
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [
+            ("BTCUSDT", seed_fill(T0 - HOUR, "futures", "BTCUSDT", -1, short, "100")),
+            ("ETHUSDT", seed_fill(T0 - HOUR, "futures", "ETHUSDT", -1, short, "100")),
+            ("SOLUSDT", seed_fill(T0 - HOUR, "futures", "SOLUSDT", -1, "10", "100")),
+            ("XRPUSDT", seed_fill(T0 - HOUR, "spot", "XRPUSDT", 1, "90", "100")),
+        ],
+    )
+
+    result, rows = cell_run(market, tmp_path)
+
+    q, cash, penalised = F(D(short)), F(1000), 100 * PENALTY_SHORT
+    (batch,) = events(rows, "synthetic_closes")
+    assert batch["hour_ms"] == close_h
+    assert [(leg["coin"], leg["reason"], F(D(leg["price"]))) for leg in batch["legs"]] == [
+        ("BTCUSDT", "delisting", penalised),
+        ("ETHUSDT", "delisting", penalised),
+    ]
+    backing = cash + 2 * q * (100 - penalised)
+    maintenance = F(D("0.01")) * (2 * q * penalised + 10 * 100)
+    assert F(D(batch["mark"]["backing"])) == backing
+    assert F(D(batch["mark"]["maintenance"])) == maintenance
+    assert residuals_hold(rows)
+    if short == "45":
+        assert backing <= maintenance  # the batch at its penalised prices is liquidated
+        alone = cash + q * (100 - penalised)
+        assert alone > F(D("0.01")) * (q * penalised + q * 100 + 10 * 100)  # one leg alone: not
+        assert result.outcome == "liquidated" and result.stop_ms == close_h
+        assert rows[-1][1]["check"] == "synthetic_closes" and of_kind(rows, "fill") == []
+        assert F(result.final_equity) == backing + 90 * 100
+        assert result.open_marks[-1][0] == close_h - HOUR  # the stop came before the open mark
+        assert hourly_at(rows, close_h)["open_equity"] is None
+        ended = {r["coin"]: r for r in of_kind(rows, "lifecycle")}
+        assert set(ended) == {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}
+        assert all(r["exit_reason"] == "liquidation" and r["censored"] for r in ended.values())
+        assert F(D(ended["BTCUSDT"]["unrealised"])) == q * (100 - penalised)
+        return
+    assert backing > maintenance and result.outcome == "complete"
+    booked = fills_at(rows, close_h)
+    assert [(f["coin"], f["side"], F(D(f["quantity"])), F(D(f["price"]))) for f in booked] == [
+        ("BTCUSDT", 1, q, penalised),
+        ("ETHUSDT", 1, q, penalised),
+    ]
+    assert all(F(D(f["fee"])) == q * penalised * FEE["futures"] for f in booked)
+    assert {f["reason"] for f in booked} == {"delisting"}
+    ended = [r for r in of_kind(rows, "lifecycle") if r["exit_ms"] == close_h]
+    assert sorted((r["coin"], r["exit_reason"]) for r in ended) == [
+        ("BTCUSDT", "delisting"),
+        ("ETHUSDT", "delisting"),
+    ]
+    assert open_equity(result, close_h) == cash_after(rows, close_h, cash) + 90 * 100
+
+
+def test_an_account_at_or_below_zero_after_the_synthetic_batch_is_liquidated(monkeypatch, tmp_path):
+    """Spec "Solvency at the penalised price": after the batch is booked, equity at or below zero
+    also ends the cell as liquidated. At the spec's costs a batch that passes the check always
+    leaves equity above zero (a fee is far below the 1% maintenance), so this test charges every
+    fill a fee of 10,000 USDT; only the two closes of the 40-contract batch above pay it."""
+    dies = T0 + 9 * DAY
+    close_h = dies + 168 * HOUR
+    perp_hours = (dies - DEC) // HOUR
+    coins = (
+        static_coin("BTCUSDT", flat("100"), perpetual=True, perp_hours=perp_hours),
+        static_coin("ETHUSDT", flat("100"), perpetual=True, perp_hours=perp_hours),
+        static_coin("SOLUSDT", flat("100"), perpetual=True),
+        static_coin("XRPUSDT", flat("100")),
+    )
+    market = load(tmp_path, static_world(coins))
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [
+            ("BTCUSDT", seed_fill(T0 - HOUR, "futures", "BTCUSDT", -1, "40", "100")),
+            ("ETHUSDT", seed_fill(T0 - HOUR, "futures", "ETHUSDT", -1, "40", "100")),
+            ("SOLUSDT", seed_fill(T0 - HOUR, "futures", "SOLUSDT", -1, "10", "100")),
+            ("XRPUSDT", seed_fill(T0 - HOUR, "spot", "XRPUSDT", 1, "90", "100")),
+        ],
+    )
+    monkeypatch.setattr(run, "fee", lambda quantity, price, costs: D(10000))
+
+    result, rows = cell_run(market, tmp_path)
+
+    final = F(1000) + 2 * 40 * (100 - 110) - 2 * 10000 + 90 * 100  # SOLUSDT at its open of 100
+    assert result.outcome == "liquidated" and result.stop_ms == close_h
+    assert rows[-1][1]["check"] == "synthetic_closes_booked"
+    assert F(result.final_equity) == final < 0
+    assert [(f["coin"], f["reason"]) for f in of_kind(rows, "fill")] == [
+        ("BTCUSDT", "delisting"),
+        ("ETHUSDT", "delisting"),
+    ]
+    ended = {r["coin"]: r["exit_reason"] for r in of_kind(rows, "lifecycle")}
+    assert ended == {
+        "BTCUSDT": "delisting",
+        "ETHUSDT": "delisting",
+        "SOLUSDT": "liquidation",
+        "XRPUSDT": "liquidation",
+    }
+
+
+def test_dead_markets_close_only_held_legs_and_are_asked_before_each_hours_observations(
+    monkeypatch, tmp_path
+):
+    """Loop-level ``DeadMarkets``. BTCUSDT's seeded spot is outside January's universe, so it is
+    sold at 01:00 on January 1; its venue then has no bar for 300 hours. A flat leg is forgotten,
+    so it never comes due and is never closed. ETHUSDT (static) keeps its seeded spot, an amount
+    off the step's grid, and its venue goes dark from January 10: 168 hours after its last bar the
+    whole holding closes at the last close less 10%, with the spot fee and no filter. Each hour
+    ``due`` is asked once, before any of that hour's observations."""
+    btc_dark = tuple(range(T0 + 2 * HOUR, T0 + 302 * HOUR, HOUR))
+    btc = CoinSpec("BTCUSDT", Series(DEC, flat("50000"), masked=btc_dark))
+    eth = static_coin("ETHUSDT", flat("2000"), spot_dark=tuple(range(T0 + 9 * DAY, JAN_END, HOUR)))
+    market = load(tmp_path, World("2025-01", (btc, eth), {"2025-01": ("ETHUSDT",)}))
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [
+            ("BTCUSDT", seed_fill(T0 - HOUR, "spot", "BTCUSDT", 1, "0.1", "50000")),
+            ("ETHUSDT", seed_fill(T0 - HOUR, "spot", "ETHUSDT", 1, "1.000005", "2000")),
+        ],
+    )
+    calls: list[tuple[str, int, Any]] = []
+
+    class Watched(DeadMarkets):
+        def due(self, hour_ms):
+            legs = super().due(hour_ms)
+            calls.append(("due", hour_ms, legs))
+            return legs
+
+        def observe(self, hour_ms, venue, symbol, has_bar):
+            calls.append(("observe", hour_ms, (venue, symbol)))
+            super().observe(hour_ms, venue, symbol, has_bar)
+
+    monkeypatch.setattr(run, "DeadMarkets", Watched)
+
+    result, rows = cell_run(market, tmp_path)
+
+    close_h = T0 + 9 * DAY - HOUR + 169 * HOUR  # the last bar opens at 23:00 on January 9
+    assert result.outcome == "complete" and residuals_hold(rows)
+    asked = [hour for kind, hour, _ in calls if kind == "due"]
+    assert asked == [stamp for stamp, _, _ in result.open_marks]  # once an hour, every hour
+    seen: set[int] = set()
+    for kind, hour, _ in calls:
+        if kind == "due":
+            seen.add(hour)
+        else:
+            assert hour in seen  # the hour's due came first
+    listed = [(hour, legs) for kind, hour, legs in calls if kind == "due" and legs]
+    assert listed == [(close_h, (("spot", "ETHUSDT"),))]
+    btc_fills = [f for f in of_kind(rows, "fill") if f["coin"] == "BTCUSDT"]
+    assert [(f["hour_ms"], f["reason"]) for f in btc_fills] == [(T0 + HOUR, "universe exit")]
+    (fill,) = [f for f in of_kind(rows, "fill") if f["coin"] == "ETHUSDT"]
+    assert (fill["hour_ms"], fill["timestamp_ms"], fill["side"]) == (close_h, close_h, -1)
+    assert fill["reason"] == "delisting" and D(fill["quantity"]) == D("1.000005")
+    assert F(D(fill["price"])) == F(D(fill["unslipped_price"])) == 2000 * PENALTY_LONG
+    assert F(D(fill["fee"])) == F(D("1.000005")) * 2000 * PENALTY_LONG * FEE["spot"]
+    lifecycles = {r["coin"]: r for r in of_kind(rows, "lifecycle")}
+    assert lifecycles["ETHUSDT"]["exit_reason"] == "delisting"
+    assert lifecycles["ETHUSDT"]["exit_ms"] == close_h
+
+
+def test_the_audit_holds_every_hour(monkeypatch, tmp_path):
+    """Spec "Safety", accounting: the wallet and quantity identities hold exactly and the equity
+    residual stays within 1e-18 at the end of every hour, over a world with trades, funding and
+    cuts. SOLUSDT's seeded short (static) jumped from 100 to 195 just before the window: at the
+    first post-fill check the margin ratio is below 3 and gross far above 3, so the cushion cut
+    and then the ceiling cut fill at that open. BTCUSDT then trades its downtrend on its
+    perpetual, and both shorts take funding every eight hours."""
+    start = month_start("2024-10")
+    btc = CoinSpec("BTCUSDT", Series(start, downtrend()), PerpetualSpec(funding_rate="0.0003"))
+    sol = static_coin("SOLUSDT", jump("100", T0 - HOUR, "0.95"), perpetual=True, funding="0.0003")
+    market = load(tmp_path, static_world((btc, sol)))
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [("SOLUSDT", seed_fill(T0 - HOUR, "futures", "SOLUSDT", -1, "100", "100"))],
+    )
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete"
+    hourly = of_kind(rows, "hourly")
+    assert len(hourly) == len(result.open_marks) == hours_in("2025-01", "2025-01")
+    assert residuals_hold(rows)
+    assert result.audit.wallet_residual == 0
+    assert not any(result.audit.quantity_residuals.values())
+    reasons = {f["reason"] for f in of_kind(rows, "fill")}
+    assert {"margin cut", "ceiling cut", "signal", "window end"} <= reasons
+    cuts = [
+        (e["type"], e["hour_ms"])
+        for e in of_kind(rows, "event")
+        if e["type"] in ("margin_cut", "ceiling_cut")
+    ]
+    assert cuts[:2] == [("margin_cut", T0), ("ceiling_cut", T0)]
+    # The ceiling is judged on the mark after the cushion's cut: SOLUSDT at 195 throughout.
+    margin_fills = [f for f in fills_at(rows, T0) if f["reason"] == "margin cut"]
+    cash = F(CAPITAL) + sum(F(D(f["realised"])) - F(D(f["fee"])) for f in margin_fills)
+    left = 100 - sum(F(D(f["quantity"])) for f in margin_fills)
+    (ceiling,) = [e for e in events(rows, "ceiling_cut") if e["hour_ms"] == T0]
+    assert F(D(ceiling["equity"])) == cash + left * (100 - 195)
+    funding = of_kind(rows, "funding")
+    assert {r["coin"] for r in funding if D(r["amount"]) != 0} == {"BTCUSDT", "SOLUSDT"}
 
 
 # ---- stops, failures and errors -----------------------------------------------------------

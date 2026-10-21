@@ -2,29 +2,36 @@
 hash-chained records.
 
 Implements the spec's "Account and execution" ("Longs on spot first" with its deferrals,
-allocation and cash clip, "Exchange filters", "Reductions are never refused for size", "Order of
-events in an hour", "Timing", "Window end"), the 00:00 decision of "Signals" (from completed
-daily bars; the no-bar rule and its two overrides) and of "Sizing" (steps 1 to 3, and the band
-paragraph: the band at the fill hour, deferrals, mandatory exits and replacement buys),
-"Universe" (point-in-time perpetual eligibility; leaving the top 10; the monthly selection
-record), "Data" (the funding-month exit), the "Accounting" bullet of "Safety", "Records" and the
-outcomes of "Reports". ``run.py`` composes the engine's modules and holds no trading rule of its
-own; the few small rules no module has are private functions or methods here, each citing the
-spec (``_month_end``, ``_audit_failure``, the decided-coins rule in ``_V4Cell._decide``, and in
-the fill phase ``_V4Cell._ready``'s dust-offset case, ``_V4Cell._exit_skip`` and
-``_V4Cell._schedule_replacement``'s universe guard).
+allocation and cash clip, "Shorts on futures" and its funding, "Exchange filters", "Reductions
+are never refused for size", "Order of events in an hour", "Timing", "Window end"), the 00:00
+decision of "Signals" (from completed daily bars; the no-bar rule and its two overrides) and of
+"Sizing" (steps 1 to 3, and the band paragraph: the band at the fill hour, deferrals, mandatory
+exits and replacement buys), "Universe" (point-in-time perpetual eligibility; leaving the top 10;
+the monthly selection record), "Data" (the funding-month exit and its synthetic close), "Safety"
+(the 3x ceiling, the margin cushion, liquidation, delisting or a dead market, how a cell that
+stops early ends, accounting), "Records" and the outcomes of "Reports". ``run.py`` composes the
+engine's modules and holds no trading rule of its own; the few small rules no module has are
+private functions or methods here, each citing the spec (``_month_end``, ``_audit_failure``,
+``_cut_quantity``, the decided-coins rule in ``_V4Cell._decide``; in the fill phase
+``_V4Cell._ready``'s dust-offset case, ``_V4Cell._exit_skip`` and
+``_V4Cell._schedule_replacement``'s universe guard; in the safety phases the rule of
+``_CellState._synthetic_legs`` for a leg due on both counts, and the time stamp of a cut after a
+funding record in ``_CellState._funding_events``).
 
 **The hour.** ``run_v4_cell`` runs every hour ``h`` from ``market.window_start_ms`` to
 ``market.window_end_ms``, in the spec's order of events:
 
-1. the synthetic closes due at this instant, as one batch (Task 12c);
+1. the synthetic closes due at this instant (dead markets, and at a month's first midnight the
+   futures legs of an incomplete funding month), as one batch with one liquidation check;
 2. the open mark, kept in ``open_marks`` with its completeness flag, then the pre-fill
    liquidation check;
 3. at 00:00, the daily decision (below), then the mandatory exits it makes;
 4. the fills due this hour (below);
-5. the post-fill mark and its liquidation, cushion and ceiling checks (Task 12c);
-6. each funding event and its checks (Task 12c);
-7. the liquidation check at the adverse extremes (Task 12c);
+5. the post-fill mark: its liquidation check, then the margin cushion and its cut, then the 3x
+   ceiling and its cut, each cut filling at the open and followed by a new mark;
+6. each funding record of the hour, in time order, on the positions then held, each followed by
+   the checks of step 5;
+7. the liquidation check at the adverse extremes, every leg at once;
 
 then each held leg's hour is reported to ``DeadMarkets``; at the last hour comes the window-end
 close (below), and last of all
@@ -32,8 +39,12 @@ close (below), and last of all
 8. the audit, the ``hourly`` record and, when the cell ends, the ``outcome`` record.
 
 A phase that stops the cell (a liquidation or an unrestorable limit) skips the rest of the hour
-up to step 8. The phases of Task 12c do nothing yet; they exist in the loop order, each a method
-of the cell state with its contract in its docstring.
+up to step 8 (spec "How a cell that stops early ends"): no later event and no closing fill;
+every open lifecycle is marked at the stopping check's prices and censored, and that mark is the
+final equity. Steps 1 and 5 to 7 are ``_CellState`` methods, so ``hold.py`` (Task 13) can reuse
+them, each with its contract in its docstring. Every threshold is compared on exact values
+(``safety``), and every cut quantity is ``held x k`` (or ``k'``) computed in Fractions and
+truncated to the step (``_cut_quantity``).
 
 **The fills (step 4)** follow the pending book's call order (its module docstring): ``due``,
 ``due_exits`` (a funding-month futures close then schedules its replacement buy at this hour),
@@ -102,20 +113,39 @@ the failure.
 * ``fill``, per fill: ``hour_ms``, ``timestamp_ms``, ``coin``, ``venue``, ``symbol``, ``side``,
   ``quantity`` (venue units), ``price`` (slipped), ``unslipped_price``, ``fee``, ``realised``
   and ``reason`` (``signal``, ``universe exit``, ``funding-month exit``, ``replacement buy``,
-  ``window end``).
-* ``event``, each with its ``type``, ``hour_ms`` and ``coin``:
+  ``margin cut``, ``ceiling cut``, ``delisting``, ``window end``). A synthetic close has no
+  slippage: its ``price`` and ``unslipped_price`` are both the penalised price.
+* ``funding``, per funding record charged: ``hour_ms``, ``timestamp_ms`` (the record's),
+  ``coin``, ``perpetual``, ``quantity`` (the signed contracts held), ``rate``, ``price`` (the
+  perpetual's open, or its carried mark), ``carried`` (whether it was the carried mark) and
+  ``amount`` (``-quantity x rate x price``, positive when the wallet receives it).
+* ``event``, each with its ``type``, ``hour_ms`` and ``coin`` (null for an event of the whole
+  account):
 
   - ``order_superseded`` (an older pending order a decision replaced; ``decision_ms``,
     ``target``) and ``replacement_superseded`` (a replacement buy a decision of that hour
     superseded);
   - ``order_cancelled`` (``decision_ms``, ``target``, ``reason``) and ``replacement_cancelled``
-    (``reason``), what a universe or funding-month exit's ``cancel`` removed;
+    (``reason``), what a universe exit's, a funding-month exit's or a dead market's (reason
+    ``delisting``) ``cancel`` removed;
   - ``exit_scheduled`` (``venue``, ``reason``, ``after_ms``), and ``exit_skipped`` (``venue``,
     ``reason``, ``why``: ``flat``, or ``in_universe`` for a universe exit of a coin that is back
     in the universe, whose newer decisions supersede it);
-  - ``replacement_scheduled``, and ``replacement_skipped`` (``why``: ``not_in_universe``);
+  - ``replacement_scheduled`` (only a long futures leg's funding-month close is replaced), and
+    ``replacement_skipped`` (``why``: ``not_in_universe``);
+  - ``synthetic_closes``, per batch (coin null): the ``legs`` closing (``coin``, ``venue``,
+    ``symbol``, ``held``, ``last_close``, the penalised ``price``, ``reason``: ``delisting`` or
+    ``funding-month exit``) and the ``mark`` of the batch's one liquidation check;
+  - ``margin_cut`` and ``ceiling_cut``, per cut or per limit found with nothing to cut (coin
+    null): the ``check`` point (``post_fill`` or ``funding``), the fills' ``timestamp_ms``, the
+    mark's ``backing`` with the ``untradable_maintenance`` and ``tradable_maintenance`` (margin),
+    or its ``equity`` with the ``untradable_gross`` and ``tradable_gross`` (ceiling), the
+    ``factor`` k or k' (null when nothing can trade), the ``untradable`` legs as ``[venue,
+    symbol]`` and the ``legs`` cut (``coin``, ``venue``, ``symbol``, ``held``, ``target``,
+    ``orders``, ``dust``);
   - ``order``, per coin the fill phase handles: ``source`` (``signal``, ``replacement buy`` or
-    ``exit``), ``decision_ms``, ``target``, ``eligible`` (as passed to the allocation, null for a
+    ``exit``), ``decision_ms`` (the decision hour of the target used, for a replacement buy that
+    of the coin's latest target), ``target``, ``eligible`` (as passed to the allocation, null for a
     coin keeping its legs), ``current`` and ``band`` (``trade`` or ``keep``) for a daily order,
     the ``exits`` due (``[venue, reason]``), ``equity``, the coin's ``state`` (``target_notional``,
     ``spot_notional``, ``dust``, ``dust_notional``, ``futures_notional``), the ``split``
@@ -135,10 +165,18 @@ the failure.
   for ``accounting_failure``, ``check`` and ``mark`` for a stop, and ``type``, ``message`` and
   ``hour_ms`` for ``engine_error``.
 
-**Outcomes.** ``complete``; ``liquidated`` (reason null, the record's ``check`` names the check
-that stopped it); ``limit_unrestorable`` (reason ``ceiling`` or ``margin_cushion``, Task 12c);
-``accounting_failure`` (reason ``wallet``, ``quantity`` or ``equity``: the first identity that
-failed, in that order); ``engine_error`` (reason ``"<Type>: <message>"``).
+**Outcomes.** ``complete``; ``liquidated`` (reason null); ``limit_unrestorable`` (reason
+``margin_cushion`` or ``ceiling``); ``accounting_failure`` (reason ``wallet``, ``quantity`` or
+``equity``: the first identity that failed, in that order); ``engine_error`` (reason
+``"<Type>: <message>"``). A stop's ``check`` names the check that stopped it:
+``synthetic_closes`` (the batch at its penalised prices), ``synthetic_closes_booked`` (equity at
+or below zero after the batch), ``open_mark``, ``post_fill``, ``funding``, ``adverse_extremes``,
+or the new mark after a cut, ``<point>_margin_cut`` or ``<point>_ceiling_cut``. A limit with
+nothing tradable stops at its point (``post_fill`` or ``funding``); one a cut did not restore,
+at the cut's new mark. The spec's third reason of ``limit_unrestorable``, ``required_fill`` (a
+fill the rules require that cannot be made), has no path under V4's rules: every required
+reduction can be made, since a futures reduction is reduce-only and ignores the minimum notional
+and a spot remainder below the filters becomes dust. It exists for the summary's schema only.
 
 The loop does O(coins) work an hour: bars by bisection, each coin's daily bars and returns
 built once, on its first decision, and fed or sliced from a cursor. The fill phase does its
@@ -172,6 +210,7 @@ from crypto_grid_bot.v4.engine.arms import (
     ARMS,
     COVARIANCE_DAYS,
     INITIAL_MARGIN_DIVISOR,
+    MAINTENANCE_RATE,
     SIGMA_RETURNS,
     ArmSpec,
     CellSpec,
@@ -184,7 +223,16 @@ from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
 from crypto_grid_bot.v4.engine.orders import LegPlan, Order, fee, fill_price, plan_leg
 from crypto_grid_bot.v4.engine.pending import Decided, Exit, Pending, PendingBook
 from crypto_grid_bot.v4.engine.records import Receipt, RecordWriter, write_receipt
-from crypto_grid_bot.v4.engine.safety import DeadMarkets, liquidated
+from crypto_grid_bot.v4.engine.safety import (
+    DeadMarkets,
+    adverse_prices,
+    ceiling_breached,
+    ceiling_factor,
+    cushion_breached,
+    cushion_factor,
+    liquidated,
+    penalised_price,
+)
 from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading
 from crypto_grid_bot.v4.engine.sizing import (
     CoinSizing,
@@ -208,10 +256,20 @@ UNIVERSE_EXIT = "universe exit"
 FUNDING_EXIT = "funding-month exit"
 REPLACEMENT_BUY = "replacement buy"
 WINDOW_END = "window end"
+DELISTING = "delisting"
+MARGIN_CUT = "margin cut"
+CEILING_CUT = "ceiling cut"
+
+# The outcomes of a stop and the reasons of ``limit_unrestorable`` (spec "Reports").
+LIQUIDATED = "liquidated"
+LIMIT_UNRESTORABLE = "limit_unrestorable"
+MARGIN_CUSHION = "margin_cushion"
+CEILING = "ceiling"
 
 _Key = tuple[Venue, str]
 _VENUES: tuple[Venue, ...] = ("spot", "futures")
 _ZERO = Decimal(0)
+_MAINTENANCE = to_fraction(MAINTENANCE_RATE)
 # The open futures' initial margin is rounded up, never down, at the engine's precision, so the
 # cash clip never sees less margin than is open.
 _CEILING = Context(prec=CONTEXT.prec, rounding=ROUND_CEILING)
@@ -397,9 +455,121 @@ class _CellState:
         self._bars = {}
         self._open = None
 
+    # ---- step 1: the synthetic closes -----------------------------------------------------
+
     def _synthetic_closes(self, h: int) -> None:
-        """Step 1 (Task 12c): the dead-market and synthetic funding-month closes due at ``h``,
-        as one batch with one liquidation check at the penalised prices, booked together."""
+        """Step 1: the synthetic closes due at ``h``, as one batch, booked at the hour's open time
+        before anything else (spec "Safety", "Delisting or a dead market" and its "Solvency at
+        the penalised price"; spec "Data", the funding-month close when no bar comes).
+
+        * The members (``_synthetic_legs``) are every held leg ``DeadMarkets.due(h)`` lists, and
+          at 00:00 of a month's first day every held futures leg whose coin's funding month is
+          not ``complete``: its funding-month exit found no perpetual bar before the month.
+        * One liquidation check values every closing leg at ``penalised_price`` of its last close
+          (the last close before ``h``; 10% against the leg) and every other held leg at its
+          mark for ``h``, all at once. A liquidation there ends the cell with no fill.
+        * Otherwise every close is booked together, stamped ``h``: the whole leg, dust included,
+          whatever the filters say, at the penalised price with no slippage and the venue's fee
+          on that notional (``_book_synthetic``).
+        * Then, per coin: the lifecycle batch, reason ``delisting`` if any of the coin's closes
+          is a dead market, else ``funding-month exit`` (``_close_batch`` forgets the closed
+          legs), and the arm's own consequences (``_after_synthetic_close``: a dead-market
+          close cancels the coin's pending orders, before this hour's decision).
+        * Equity at or below zero after the batch ends the cell as liquidated."""
+        closing = self._synthetic_legs(h)
+        if not closing:
+            return
+        held = self._ledger.positions()
+        prices = {key: self._open_price(key) for key in held}
+        lasts: dict[_Key, Decimal] = {}
+        for key in closing:
+            last = self._stores[key].last_close_before(h)
+            if last is None:
+                raise ValueError(f"the {key[0]} leg {key[1]} has no close before {h}")
+            lasts[key] = last
+            prices[key] = penalised_price(last, 1 if held[key] > 0 else -1)
+        mark = self._ledger.mark(prices)
+        order = sorted(closing, key=self._leg_order)
+        self._record(
+            "event",
+            {
+                "type": "synthetic_closes",
+                "hour_ms": h,
+                "coin": None,
+                "legs": [
+                    {
+                        "coin": self._coin_of[key],
+                        "venue": key[0],
+                        "symbol": key[1],
+                        "held": held[key],
+                        "last_close": lasts[key],
+                        "price": prices[key],
+                        "reason": closing[key],
+                    }
+                    for key in order
+                ],
+                "mark": _mark_record(mark),
+            },
+        )
+        if liquidated(mark):
+            self._stop_at(LIQUIDATED, None, "synthetic_closes", prices, mark)
+            return
+        self._prices = dict(prices)
+        batches: dict[str, list[tuple[Fill, Decimal]]] = {}
+        for key in order:
+            coin = self._coin_of[key]
+            booked = self._book_synthetic(h, coin, key, held[key], prices[key], closing[key])
+            batches.setdefault(coin, []).append(booked)
+        for coin in sorted(batches):
+            closed = {key: (closing[key], held[key]) for key in order if self._coin_of[key] == coin}
+            reasons = {reason for reason, _ in closed.values()}
+            self._close_batch(
+                h, coin, batches[coin], DELISTING if DELISTING in reasons else FUNDING_EXIT
+            )
+            self._after_synthetic_close(h, coin, closed)
+        after = self._ledger.mark(self._prices)
+        if after.equity <= 0:
+            self._stop_at(LIQUIDATED, None, "synthetic_closes_booked", self._prices, after)
+
+    def _synthetic_legs(self, h: int) -> dict[_Key, str]:
+        """The legs to close synthetically at ``h``, each with its reason. ``DeadMarkets.due`` is
+        asked here, once an hour and before any of the hour's observations, and only its held
+        legs are taken (a flat leg is never closed). A futures leg held at 00:00 of a month's
+        first day closes when its coin's funding status for the month is anything but
+        ``complete`` (a missing status included, as at the decision before it). A leg due on
+        both counts closes as a delisting."""
+        held = self._ledger.positions()
+        closing = {key: DELISTING for key in self._dead.due(h) if key in held}
+        if h % DAY_MS == 0 and _month_of(h) != _month_of(h - DAY_MS):
+            month = _month_of(h)
+            for key in held:
+                if (
+                    key[0] == "futures"
+                    and key not in closing
+                    and self.market.funding_month(self._coin_of[key], month) != COMPLETE
+                ):
+                    closing[key] = FUNDING_EXIT
+        return closing
+
+    def _book_synthetic(
+        self, h: int, coin: str, key: _Key, held: Decimal, price: Decimal, reason: str
+    ) -> tuple[Fill, Decimal]:
+        """Book one synthetic close: the whole ``held`` quantity, with no filter, at the
+        penalised ``price`` and no slippage (the penalty replaces it), paying the venue's fee on
+        that notional, stamped at the hour's open."""
+        venue, symbol = key
+        quantity = held.copy_abs()
+        charged = fee(quantity, price, self._costs[venue])
+        booked = Fill(h, venue, symbol, -1 if held > 0 else 1, quantity, price, charged, reason)
+        realised = self._ledger.fill(booked)
+        self._fill_record(h, coin, booked, price, realised)
+        return booked, realised
+
+    def _after_synthetic_close(
+        self, h: int, coin: str, closed: Mapping[_Key, tuple[str, Decimal]]
+    ) -> None:
+        """What an arm does after the coin's synthetic closes at ``h`` (``closed`` maps each leg
+        to its reason and the quantity it held). The base account has no pending orders."""
 
     def _open_mark(self, h: int) -> None:
         """Step 2: the open mark, kept in ``open_marks``, then the pre-fill liquidation check."""
@@ -415,7 +585,7 @@ class _CellState:
             self._equity_2025 = mark.equity
         self._mark_lifecycles(h, held, prices)
         if liquidated(mark):
-            self._stop_at("liquidated", None, "open_mark", prices, mark)
+            self._stop_at(LIQUIDATED, None, "open_mark", prices, mark)
 
     def _window_end(self, h: int) -> None:
         """At the last hour, after its other events (spec "Window end"): every position closes
@@ -581,24 +751,29 @@ class _CellState:
         )
         realised = self._ledger.fill(booked)
         self._prices[key] = price
+        self._fill_record(h, coin, booked, price, realised)
+        return booked, realised
+
+    def _fill_record(
+        self, h: int, coin: str, booked: Fill, unslipped: Decimal, realised: Decimal
+    ) -> None:
         self._record(
             "fill",
             {
                 "hour_ms": h,
-                "timestamp_ms": timestamp_ms,
+                "timestamp_ms": booked.timestamp_ms,
                 "coin": coin,
-                "venue": venue,
-                "symbol": symbol,
-                "side": order.side,
-                "quantity": order.quantity,
-                "price": paid,
-                "unslipped_price": price,
-                "fee": charged,
+                "venue": booked.venue,
+                "symbol": booked.symbol,
+                "side": booked.side,
+                "quantity": booked.quantity,
+                "price": booked.price,
+                "unslipped_price": unslipped,
+                "fee": booked.fee,
                 "realised": realised,
-                "reason": reason,
+                "reason": booked.reason,
             },
         )
-        return booked, realised
 
     def _initial_margin(self) -> Decimal:
         """The open futures positions' initial margin, ``sum |quantity x price| / 3`` at this
@@ -701,10 +876,218 @@ class _CellState:
 
     def _observe_markets(self, h: int) -> None:
         """Tell ``DeadMarkets`` whether each leg held at the end of the hour had a bar on its
-        own venue in it, once per leg and hour (spec "Delisting or a dead market"). Task 12c
-        asks ``due`` for an hour in its step 1, before this."""
+        own venue in it, once per leg and hour (spec "Delisting or a dead market").
+        ``_synthetic_legs`` asks ``due`` for the hour in step 1, before this."""
         for venue, symbol in self._ledger.positions():
             self._dead.observe(h, venue, symbol, self._bar((venue, symbol)) is not None)
+
+    # ---- steps 5 to 7: the limits after the fills and after funding, the adverse extremes --
+
+    def _post_fill(self, h: int) -> None:
+        """Step 5: the post-fill mark, then its liquidation, cushion and ceiling checks, each cut
+        filling at this open (``_limits``)."""
+        self._limits(h, "post_fill", h)
+
+    def _funding_events(self, h: int) -> None:
+        """Step 6 (spec "Shorts on futures"): each funding record of the hour, in time order, on
+        the positions then held. A flat leg (one closed by a synthetic close at this instant
+        included) is not charged. A held perpetual pays ``-contracts x rate x price``: the
+        signed contracts held, the published rate, and the perpetual's open at this hour, or
+        its carried mark when the hour is masked, so a long pays a positive rate and a short
+        receives it. Each payment goes to the wallet and the coin's lifecycle, and is followed
+        by a mark and the checks of ``_limits``, whose cuts fill at this hour's open and are
+        stamped at the record's time, so the account's clock never runs back."""
+        for perpetual, time_ms, rate in self.market.funding_events(h):
+            key: _Key = ("futures", perpetual)
+            quantity = self._ledger.quantity("futures", perpetual)
+            if quantity == 0:
+                continue
+            coin = self._coin_of[key]
+            price = self._open_price(key)
+            amount = to_decimal(-to_fraction(quantity) * to_fraction(rate) * to_fraction(price))
+            self._ledger.funding(time_ms, perpetual, amount)
+            self._lifecycles.funding(coin, amount)
+            self._record(
+                "funding",
+                {
+                    "hour_ms": h,
+                    "timestamp_ms": time_ms,
+                    "coin": coin,
+                    "perpetual": perpetual,
+                    "quantity": quantity,
+                    "rate": rate,
+                    "price": price,
+                    "carried": self._bar(key) is None,
+                    "amount": amount,
+                },
+            )
+            self._limits(h, "funding", time_ms)
+            if self._stop is not None:
+                return
+
+    def _adverse_extremes(self, h: int) -> None:
+        """Step 7 (spec "Safety", liquidation): every held leg at its bar's extreme against it at
+        once (``adverse_prices``: a long, spot included, at its low, a short at its high, a
+        masked leg at its carried mark). Backing at or below maintenance there ends the cell at
+        those prices. With no futures leg there is no maintenance, so nothing to check."""
+        held = self._ledger.positions()
+        if not any(venue == "futures" for venue, _ in held):
+            return
+        bars = {key: self._bar(key) for key in held}
+        carried = {key: self._prices[key] for key in held if bars[key] is None}
+        prices = adverse_prices(held, bars, carried)
+        mark = self._ledger.mark(prices)
+        if liquidated(mark):
+            self._stop_at(LIQUIDATED, None, "adverse_extremes", prices, mark)
+
+    def _limits(self, h: int, point: str, stamp: int) -> None:
+        """The checks at one point of the hour (``post_fill``, or ``funding`` after a funding
+        record), in the spec's order: a mark at this hour's marking prices and its liquidation
+        check, then the margin cushion and its cut, then the 3x ceiling and its cut, the
+        ceiling judged on the mark after the cushion's cut. ``stamp`` is the time the cuts'
+        fills carry. Thresholds compare the marks' exact values (``safety``)."""
+        mark = self._ledger.mark(self._prices)
+        if liquidated(mark):
+            self._stop_at(LIQUIDATED, None, point, self._prices, mark)
+            return
+        if cushion_breached(mark):
+            mark = self._margin_cut(h, point, stamp, mark)
+            if self._stop is not None:
+                return
+        if ceiling_breached(mark):
+            self._ceiling_cut(h, point, stamp, mark)
+
+    def _margin_cut(self, h: int, point: str, stamp: int, mark: Mark) -> Mark:
+        """The cushion's cut (spec "Safety", margin cushion): the tradable futures legs (a bar at
+        this hour) shrink to ``held x k``, ``k = cushion_factor(backing, untradable maintenance,
+        tradable maintenance)``, by reduce-only orders at this open with slippage and fees,
+        lifecycle reason ``margin cut``. With no tradable futures leg, or a ratio still below 3
+        at the new mark, the cell ends ``limit_unrestorable`` with reason ``margin_cushion``.
+        Returns the new mark (the old one when nothing could be cut)."""
+        tradable: list[_Key] = []
+        untradable: list[_Key] = []
+        tradable_maintenance = untradable_maintenance = Fraction(0)
+        for key, quantity in self._ledger.positions().items():
+            if key[0] != "futures":
+                continue
+            value = _MAINTENANCE * abs(to_fraction(quantity) * to_fraction(self._prices[key]))
+            if self._bar(key) is None:
+                untradable.append(key)
+                untradable_maintenance += value
+            else:
+                tradable.append(key)
+                tradable_maintenance += value
+        factor = cushion_factor(
+            mark.backing, to_decimal(untradable_maintenance), to_decimal(tradable_maintenance)
+        )
+        legs = self._cut_legs(tradable, factor, MARGIN_CUT)
+        self._record(
+            "event",
+            {
+                "type": "margin_cut",
+                "hour_ms": h,
+                "coin": None,
+                "check": point,
+                "timestamp_ms": stamp,
+                "backing": mark.backing,
+                "untradable_maintenance": to_decimal(untradable_maintenance),
+                "tradable_maintenance": to_decimal(tradable_maintenance),
+                "factor": factor,
+                "untradable": [list(key) for key in sorted(untradable, key=self._leg_order)],
+                "legs": [_cut_leg_record(leg) for leg in legs],
+            },
+        )
+        if factor is None:
+            self._stop_at(LIMIT_UNRESTORABLE, MARGIN_CUSHION, point, self._prices, mark)
+            return mark
+        after = self._book_cut(h, stamp, legs, MARGIN_CUT)
+        check = f"{point}_margin_cut"
+        if liquidated(after):
+            self._stop_at(LIQUIDATED, None, check, self._prices, after)
+        elif cushion_breached(after):
+            self._stop_at(LIMIT_UNRESTORABLE, MARGIN_CUSHION, check, self._prices, after)
+        return after
+
+    def _ceiling_cut(self, h: int, point: str, stamp: int, mark: Mark) -> None:
+        """The 3x ceiling's cut (spec "Safety", the 3x ceiling): every tradable position, a spot
+        leg by a sale and a futures leg by a reduce-only order, shrinks to ``held x k'``, ``k' =
+        ceiling_factor(equity, untradable gross, tradable gross)``, at this open with slippage
+        and fees, lifecycle reason ``ceiling cut``. Untradable are the legs without a bar at
+        this hour and unsellable spot dust; a spot remainder the cut leaves below the filters
+        becomes dust. With nothing tradable, or gross still above 3 at the new mark, the cell
+        ends ``limit_unrestorable`` with reason ``ceiling``."""
+        tradable: list[_Key] = []
+        untradable: list[_Key] = []
+        tradable_gross = untradable_gross = Fraction(0)
+        for key, quantity in self._ledger.positions().items():
+            price = self._prices[key]
+            value = abs(to_fraction(quantity) * to_fraction(price))
+            dust = key[0] == "spot" and self._dust(key[1], price) > 0
+            if self._bar(key) is None or dust:
+                untradable.append(key)
+                untradable_gross += value
+            else:
+                tradable.append(key)
+                tradable_gross += value
+        factor = ceiling_factor(
+            mark.equity, to_decimal(untradable_gross), to_decimal(tradable_gross)
+        )
+        legs = self._cut_legs(tradable, factor, CEILING_CUT)
+        self._record(
+            "event",
+            {
+                "type": "ceiling_cut",
+                "hour_ms": h,
+                "coin": None,
+                "check": point,
+                "timestamp_ms": stamp,
+                "equity": mark.equity,
+                "untradable_gross": to_decimal(untradable_gross),
+                "tradable_gross": to_decimal(tradable_gross),
+                "factor": factor,
+                "untradable": [list(key) for key in sorted(untradable, key=self._leg_order)],
+                "legs": [_cut_leg_record(leg) for leg in legs],
+            },
+        )
+        if factor is None:
+            self._stop_at(LIMIT_UNRESTORABLE, CEILING, point, self._prices, mark)
+            return
+        after = self._book_cut(h, stamp, legs, CEILING_CUT)
+        check = f"{point}_ceiling_cut"
+        if liquidated(after):
+            self._stop_at(LIQUIDATED, None, check, self._prices, after)
+        elif ceiling_breached(after):
+            self._stop_at(LIMIT_UNRESTORABLE, CEILING, check, self._prices, after)
+
+    def _cut_legs(self, keys: Sequence[_Key], factor: Decimal | None, reason: str) -> list[_Leg]:
+        """The plans of a cut: each tradable leg to ``_cut_quantity(held, factor)`` at this
+        hour's open, in coin order, spot first. None for ``factor`` (nothing tradable) plans
+        nothing. Every order is a reduction."""
+        if factor is None:
+            return []
+        legs: list[_Leg] = []
+        for key in sorted(keys, key=self._leg_order):
+            held = self._ledger.quantity(*key)
+            price = self._fill_open(key)
+            rules = self._rules[key]
+            target = _cut_quantity(held, factor, rules.step)
+            plan = plan_leg(key[0], held, target, price, rules)
+            if not all(order.reduce_only for order in plan.orders):
+                raise RuntimeError(f"a {reason} of the {key[0]} leg {key[1]} would increase it")
+            legs.append(_Leg(self._coin_of[key], key, price, held, target, plan, reason))
+        return legs
+
+    def _book_cut(self, h: int, stamp: int, legs: Sequence[_Leg], reason: str) -> Mark:
+        """Book a cut's orders (all reductions) at their open, stamped ``stamp``, then one
+        lifecycle batch per coin with ``reason``; returns the new mark."""
+        batches: dict[str, list[tuple[Fill, Decimal]]] = {}
+        for leg in legs:
+            for order in leg.plan.orders:
+                booked = self._book_fill(h, stamp, leg.coin, leg.key, order, leg.price, reason)
+                batches.setdefault(leg.coin, []).append(booked)
+        for coin in sorted(batches):
+            self._close_batch(h, coin, batches[coin], reason)
+        return self._ledger.mark(self._prices)
 
     # ---- stops and outcomes --------------------------------------------------------------
 
@@ -725,7 +1108,7 @@ class _CellState:
         """Mark every open lifecycle at the stop's prices, censor them with the outcome, and
         write the outcome; the stop's mark is the final equity."""
         self._mark_lifecycles(h, self._ledger.positions(), stop.prices)
-        reason = "liquidation" if stop.outcome == "liquidated" else "limit_unrestorable"
+        reason = "liquidation" if stop.outcome == LIQUIDATED else LIMIT_UNRESTORABLE
         for lifecycle in self._lifecycles.censor(h, reason):
             self._record("lifecycle", _lifecycle_record(lifecycle))
         self._equity = stop.mark.equity
@@ -856,11 +1239,8 @@ class _V4Cell(_CellState):
         # The latest decision's answers, for the fill phase. A coin's pending order always holds
         # its latest target, since the decision that gave the target made the order.
         self._targets: dict[str, Decimal] = {}  # each coin's latest target
+        self._target_ms: dict[str, int] = {}  # the decision hour of each coin's latest target
         self._eligible: dict[str, bool] = {}  # each decided coin's eligibility, as decided
-        # What the pending book holds that it does not report: the exit legs scheduled and not
-        # yet due, and the coins with a replacement buy pending.
-        self._scheduled: set[tuple[str, Venue]] = set()
-        self._replacing: set[str] = set()
 
     def _hour(self, h: int) -> None:
         phases: tuple[Callable[[int], None], ...] = (
@@ -913,6 +1293,7 @@ class _V4Cell(_CellState):
                 targets[coin] = sizing.weights[coin]
         self._record_superseded(h, self._book.decide(h, targets))
         self._targets.update(targets)
+        self._target_ms.update(dict.fromkeys(targets, h))
         self._eligible.update({coin: view.eligible for coin, view in views.items()})
         self._mandatory_exits(h, views)
         for coin in decided:
@@ -997,10 +1378,9 @@ class _V4Cell(_CellState):
                 continue
             self._cancel(h, coin, reason)
             for venue in venues:
-                if (coin, venue) in self._scheduled:
+                if self._book.exit_scheduled(coin, venue):
                     continue
                 self._book.schedule_exit(Exit(coin, venue, reason, h + HOUR_MS))
-                self._scheduled.add((coin, venue))
                 self._record(
                     "event",
                     {
@@ -1014,7 +1394,11 @@ class _V4Cell(_CellState):
                 )
 
     def _cancel(self, h: int, coin: str, reason: str) -> None:
-        """``PendingBook.cancel(coin)``, recording the order and the replacement it removed."""
+        """``PendingBook.cancel(coin)``, recording the order and the replacement it removed (the
+        book's ``replacement_pending`` says whether there was one). The cancels are those of a
+        universe exit and a funding-month exit, after the decision of their hour, and of a
+        dead-market close, before it (``_after_synthetic_close``)."""
+        replacing = self._book.replacement_pending(coin)
         order = self._book.cancel(coin)
         if order is not None:
             self._record(
@@ -1028,12 +1412,29 @@ class _V4Cell(_CellState):
                     "reason": reason,
                 },
             )
-        if coin in self._replacing:
-            self._replacing.discard(coin)
+        if replacing:
             self._record(
                 "event",
                 {"type": "replacement_cancelled", "hour_ms": h, "coin": coin, "reason": reason},
             )
+
+    def _after_synthetic_close(
+        self, h: int, coin: str, closed: Mapping[_Key, tuple[str, Decimal]]
+    ) -> None:
+        """After the coin's synthetic closes at ``h`` (step 1, before this hour's decision): a
+        dead-market close cancels the coin's pending order and replacement buy (spec "Pending
+        orders are cancelled": the coin re-enters only through a later decision); a synthetic
+        funding-month close of a long futures leg schedules the replacement spot buy from this
+        hour (spec "Data": a long's target moves to spot; a short's moves to 0, so it gets
+        none). The stale funding-month exit of the closed leg later comes due on a flat leg and
+        is skipped. A coin with both kinds of close takes the dead market's rule only."""
+        reasons = {reason for reason, _ in closed.values()}
+        if DELISTING in reasons:
+            self._cancel(h, coin, DELISTING)
+            return
+        for (venue, _), (reason, held) in closed.items():
+            if venue == "futures" and reason == FUNDING_EXIT and held > 0:
+                self._schedule_replacement(h, coin)
 
     def _record_superseded(self, h: int, decided: Decided) -> None:
         for order in decided.cancelled:
@@ -1048,7 +1449,6 @@ class _V4Cell(_CellState):
                 },
             )
         for coin in decided.cancelled_replacements:
-            self._replacing.discard(coin)
             self._record("event", {"type": "replacement_superseded", "hour_ms": h, "coin": coin})
 
     def _monthly_record(self, h: int, month: str, previous: Sequence[str]) -> dict[str, object]:
@@ -1094,8 +1494,9 @@ class _V4Cell(_CellState):
 
         The pending book is called in its docstring's order: ``due`` (each coin asked through
         ``_ready``), ``due_exits`` (each leg on its own venue), then, for each funding-month
-        futures close about to fill, ``schedule_replacement`` at this hour, and
-        ``due_replacements``, so a close and its replacement buy can share this hour's batch.
+        close of a long futures leg about to fill, ``schedule_replacement`` at this hour (a
+        short's target moves to 0, so it is not replaced), and ``due_replacements``, so a close
+        and its replacement buy can share this hour's batch.
         An exit for a flat leg, or a universe exit of a coin back in the universe, is skipped
         (``_exit_skip``). With nothing due the phase ends there; otherwise ``_trade`` books the
         batch.
@@ -1111,7 +1512,6 @@ class _V4Cell(_CellState):
         exits = self._book.due_exits(h, self._has_bar)
         closing: dict[str, dict[Venue, str]] = {}
         for leg in exits:
-            self._scheduled.discard((leg.coin, leg.venue))
             why = self._exit_skip(leg)
             if why is not None:
                 self._record(
@@ -1127,10 +1527,13 @@ class _V4Cell(_CellState):
                 )
                 continue
             closing.setdefault(leg.coin, {})[leg.venue] = leg.reason
-            if leg.venue == "futures" and leg.reason == FUNDING_EXIT:
-                self._schedule_replacement(h, leg.coin)
+            if (
+                leg.venue == "futures"
+                and leg.reason == FUNDING_EXIT
+                and self._ledger.quantity(*self._key(leg.coin, "futures")) > 0
+            ):
+                self._schedule_replacement(h, leg.coin)  # a long's only: a short's target is 0
         replacing = self._book.due_replacements(h, self._has_spot_bar)
-        self._replacing.difference_update(replacing)
         if orders or closing or replacing:
             self._trade(h, orders, closing, replacing)
 
@@ -1184,11 +1587,14 @@ class _V4Cell(_CellState):
         return None
 
     def _schedule_replacement(self, h: int, coin: str) -> None:
-        """The replacement spot buy of a funding-month futures close filling at ``h`` (spec
+        """The replacement spot buy of a funding-month close of a long futures leg filling at
+        ``h``, by the fill phase or by the synthetic close at a month's first midnight (spec
         "Sizing": placed at the first hour at or after the close's fill with a spot bar).
         ``schedule_replacement`` refuses it when this hour's decision gave the coin a newer
         target; that is recorded as superseded. A coin outside the universe gets none: its
-        spot leg is a universe exit's to close."""
+        spot leg is a universe exit's to close. That guard is defensive now: a funding-month
+        exit is made only for a coin in the universe, and with the synthetic close at the
+        month's first midnight it can no longer be pending when the universe changes."""
         if coin not in self._universe:
             self._record(
                 "event",
@@ -1200,7 +1606,6 @@ class _V4Cell(_CellState):
                 },
             )
         elif self._book.schedule_replacement(coin, h):
-            self._replacing.add(coin)
             self._record("event", {"type": "replacement_scheduled", "hour_ms": h, "coin": coin})
         else:
             self._record("event", {"type": "replacement_superseded", "hour_ms": h, "coin": coin})
@@ -1224,12 +1629,12 @@ class _V4Cell(_CellState):
         * ``allocate`` runs once. A trading coin's spot leg is planned to its spot share plus
           its dust, its futures leg to its futures share, both in venue units at the opens; an
           exiting leg is planned to 0.
-        * A coin with a daily order and an exit due in the same hour (a funding-month exit
-          still pending at 01:00 on the month's first day, before Task 12c's synthetic close
-          at its midnight; a universe exit cannot meet one, see ``_exit_skip``): if it trades,
-          it is re-targeted whole (``allocate``: "a trading coin is re-targeted whole, and its
-          closing fills in the same batch"), and its decision then had no eligible perpetual,
-          so its futures go to 0; if the band keeps it, the exiting leg still closes.
+        * A coin never has a daily order due with one of its mandatory exits or with its
+          replacement buy: the decision that makes an exit cancels the coin's order, a decision
+          with a target cancels the replacement, a universe exit of a coin back in the universe
+          is skipped (``_exit_skip``), and a funding-month exit still pending at a month's first
+          midnight is replaced by the synthetic close then, so it comes due on a flat leg. Such
+          an hour would be an engine error.
         """
         if self._open is None:
             raise RuntimeError("the fills need this hour's open mark")
@@ -1238,8 +1643,11 @@ class _V4Cell(_CellState):
             raise RuntimeError(f"equity {equity} at the open of {h}: nothing can be sized")
         due = {order.coin: order for order in orders}
         for coin in due:
-            if coin in replacing:  # a decision with a target cancels the replacement buy
-                raise RuntimeError(f"{coin} has a daily order and a replacement buy due")
+            if coin in replacing or coin in closing:
+                raise RuntimeError(
+                    f"{coin} has a daily order due with a mandatory exit or a replacement buy at "
+                    f"{h}, which the cancels and the synthetic funding-month close rule out"
+                )
         coins = sorted(self._held_coins() | set(due) | set(closing) | set(replacing))
         holdings = {coin: self._holding(coin) for coin in coins}
         band: dict[str, tuple[Decimal, bool]] = {}
@@ -1250,8 +1658,13 @@ class _V4Cell(_CellState):
             band[coin] = (current, trades)
             if trades:
                 trading[coin] = (order.target, self._eligible.get(coin, False), SIGNAL)
+        # The decision hour behind each trading target: the order's, or for a replacement buy
+        # that of the coin's latest target, which sizes it.
+        decisions = {coin: order.decision_ms for coin, order in due.items()}
         for coin in replacing:
             trading[coin] = (self._targets.get(coin, _ZERO), False, REPLACEMENT_BUY)
+            if coin in self._target_ms:
+                decisions[coin] = self._target_ms[coin]
         states: dict[str, CoinState] = {}
         for coin, holding in holdings.items():
             if coin in trading:
@@ -1276,6 +1689,7 @@ class _V4Cell(_CellState):
                     coin,
                     equity,
                     due.get(coin),
+                    decisions.get(coin),
                     band.get(coin),
                     trading.get(coin),
                     closing.get(coin, {}),
@@ -1369,19 +1783,6 @@ class _V4Cell(_CellState):
                 legs.append(_Leg(coin, key, price, held, _ZERO, plan, exits[venue]))
         return legs
 
-    # ---- steps 5 to 7 (Task 12c) ---------------------------------------------------------
-
-    def _post_fill(self, h: int) -> None:
-        """Step 5 (Task 12c): the post-fill mark, the liquidation check, then the cushion and
-        the ceiling checks, each cut filled at this open and followed by a new mark."""
-
-    def _funding_events(self, h: int) -> None:
-        """Step 6 (Task 12c): each funding event of ``h`` in time order on a held perpetual,
-        each followed by a mark and the liquidation, cushion and ceiling checks."""
-
-    def _adverse_extremes(self, h: int) -> None:
-        """Step 7 (Task 12c): the liquidation check at the bars' adverse extremes, all at once."""
-
 
 # ---- small rules no module holds -------------------------------------------------------------
 
@@ -1412,6 +1813,20 @@ def _audit_failure(audit: Audit) -> str | None:
 def _month_of(ms: int) -> str:
     moment = datetime.fromtimestamp(ms // 1000, UTC)
     return f"{moment.year:04d}-{moment.month:02d}"
+
+
+def _cut_quantity(held: Decimal, factor: Decimal, step: Decimal) -> Decimal:
+    """A cut leg's new quantity (spec "Safety": the tradable positions are cut pro rata by k or
+    k'): ``|held| x factor`` computed exactly in Fractions, never under the 60-digit context,
+    and truncated toward zero to the venue's step, the rounding ``plan_leg`` gives any target,
+    with the held sign. A factor above 1 is never applied, and one at or below 0 closes the leg
+    (target 0)."""
+    if factor <= 0:
+        return _ZERO
+    unit = to_fraction(step)
+    exact = abs(to_fraction(held)) * min(to_fraction(factor), Fraction(1))
+    kept = (exact // unit) * unit
+    return to_decimal(kept if held > 0 else -kept)
 
 
 def _weight(holding: _Holding, equity: Decimal) -> Decimal:
@@ -1492,6 +1907,7 @@ def _order_record(
     coin: str,
     equity: Decimal,
     order: Pending | None,
+    decision_ms: int | None,
     band: tuple[Decimal, bool] | None,
     trading: tuple[Decimal, bool, str] | None,
     exits: Mapping[Venue, str],
@@ -1501,7 +1917,8 @@ def _order_record(
     legs: Sequence[_Leg],
 ) -> dict[str, object]:
     """The fill hour's half of a coin's daily record (spec "Records": the band, the split and
-    the order placed, or the reason none was)."""
+    the order placed, or the reason none was). ``decision_ms`` is the decision hour of the
+    target used: the order's, or for a replacement buy that of the coin's latest target."""
     if order is not None:
         source, target = SIGNAL, order.target
     elif trading is not None:
@@ -1513,7 +1930,7 @@ def _order_record(
         "hour_ms": h,
         "coin": coin,
         "source": source,
-        "decision_ms": None if order is None else order.decision_ms,
+        "decision_ms": decision_ms,
         "target": target,
         "eligible": None if trading is None else trading[1],
         "current": None if band is None else band[0],
@@ -1543,6 +1960,21 @@ def _order_record(
             }
             for leg in legs
         ],
+    }
+
+
+def _cut_leg_record(leg: _Leg) -> dict[str, object]:
+    return {
+        "coin": leg.coin,
+        "venue": leg.key[0],
+        "symbol": leg.key[1],
+        "held": leg.held,
+        "target": leg.target,
+        "orders": [
+            {"side": item.side, "quantity": item.quantity, "reduce_only": item.reduce_only}
+            for item in leg.plan.orders
+        ],
+        "dust": leg.plan.dust,
     }
 
 
