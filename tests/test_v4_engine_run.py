@@ -2697,6 +2697,161 @@ def test_an_equity_residual_within_1e_18_passes(residual, monkeypatch, tmp_path)
     assert {h["equity_residual"] for h in of_kind(rows, "hourly")} == {residual}
 
 
+# ---- the final review: two loop-level paths of real data ----------------------------------
+
+
+def check_conservation(rows: list[tuple[str, dict[str, Any]]], final: Decimal) -> None:
+    """Every fill and every funding payment belongs to one lifecycle: over the lifecycles,
+    ``gross - fees + funding`` is ``final - capital`` exactly, and their fees and funding are the
+    fill and funding records'."""
+    lives = of_kind(rows, "lifecycle")
+    net = sum((F(D(r["gross_pnl"])) - F(D(r["fees"])) + F(D(r["funding"])) for r in lives), F(0))
+    assert net == F(final) - CAPITAL
+    assert sum(F(D(r["fees"])) for r in lives) == sum(F(D(f["fee"])) for f in of_kind(rows, "fill"))
+    paid = sum((F(D(p["amount"])) for p in of_kind(rows, "funding")), F(0))
+    assert sum((F(D(r["funding"])) for r in lives), F(0)) == paid
+
+
+def test_a_coin_that_leaves_and_reenters_catches_up_its_signals_on_every_bar(monkeypatch, tmp_path):
+    """Spec "Signals" and "Universe": ETHUSDT is in January's universe, not February's, and
+    back in March's. Its February 1 decision is a universe exit (target 0, its spot sells at
+    01:00), and once it is flat and outside the universe it is not decided again until March 1.
+    That decision feeds its signal state every daily bar of February at once (``_feed``'s
+    catch-up): each one, once and in order, so its reading and the book's weights are those of
+    one plain pass over the market's daily bars, and it is bought again at 01:00."""
+    start, hours = month_start("2024-10"), hours_in("2024-10", "2025-03")
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, path("50000", (hours, "0.0002"), noise="0.002", seed=31)),
+        perpetual=PerpetualSpec(funding_rate="0"),
+    )
+    eth = CoinSpec(
+        "ETHUSDT", Series(start, path("2000", (hours, "0.0002"), noise="0.002", seed=32))
+    )
+    both = ("BTCUSDT", "ETHUSDT")
+    universes = {"2025-01": both, "2025-02": ("BTCUSDT",), "2025-03": both}
+    market = load(tmp_path, World("2025-03", (btc, eth), universes))
+    made: list[Any] = []
+
+    class SpySignals(CoinSignals):
+        """Records every daily bar the engine feeds one coin's signal state."""
+
+        def __init__(self, lookbacks: Any) -> None:
+            super().__init__(lookbacks)
+            self.fed: list[Any] = []
+            made.append(self)
+
+        def update(self, bar: Any) -> SignalReading:
+            self.fed.append(bar)
+            return super().update(bar)
+
+    monkeypatch.setattr(run, "CoinSignals", SpySignals)
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete"
+    mar, apr = month_start("2025-03"), month_start("2025-04")
+    eth_days = sorted(h for h, coin in daily_by(rows) if coin == "ETHUSDT")
+    assert eth_days == [*range(T0, FEB + DAY, DAY), *range(mar, apr, DAY)]
+    daily = daily_by(rows)
+    assert daily[(FEB, "ETHUSDT")]["universe_exit"] and daily[(FEB, "ETHUSDT")]["target"] == "0"
+    eth_fills = [f for f in of_kind(rows, "fill") if f["coin"] == "ETHUSDT"]
+    (sold,) = [f for f in eth_fills if FEB <= f["hour_ms"] < mar]
+    assert (sold["hour_ms"], sold["side"], sold["reason"]) == (FEB + HOUR, -1, "universe exit")
+    assert F(D(sold["quantity"])) == holdings(rows, FEB)[("spot", "ETHUSDT")]  # all of it
+    # Every bar up to the last decision's day, once and in order: February's at March 1.
+    bars = market.daily("ETHUSDT")
+    (state,) = [m for m in made if m.fed and m.fed[0] == bars[0]]
+    assert state.fed == [bar for bar in bars if bar.open_ms <= apr - 2 * DAY]
+    assert any(FEB <= bar.open_ms < mar for bar in state.fed)
+    readings = {coin: readings_by_day(market, coin, ARMS["v4_main"]) for coin in both}
+    for h in range(mar, apr, DAY):
+        sizing = expected_book(
+            market, ARMS["v4_main"], h, both, readings, market.perpetual_eligible
+        )
+        for coin in both:
+            record = daily[(h, coin)]
+            check_reading(record, latest(readings[coin], h - DAY))
+            check_sizing(record, sizing)
+            assert record["target"] == text(sizing.weights[coin])
+    assert daily[(mar, "ETHUSDT")]["reading_day_ms"] == mar - DAY
+    assert D(daily[(mar, "ETHUSDT")]["target"]) > 0
+    (bought,) = [f for f in eth_fills if f["hour_ms"] == mar + HOUR]
+    assert (bought["venue"], bought["side"], bought["reason"]) == ("spot", 1, "signal")
+    ended = [r for r in of_kind(rows, "lifecycle") if r["coin"] == "ETHUSDT"]
+    assert [(r["entry_ms"], r["exit_ms"], r["exit_reason"]) for r in ended] == [
+        (T0 + HOUR, FEB + HOUR, "universe exit"),
+        (mar + HOUR, apr - HOUR, "window end"),
+    ]
+    check_conservation(rows, result.final_equity)
+
+
+def test_a_long_on_spot_flips_to_a_short_on_futures_in_one_batch(tmp_path):
+    """Spec "Longs on spot first", "Shorts on futures" and "Records": BTCUSDT rises for ten
+    months, so its slow speed stays up, and falls from 2025-01-01. It is long on spot (L > 0)
+    until the downtrend is confirmed with the medium speed down; the next decision's target is
+    short. At its fill hour one batch sells the whole spot leg (a reduction, first) and opens
+    the short on the perpetual (an increase, after it). The long's lifecycle ends there with
+    reason ``signal``, holding the spot fills only, and the short's begins there with the
+    futures fill; money is conserved over the two."""
+    start = month_start("2024-03")
+    up, down = (T0 - start) // HOUR, hours_in("2025-01", "2025-02")
+    closes = path("50000", (up, "0.0002"), (down, "-0.0006"), noise="0.002", seed=21)
+    btc = CoinSpec("BTCUSDT", Series(start, closes), perpetual=PerpetualSpec(funding_rate="0"))
+    both = {"2025-01": ("BTCUSDT",), "2025-02": ("BTCUSDT",)}
+    market = load(tmp_path, World("2025-02", (btc,), both))
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete"
+    decisions = sorted((h, r) for (h, _), r in daily_by(rows).items())
+    flips = [
+        (before[1], after[1])
+        for before, after in zip(decisions, decisions[1:], strict=False)
+        if D(before[1]["target"]) > 0 > D(after[1]["target"])
+    ]
+    ((long_day, short_day),) = flips
+    assert D(long_day["L"]) > 0 and D(long_day["S"]) == 0  # long on its kept speeds
+    assert D(short_day["S"]) > 0 and short_day["downtrend"]["confirmed"]
+    at = short_day["decision_ms"] + HOUR
+    held = holdings(rows, at - 1)
+    spot_held = held[("spot", "BTCUSDT")]
+    assert spot_held > 0 and ("futures", "BTCUSDT") not in held  # long on spot only
+    # The batch: the spot sale (a reduction) first, then the short (an increase).
+    batch = fills_at(rows, at)
+    assert [(f["venue"], f["side"], f["reason"]) for f in batch] == [
+        ("spot", -1, "signal"),
+        ("futures", -1, "signal"),
+    ]
+    check_fill(batch[0], "spot", -1, spot_held, spot_bar(market, "BTCUSDT", at).open)
+    contract = perp_bar(market, "BTCUSDT", at).open
+    target = F(D(short_day["target"]))
+    quantity = floor_to(-target * open_equity(result, at) / F(contract), FUTURES_STEP)
+    check_fill(batch[1], "futures", -1, quantity, contract)
+    order = order_event(rows, at, "BTCUSDT")
+    assert order["band"] == "trade" and D(order["current"]) > 0
+    assert D(order["split"]["spot"]) == 0 and F(D(order["split"]["futures"])) == target * F(
+        open_equity(result, at)
+    )
+    # Two lifecycles, split at the batch: the long holds the spot fills, the short the futures.
+    long, short = of_kind(rows, "lifecycle")
+    assert (long["side"], long["exit_ms"], long["exit_reason"]) == ("long", at, "signal")
+    assert (short["side"], short["entry_ms"], short["exit_reason"]) == ("short", at, "window end")
+    spot_fills = [f for f in of_kind(rows, "fill") if f["venue"] == "spot"]
+    futures_fills = [f for f in of_kind(rows, "fill") if f["venue"] == "futures"]
+    assert all(f["hour_ms"] <= at for f in spot_fills)
+    assert F(D(long["fees"])) == sum(F(D(f["fee"])) for f in spot_fills)
+    assert F(D(long["gross_pnl"])) == sum(F(D(f["realised"])) for f in spot_fills)
+    assert D(long["venues"]["spot"]["bought_quantity"]) == D(
+        long["venues"]["spot"]["sold_quantity"]
+    )
+    assert D(long["venues"]["futures"]["sold_quantity"]) == 0
+    assert F(D(short["fees"])) == sum(F(D(f["fee"])) for f in futures_fills)
+    assert F(D(short["venues"]["futures"]["sold_quantity"])) >= quantity
+    assert D(short["venues"]["spot"]["bought_quantity"]) == 0
+    check_conservation(rows, result.final_equity)
+
+
 # ---- outputs ------------------------------------------------------------------------------
 
 
