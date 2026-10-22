@@ -69,10 +69,13 @@ lifecycles still open are censored as ``window end`` or ``window end (dust)``.
 for its ledger key ``("futures", perpetual)``. A held leg is marked at its venue's bar open at
 ``h``. Without a bar it takes its carried mark, the last close before ``h``
 (``SeriesStore.last_close_before``, spec "Safety": carried at the last mark). An open mark is
-complete when every leg held at it has its venue's bar at ``h``, so no carried mark is used; with
-nothing held it is complete (spec "Pass rule": an arm uses a price source at an hour when it
-holds or trades it). Each open lifecycle is marked at the open mark with the coin's unrealised
-P&L over both venues (Ruling R6).
+complete when every leg held at it, and every leg closed synthetically at the hour's open (step
+1), has its venue's bar at ``h`` (spec "Pass rule": an arm uses a price source at an hour when it
+holds or trades it; Codex review of PR #293). A synthetic close trades its source at that
+boundary, at the penalised last close, so a dead market's close without a bar leaves the hour
+incomplete even when nothing is held after it. With nothing held and nothing closed the mark is
+complete. Each open lifecycle is marked at the open mark with the coin's unrealised P&L over both
+venues (Ruling R6).
 
 **The 00:00 decision** closes day ``d = h - 1 day``. On a month's first day the month's universe
 is taken first (spec "Universe": the selection is made before that same decision). The coins
@@ -436,6 +439,7 @@ class _CellState:
         self._bars: dict[_Key, HourBar | None] = {}  # this hour's bars, looked up once
         self._prices: dict[_Key, Decimal] = {}  # this hour's marking price of each held leg
         self._open: tuple[Mark, bool] | None = None  # this hour's open mark and completeness
+        self._synthetic: frozenset[_Key] = frozenset()  # the legs this hour's step 1 closed
         self._stop: _Stop | None = None
         # The result.
         self._open_marks: list[tuple[int, Decimal, bool]] = []
@@ -503,6 +507,7 @@ class _CellState:
         self._hour_ms = h
         self._bars = {}
         self._open = None
+        self._synthetic = frozenset()
 
     # ---- step 1: the synthetic closes -----------------------------------------------------
 
@@ -525,10 +530,13 @@ class _CellState:
           is a dead market, else ``funding-month exit`` (``_close_batch`` forgets the closed
           legs), and the arm's own consequences (``_after_synthetic_close``: a dead-market
           close cancels the coin's pending orders, before this hour's decision).
-        * Equity at or below zero after the batch ends the cell as liquidated."""
+        * Equity at or below zero after the batch ends the cell as liquidated.
+        * The batch's legs are kept for the hour, so the open mark's completeness judges their
+          sources too (``_open_mark``)."""
         closing = self._synthetic_legs(h)
         if not closing:
             return
+        self._synthetic = frozenset(closing)
         held = self._ledger.positions()
         prices = {key: self._open_price(key) for key in held}
         lasts: dict[_Key, Decimal] = {}
@@ -624,10 +632,13 @@ class _CellState:
         to its reason and the quantity it held). The base does nothing."""
 
     def _open_mark(self, h: int) -> None:
-        """Step 2: the open mark, kept in ``open_marks``, then the pre-fill liquidation check."""
+        """Step 2: the open mark, kept in ``open_marks``, then the pre-fill liquidation check.
+        The mark is complete when every leg held at it, and every leg this hour's synthetic
+        batch closed (step 1), has its venue's bar at ``h`` (spec "Pass rule": the arm uses a
+        source it holds or trades at the mark, and a synthetic close trades its source there)."""
         held = self._ledger.positions()
         prices = {key: self._open_price(key) for key in held}
-        complete = all(self._bars[key] is not None for key in held)
+        complete = all(self._bar(key) is not None for key in held.keys() | self._synthetic)
         mark = self._ledger.mark(prices)
         self._prices = prices
         self._open = (mark, complete)

@@ -561,7 +561,9 @@ def test_a_dead_market_closes_a_held_coin_and_cancels_its_deferred_order(tmp_pat
     28 to February 9. February's order for it defers, and 168 hours after its last bar, at 00:00
     on February 4, the whole holding closes synthetically at the last close less 10%, with the
     spot fee and no filter, as the hour's first event. The close cancels the deferred order, so
-    BBB comes back only through March's decision. There is no liquidation check to stop it."""
+    BBB comes back only through March's decision. There is no liquidation check to stop it. The
+    close's hour is incomplete (spec "Pass rule", Codex review of PR #293): BBB's source had no
+    bar there, though the mark holds only cash and AAA, which has its bar."""
     hours = hours_in("2025-01", "2025-03")
     dark = range(T0 + 27 * DAY, T0 + 40 * DAY, HOUR)
     aaa = coin("AAAUSDT", path("100", (hours, "0")))
@@ -603,6 +605,13 @@ def test_a_dead_market_closes_a_held_coin_and_cancels_its_deferred_order(tmp_pat
         open_equity(result, close_h)
         == cash_after(rows, close_h) + holdings(rows, close_h)["AAAUSDT"] * 100
     )
+    assert set(holdings(rows, close_h)) == {"AAAUSDT"}
+    assert market.coin("BBBUSDT").spot.bar(close_h) is None
+    assert market.coin("AAAUSDT").spot.bar(close_h) is not None
+    flags = {stamp: complete for stamp, _, complete in result.open_marks}
+    assert (flags[close_h - HOUR], flags[close_h], flags[close_h + HOUR]) == (False, False, True)
+    (hourly,) = [r for r in of_kind(rows, "hourly") if r["open_ms"] == close_h]
+    assert hourly["complete"] is False
     # February's rebalance of AAA valued BBB at its carried mark.
     assert open_equity(result, FEB + HOUR) == mark_at(market, rows, FEB + HOUR)
     first, second = lifecycles_of(rows, "BBBUSDT")

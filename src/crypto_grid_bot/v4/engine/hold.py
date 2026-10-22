@@ -18,7 +18,8 @@ hour follows the spec's order of events:
    10%, with the spot fee, no slippage and no filter, and the close cancels the coin's pending
    order (``_after_synthetic_close``). The batch's liquidation test, like the open mark's, needs
    futures maintenance, so on a cash and spot account it never stops the cell;
-2. the open mark, kept in ``open_marks`` (``_CellState._open_mark``);
+2. the open mark, kept in ``open_marks`` (``_CellState._open_mark``), complete only when every
+   leg held at it and every leg step 1 closed has its bar at the hour;
 3. at a month's first 00:00, the ``monthly`` record and the decision (below);
 4. the fills due this hour (below).
 

@@ -642,13 +642,14 @@ def test_the_world_trades_a_multiplier_perpetual_in_contracts(market, cells):
 def test_the_world_masks_a_day_and_its_hours_are_incomplete(cells):
     """ETHUSDT's spot hours 00:00 to 04:59 of MASKED_DAY are masked: 19 usable hours, so no daily
     bar for the day. The decision that closes it finds no bar, keeps the reading of the day
-    before and takes no target. An open mark is incomplete exactly when a held leg has no bar:
-    the five masked hours while ETHUSDT is held, and LUNAUSDT's 168 dead hours. hold_btc holds
-    neither, so every one of its marks is complete."""
+    before and takes no target. An open mark is incomplete exactly when a leg held at it, or one
+    closed synthetically at its open, has no bar: the five masked hours while ETHUSDT is held,
+    LUNAUSDT's 168 dead hours and the hour of its synthetic close (spec "Pass rule", Codex review
+    of PR #293). hold_btc holds neither, so every one of its marks is complete."""
     view = daily(cells["v4_main"].rows, MASKED_DAY + DAY, "ETHUSDT")
     assert view["no_bar"] is True and view["no_target"] == "no_bar"
     assert view["reading_day_ms"] == MASKED_DAY - DAY
-    expected = set(day_hours(MASKED_DAY, range(5))) | set(range(DEAD, DEAD_CLOSE, HOUR))
+    expected = set(day_hours(MASKED_DAY, range(5))) | set(range(DEAD, DEAD_CLOSE + HOUR, HOUR))
     for arm, cell in cells.items():
         incomplete = {ms for ms, _, complete in cell.summary["open_marks"] if not complete}
         assert incomplete == (set() if arm == "hold_btc" else expected), arm

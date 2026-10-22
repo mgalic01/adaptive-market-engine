@@ -2598,6 +2598,53 @@ def test_dead_markets_close_only_held_legs_and_are_asked_before_each_hours_obser
     assert lifecycles["ETHUSDT"]["exit_ms"] == close_h
 
 
+@pytest.mark.parametrize("bar_at_close", [False, True])
+def test_a_synthetic_close_counts_its_source_in_the_open_marks_completeness(
+    bar_at_close, monkeypatch, tmp_path
+):
+    """Spec "Pass rule" (Codex review of PR #293): an open mark is complete only when every
+    source the arm holds or trades at it has its bar, and a synthetic close at the hour's open
+    trades its source there. BTCUSDT (static) holds only a seeded short of 10 on its perpetual,
+    whose bars stop at 00:00 on January 10; 168 hours later, at 00:00 on January 17, the short
+    closes synthetically before the open mark, which then holds only cash.
+    * No bar at the close: the arm traded the perpetual at its carried, penalised price, so that
+      hour is incomplete, like the 168 dead hours before it, though nothing is held after it.
+    * The perpetual's bars come back in the close's hour: the close is still due (the rule does
+      not wait for a bar or look past it), and the hour is complete.
+    Every hour before the outage, and every hour after the close, with nothing held and nothing
+    closed, is complete."""
+    dies = T0 + 9 * DAY
+    close_h = dies + 168 * HOUR
+    dark = tuple(range(dies, close_h if bar_at_close else JAN_END, HOUR))
+    btc = static_coin("BTCUSDT", flat("100"), perpetual=True, perp_masked=dark)
+    market = load(tmp_path, static_world([btc]))
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [("BTCUSDT", seed_fill(T0 - HOUR, "futures", "BTCUSDT", -1, "10", "100"))],
+    )
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    perp = market.coin("BTCUSDT").perpetual
+    assert perp is not None and (perp.store.bar(close_h) is not None) is bar_at_close
+    (batch,) = events(rows, "synthetic_closes")
+    assert batch["hour_ms"] == close_h
+    assert [(leg["coin"], leg["venue"], leg["reason"]) for leg in batch["legs"]] == [
+        ("BTCUSDT", "futures", "delisting")
+    ]
+    assert [f["timestamp_ms"] for f in of_kind(rows, "fill")] == [close_h]
+    assert holdings(rows, close_h, [("futures", "BTCUSDT", "-10")]) == {}  # flat at the mark
+    flags = {stamp: complete for stamp, _, complete in result.open_marks}
+    assert flags[close_h] is bar_at_close
+    assert hourly_at(rows, close_h)["complete"] is bar_at_close
+    assert not any(flags[h] for h in range(dies, close_h, HOUR))  # the short at carried marks
+    assert all(flags[h] for h in range(T0, dies, HOUR))
+    assert all(flags[h] for h in range(close_h + HOUR, JAN_END, HOUR))
+    assert [r["complete"] for r in of_kind(rows, "hourly")] == list(flags.values())
+
+
 def test_the_audit_holds_every_hour(monkeypatch, tmp_path):
     """Spec "Safety", accounting: the wallet and quantity identities hold exactly and the equity
     residual stays within 1e-18 at the end of every hour, over a world with trades, funding and
