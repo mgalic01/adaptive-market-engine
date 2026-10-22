@@ -558,6 +558,10 @@ def test_the_world_trades_a_multiplier_perpetual_in_contracts(market, cells):
         assert D(fill["unslipped_price"]) == 1000 * price
     (entry,) = [p for p in monthly(rows, WINDOW_START)["perpetuals"] if p["coin"] == "SHIBUSDT"]
     assert (entry["perpetual"], entry["multiplier"]) == ("1000SHIBUSDT", 1000)
+    # The lifecycle records name it too, so their futures quantities read in contracts.
+    named = {(r["coin"], r["perpetual"], r["multiplier"]) for r in of_kind(rows, "lifecycle")}
+    assert ("SHIBUSDT", "1000SHIBUSDT", 1000) in named and ("ETHUSDT", None, None) in named
+    assert ("BTCUSDT", "BTCUSDT", 1) in named
     # The hold arms buy the coin itself on spot, in coins.
     assert {f["symbol"] for f in fills(cells["hold_universe"].rows, coin="SHIBUSDT")} == {
         "SHIBUSDT"

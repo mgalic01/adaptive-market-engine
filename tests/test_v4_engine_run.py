@@ -1269,6 +1269,9 @@ def test_a_steady_uptrend_goes_long_on_spot_first(with_perpetual, tmp_path):
     (lifecycle,) = of_kind(rows, "lifecycle")
     assert (lifecycle["side"], lifecycle["exit_reason"]) == ("long", "window end")
     assert lifecycle["entry_ms"] == at and not lifecycle["censored"]
+    # The record names the coin's perpetual and its multiplier, null without one.
+    expected = ("BTCUSDT", 1) if with_perpetual else (None, None)
+    assert (lifecycle["perpetual"], lifecycle["multiplier"]) == expected
 
 
 @pytest.mark.parametrize(
@@ -1312,6 +1315,11 @@ def test_a_confirmed_downtrend_shorts_on_futures(symbol, multiplier, price, plac
     lifecycles = of_kind(rows, "lifecycle")
     assert lifecycles[0]["coin"] == symbol and lifecycles[0]["side"] == "short"
     assert lifecycles[0]["entry_ms"] == at
+    # Its futures quantities are in contracts of the perpetual the record names.
+    assert (lifecycles[0]["perpetual"], lifecycles[0]["multiplier"]) == (
+        perpetual.symbol,
+        multiplier,
+    )
 
 
 def test_a_masked_fill_hour_defers_the_order_and_a_newer_decision_replaces_it(tmp_path):

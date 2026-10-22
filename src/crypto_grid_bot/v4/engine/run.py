@@ -171,7 +171,8 @@ the failure.
   the hour stopped before its open mark), and at the end of the hour ``equity``,
   ``gross_notional``, ``gross`` (null when equity is at or below 0), ``margin_ratio`` (null with
   no futures position, read as +infinity, spec "Safety") and ``equity_residual``, the audit's.
-* ``lifecycle``: every field of a ``Lifecycle``.
+* ``lifecycle``: every field of a ``Lifecycle``, and the coin's ``perpetual`` and its
+  ``multiplier`` (null without one), the units of its futures quantities.
 * ``outcome``, last: ``outcome``, ``reason``, ``stop_ms``, ``hours`` (the open marks taken),
   ``final_equity``, ``equity_2025``, ``final_after_close`` and the last ``audit``; the ``cell``
   (``cell_record``: ``id``, ``arm``, ``capital``, ``cost_multiple``), its ``window``
@@ -245,6 +246,7 @@ from crypto_grid_bot.v4.engine.market import (
     DataPins,
     HourBar,
     Market,
+    Perpetual,
     SeriesStore,
 )
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
@@ -659,7 +661,7 @@ class _CellState:
             self._close_batch(h, coin, batches[coin], WINDOW_END)
         self._mark_lifecycles(h, self._ledger.positions(), closes, counts=False)
         for lifecycle in self._lifecycles.censor(h, WINDOW_END):
-            self._record("lifecycle", _lifecycle_record(lifecycle))
+            self._record_lifecycle(lifecycle)
 
     def _close_price(self, key: _Key) -> Decimal:
         """The leg's close in this hour, or its carried mark, the last close before the hour."""
@@ -919,7 +921,7 @@ class _CellState:
             h, coin, to_decimal(notional), spot, futures, dust_only, fills, reason
         )
         if ended is not None:
-            self._record("lifecycle", _lifecycle_record(ended))
+            self._record_lifecycle(ended)
         for key in legs:
             if self._ledger.quantity(*key) == 0:
                 self._dead.forget(*key)
@@ -1294,7 +1296,7 @@ class _CellState:
         self._mark_lifecycles(h, self._ledger.positions(), stop.prices, counts=False)
         reason = "liquidation" if stop.outcome == LIQUIDATED else LIMIT_UNRESTORABLE
         for lifecycle in self._lifecycles.censor(h, reason):
-            self._record("lifecycle", _lifecycle_record(lifecycle))
+            self._record_lifecycle(lifecycle)
         self._equity = stop.mark.equity
         self._finish(
             stop.outcome, stop.reason, h, {"check": stop.check, "mark": _mark_record(stop.mark)}
@@ -1322,6 +1324,13 @@ class _CellState:
             },
         )
         self._outcome, self._reason, self._stop_ms = outcome, reason, stop_ms
+
+    def _record_lifecycle(self, lifecycle: Lifecycle) -> None:
+        """The ``lifecycle`` record, naming the coin's perpetual and its multiplier (null without
+        one), so a reader of its futures quantities need not join the ``monthly`` record."""
+        self._record(
+            "lifecycle", _lifecycle_record(lifecycle, self.market.coin(lifecycle.coin).perpetual)
+        )
 
     def _record(self, kind: str, record: Mapping[str, object]) -> None:
         if self._writer is None:
@@ -2122,9 +2131,11 @@ def _cut_leg_record(leg: _Leg) -> dict[str, object]:
     }
 
 
-def _lifecycle_record(lifecycle: Lifecycle) -> dict[str, object]:
+def _lifecycle_record(lifecycle: Lifecycle, perpetual: Perpetual | None) -> dict[str, object]:
     return {
         "coin": lifecycle.coin,
+        "perpetual": None if perpetual is None else perpetual.symbol,
+        "multiplier": None if perpetual is None else perpetual.multiplier,
         "side": lifecycle.side,
         "entry_ms": lifecycle.entry_ms,
         "exit_ms": lifecycle.exit_ms,
