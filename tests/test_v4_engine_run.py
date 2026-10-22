@@ -50,13 +50,11 @@ from v4_synthetic import (
     month_start,
     path,
     read_data_json,
-    repack,
     write_world,
 )
 
 from crypto_grid_bot.combined.execution import VenueRules
 from crypto_grid_bot.v4.data.bars import FundingRow
-from crypto_grid_bot.v4.data.pack import coin_pack_file
 from crypto_grid_bot.v4.engine import run
 from crypto_grid_bot.v4.engine.allocation import clip_increases
 from crypto_grid_bot.v4.engine.arms import ARMS, ArmSpec, CellSpec
@@ -575,29 +573,21 @@ def test_a_coin_missing_three_days_stays_in_the_sizing_book_with_its_kept_signal
     assert not any(record["dead_market"] for record in daily.values())
 
 
-@pytest.mark.parametrize("status", ["missing_slot", None])
+@pytest.mark.parametrize("status", ["missing_slot", "missing_file", "unreadable_file"])
 def test_the_last_day_before_an_incomplete_funding_month_bars_the_perpetual(status, tmp_path):
-    """Spec "Data": no futures exposure is held in an incomplete funding month (a missing status
-    counts as incomplete). The decision at 00:00 of the previous month's last day already has no
-    eligible perpetual, so its signal is max(s, 0); the month itself has none (point in time),
-    and futures return from the first decision whose fill falls after it. The window's last
-    month has no next month to judge: the window end closes everything."""
+    """Spec "Data": no futures exposure is held in an incomplete funding month (any status
+    that is present and not ``complete``). The decision at 00:00 of the previous month's last
+    day already has no eligible perpetual, so its signal is max(s, 0); the month itself has none
+    (point in time), and futures return from the first decision whose fill falls after it. The
+    window's last month has no next month to judge: the window end closes everything."""
     hours = hours_in("2024-10", "2025-03")
-    months = {} if status is None else {"2025-02": status}
     btc = CoinSpec(
         "BTCUSDT",
         Series(month_start("2024-10"), path("50000", (hours, "-0.0003"), noise="0.003", seed=6)),
-        perpetual=PerpetualSpec(months=months),
+        perpetual=PerpetualSpec(months={"2025-02": status}),
     )
     world = World("2025-03", (btc,), every_month("2025-01", "2025-03", ("BTCUSDT",)))
-    data_dir = write_world(tmp_path / "world", world)
-    if status is None:
-
-        def drop_february(document: dict[str, Any]) -> None:
-            del document["funding_months"]["2025-02"]
-
-        repack(data_dir, coin_pack_file("BTCUSDT"), drop_february)
-    market = Market.load(data_dir)
+    market = load(tmp_path, world)
     assert market.funding_month("BTCUSDT", "2025-02") == status
 
     _, rows = cell_run(market, tmp_path)
@@ -621,6 +611,45 @@ def test_the_last_day_before_an_incomplete_funding_month_bars_the_perpetual(stat
     assert row(last_feb)["next_month_status"] == "complete"
     assert row(mar)["eligible"] and row(mar)["signal"] == row(mar)["s"]
     assert row(last_mar)["next_month"] is None and row(last_mar)["eligible"]
+
+
+def test_a_missing_next_month_status_does_not_bar_the_perpetual_at_the_last_day_decision(
+    tmp_path,
+):
+    """Controller ruling (the look-ahead fix): the data step lists funding months only through
+    the month of the perpetual's last bar, so a missing status means the perpetual has no bars
+    and no slots in that month. It counts as complete, as the spec's slot rule says; reading it
+    as incomplete would reveal at the last-day decision that the perpetual stops trading. The
+    perpetual here has its last bar at 09:00 on January 31 and no February status, while spot
+    trades on. The decision at 00:00 on January 31 keeps the perpetual eligible (a short signal
+    stays short), records no status, and schedules no funding-month exit and no synthetic
+    funding-month close at the February midnight."""
+    hours = hours_in("2024-10", "2025-02")
+    start = month_start("2024-10")
+    closes = path("50000", (hours, "-0.0003"), noise="0.003", seed=6)
+    dies = LAST_JAN + 10 * HOUR  # the perpetual's first hour without a bar
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, closes),
+        perpetual=PerpetualSpec(series=Series(start, closes[: (dies - start) // HOUR])),
+    )
+    world = World("2025-02", (btc,), every_month("2025-01", "2025-02", ("BTCUSDT",)))
+    market = load(tmp_path, world)
+    perpetual = market.coin("BTCUSDT").perpetual
+    assert perpetual is not None and perpetual.store.last_open_at_or_before(FEB) == dies - HOUR
+    assert market.funding_month("BTCUSDT", "2025-01") == "complete"
+    assert market.funding_month("BTCUSDT", "2025-02") is None
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete"
+    at = daily_by(rows)[(LAST_JAN, "BTCUSDT")]
+    assert at["next_month"] == "2025-02" and at["next_month_status"] is None
+    assert at["perpetual_eligible"] and at["eligible"] and not at["funding_month_exit"]
+    assert D(at["s"]) < 0 and at["signal"] == at["s"]  # not clamped to max(s, 0)
+    assert events(rows, "exit_scheduled") == []
+    assert not [f for f in of_kind(rows, "fill") if f["reason"] == "funding-month exit"]
+    assert not [e for e in events(rows, "synthetic_closes") if e["hour_ms"] == FEB]
 
 
 def test_a_held_futures_leg_meets_the_funding_month_exit_precondition(monkeypatch, tmp_path):
@@ -2085,6 +2114,67 @@ def test_a_dead_market_at_an_incomplete_months_first_midnight_closes_once_as_a_d
     assert not [e for e in of_kind(rows, "event") if e["type"].startswith("replacement")]
     (lifecycle,) = of_kind(rows, "lifecycle")
     assert (lifecycle["exit_reason"], lifecycle["exit_ms"]) == ("delisting", FEB)
+
+
+def test_a_perpetual_that_ends_in_the_month_before_has_no_funding_month_exit(monkeypatch, tmp_path):
+    """Regression for the look-ahead fix: a delisting is the dead-market rule's alone. BTCUSDT's
+    perpetual (static, a seeded short of 10) has its last bar at 09:00 on January 31, so the
+    data step lists no status for February, and a missing status counts as complete. The leg is
+    not closed at 01:00 on January 31 as a funding-month exit at normal costs, nor synthetically
+    at 00:00 on February 1; it is held through both, and closes after 168 hours without a bar,
+    at 10:00 on February 7, as a delisting at the last close plus the 10% penalty, with no
+    slippage and the normal fee."""
+    dies = LAST_JAN + 10 * HOUR  # the perpetual's first hour without a bar
+    close_h = dies + 168 * HOUR  # 10:00 on February 7
+    btc = static_coin(
+        "BTCUSDT",
+        flat("100", end="2025-02"),
+        perpetual=True,
+        perp_hours=(dies - DEC) // HOUR,
+        end="2025-02",
+    )
+    market = load(
+        tmp_path, World("2025-02", (btc,), every_month("2025-01", "2025-02", ("BTCUSDT",)))
+    )
+    perp = market.coin("BTCUSDT").perpetual
+    assert perp is not None and perp.store.last_open_at_or_before(FEB) == dies - HOUR
+    assert market.funding_month("BTCUSDT", "2025-01") == "complete"
+    assert market.funding_month("BTCUSDT", "2025-02") is None
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [("BTCUSDT", seed_fill(T0 - HOUR, "futures", "BTCUSDT", -1, "10", "100"))],
+    )
+
+    result, rows = cell_run(market, tmp_path)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    decision = daily_by(rows)[(LAST_JAN, "BTCUSDT")]
+    assert decision["next_month"] == "2025-02" and decision["next_month_status"] is None
+    assert decision["eligible"] and not decision["funding_month_exit"]
+    assert events(rows, "exit_scheduled") == []
+    # Held through 01:00 on January 31 and the February midnight, and closed only by the rule.
+    assert holdings(rows, close_h - HOUR, [("futures", "BTCUSDT", "-10")]) == {
+        ("futures", "BTCUSDT"): F(-10)
+    }
+    assert not [f for f in of_kind(rows, "fill") if f["reason"] == "funding-month exit"]
+    (batch,) = events(rows, "synthetic_closes")
+    assert batch["hour_ms"] == close_h
+    assert [(leg["coin"], leg["venue"], leg["reason"]) for leg in batch["legs"]] == [
+        ("BTCUSDT", "futures", "delisting")
+    ]
+    (fill,) = of_kind(rows, "fill")
+    assert (fill["hour_ms"], fill["timestamp_ms"], fill["side"]) == (close_h, close_h, 1)
+    assert fill["reason"] == "delisting" and F(D(fill["quantity"])) == 10
+    last_close = perp.store.last_close_before(close_h)
+    last_bar = perp.store.bar(dies - HOUR)
+    assert last_bar is not None and last_close == last_bar.close
+    price = F(last_close) * PENALTY_SHORT
+    assert F(D(fill["price"])) == F(D(fill["unslipped_price"])) == price  # no slippage
+    assert F(D(fill["fee"])) == 10 * price * FEE["futures"]
+    (lifecycle,) = of_kind(rows, "lifecycle")
+    assert (lifecycle["exit_reason"], lifecycle["exit_ms"]) == ("delisting", close_h)
+    assert not lifecycle["censored"]
 
 
 def test_a_perpetual_that_dies_is_closed_after_168_hours_with_the_penalty(tmp_path):

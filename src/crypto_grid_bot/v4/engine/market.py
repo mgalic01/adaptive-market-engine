@@ -447,7 +447,9 @@ class Market:
 
     def funding_month(self, symbol: str, month: str) -> str | None:
         """The coin's perpetual's funding status for ``month``, or None without a perpetual or
-        without a status for that month."""
+        without a status for that month. The data step lists statuses through the month of the
+        perpetual's last bar, so a perpetual's None means it has no bars or slots in that month;
+        the hour loop counts that as complete."""
         _month(month, "month")
         perpetual = self.coin(symbol).perpetual
         return None if perpetual is None else perpetual.months.get(month)

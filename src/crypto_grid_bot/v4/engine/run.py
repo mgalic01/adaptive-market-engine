@@ -22,7 +22,8 @@ funding record in ``_CellState._funding_events``).
 ``market.window_end_ms``, in the spec's order of events:
 
 1. the synthetic closes due at this instant (dead markets, and at a month's first midnight the
-   futures legs of an incomplete funding month), as one batch with one liquidation check;
+   futures legs of a funding month whose status is present and not complete), as one batch with
+   one liquidation check;
 2. the open mark, kept in ``open_marks`` with its completeness flag, then the pre-fill
    liquidation check;
 3. at 00:00, the daily decision (below), then the mandatory exits it makes;
@@ -81,15 +82,20 @@ coin that left the universe. A decided coin outside the universe is a universe e
 no bar for ``d`` keeps its last reading and takes no new target (the no-bar rule), and one with
 no reading at all is warming. The signal used is ``s`` (``L`` for ``v4_long_only``), and
 ``max(s, 0)`` when the coin has no eligible perpetual: ``Market.perpetual_eligible`` at ``h``,
-and, at the decision on a month's last day, a complete funding status for the next month (spec
-"Data": no futures exposure is held in an incomplete month). A universe coin whose spot venue is a
-dead market at the decision, with no spot bar in the 168 hours before it (``_dead_spot``, the
-dead-market rule's test), takes signal 0 and no target (controller ruling, Task 15 fix 1): its
-full weight is then 0, so its missing returns do not thin the common days of the coins still
-trading. The no-bar rule is for missing days; a coin missing fewer than 168 hours keeps its signal
-in the book. ``size_book`` sizes the book of every decided coin (a universe exit or a dead market
-with signal 0, so its sigma is still recorded) on each coin's trailing returns, and
-``PendingBook.decide`` takes the targets.
+and, at the decision on a month's last day, a next funding month that is not incomplete (spec
+"Data": no futures exposure is held in an incomplete month). A status that is present and not
+``complete`` makes it incomplete; a missing one counts as complete, because the data step lists
+statuses only through the month of the perpetual's last bar, so a missing status means the
+perpetual has no bars or slots in that month. A delisting is then the dead-market rule's alone
+(168 hours without a bar, the 10% penalty): reading it from the missing status would exit early
+at normal costs, a look-ahead. A universe coin whose spot venue is a dead market at the decision,
+with no spot bar in the 168 hours before it (``_dead_spot``, the dead-market rule's test), takes
+signal 0 and no target (controller ruling, Task 15 fix 1): its full weight is then 0, so its
+missing returns do not thin the common days of the coins still trading. The no-bar rule is for
+missing days; a coin missing fewer than 168 hours keeps its signal in the book. ``size_book``
+sizes the book of every decided coin (a universe exit or a dead market with signal 0, so its
+sigma is still recorded) on each coin's trailing returns, and ``PendingBook.decide`` takes the
+targets.
 
 **Outputs** (rulings P3, P5). ``out_dir`` is the cell's own directory: created if missing, and
 refused if ``records.jsonl`` or ``receipt.json`` is already there. Every record goes through
@@ -114,11 +120,11 @@ the failure.
   (``reading_day_ms``, ``close``, ``speeds`` with each speed's values and vote, ``downtrend``
   with its four parts' values and ``confirmed``, ``L``, ``S``, ``s``, ``s_long_only``), all null
   for a coin with no reading; ``perpetual``, ``perpetual_eligible`` (point in time),
-  ``next_month`` and ``next_month_status`` (at a month's last day, else null), ``eligible``,
-  ``funding_month_exit`` (the exit's precondition) and the ``signal`` used; the sizing
-  (``sigma``, ``raw``, ``full``, ``scaled``, ``after_coin_cap``, ``after_total_cap``,
-  ``capped_by``, ``scale``, ``common_days``, ``flat_reason``); and the ``target``, or
-  ``no_target``: ``no_bar`` or ``warming``. The band result, the split and the
+  ``next_month`` and ``next_month_status`` (at a month's last day, else null; null too when the
+  next month has no status), ``eligible``, ``funding_month_exit`` (the exit's precondition) and
+  the ``signal`` used; the sizing (``sigma``, ``raw``, ``full``, ``scaled``, ``after_coin_cap``,
+  ``after_total_cap``, ``capped_by``, ``scale``, ``common_days``, ``flat_reason``); and the
+  ``target``, or ``no_target``: ``no_bar`` or ``warming``. The band result, the split and the
   order belong to the fill hour, as an ``event`` of type ``order`` (Task 12b).
 * ``fill``, per fill: ``hour_ms``, ``timestamp_ms``, ``coin``, ``venue``, ``symbol``, ``side``,
   ``quantity`` (venue units), ``price`` (slipped), ``unslipped_price``, ``fee``, ``realised``
@@ -506,8 +512,9 @@ class _CellState:
         the penalised price"; spec "Data", the funding-month close when no bar comes).
 
         * The members (``_synthetic_legs``) are every held leg ``DeadMarkets.due(h)`` lists, and
-          at 00:00 of a month's first day every held futures leg whose coin's funding month is
-          not ``complete``: its funding-month exit found no perpetual bar before the month.
+          at 00:00 of a month's first day every held futures leg whose coin's funding month has a
+          status that is not ``complete`` (a missing status counts as complete): its
+          funding-month exit found no perpetual bar before the month.
         * One liquidation check values every closing leg at ``penalised_price`` of its last close
           (the last close before ``h``; 10% against the leg) and every other held leg at its
           mark for ``h``, all at once. A liquidation there ends the cell with no fill.
@@ -578,19 +585,19 @@ class _CellState:
         """The legs to close synthetically at ``h``, each with its reason. ``DeadMarkets.due`` is
         asked here, once an hour and before any of the hour's observations, and only its held
         legs are taken (a flat leg is never closed). A futures leg held at 00:00 of a month's
-        first day closes when its coin's funding status for the month is anything but
-        ``complete`` (a missing status included, as at the decision before it). A leg due on
-        both counts closes as a delisting."""
+        first day closes when its coin's funding status for the month is present and not
+        ``complete``. A missing status counts as complete, as at the decision before it: the
+        perpetual has no bars in that month, so a delisting is the dead-market rule's alone. A
+        leg due on both counts closes as a delisting."""
         held = self._ledger.positions()
         closing = {key: DELISTING for key in self._dead.due(h) if key in held}
         if h % DAY_MS == 0 and _month_of(h) != _month_of(h - DAY_MS):
             month = _month_of(h)
             for key in held:
-                if (
-                    key[0] == "futures"
-                    and key not in closing
-                    and self.market.funding_month(self._coin_of[key], month) != COMPLETE
-                ):
+                if key[0] != "futures" or key in closing:
+                    continue
+                status = self.market.funding_month(self._coin_of[key], month)
+                if status is not None and status != COMPLETE:
                     closing[key] = FUNDING_EXIT
         return closing
 
@@ -1508,7 +1515,11 @@ class _V4Cell(_CellState):
         blocked = False
         if perpetual is not None and month_end is not None:
             next_status = self.market.funding_month(coin, month_end)
-            blocked = next_status != COMPLETE  # a missing status is not complete either
+            # Only a status that is present and not complete blocks. The data step lists statuses
+            # through the month of the perpetual's last bar, so a missing one means a perpetual
+            # with no bars and no slots in that month: complete, as the slot rule says, and a
+            # delisting is the dead-market rule's alone (a look-ahead to it would exit early).
+            blocked = next_status is not None and next_status != COMPLETE
         eligible = point_in_time and not blocked
         holds_futures = (
             perpetual is not None and self._ledger.quantity("futures", perpetual.symbol) != 0
