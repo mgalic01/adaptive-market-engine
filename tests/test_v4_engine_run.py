@@ -2696,6 +2696,82 @@ def test_a_flat_coins_deferred_order_is_cancelled_when_its_market_dies(dies, tmp
     assert D(daily[(reentry, "BTCUSDT")]["target"]) > 0
 
 
+@pytest.mark.parametrize("dies", ["at the decision", "at the fill hour"])
+def test_a_dead_coins_funding_month_exit_places_no_replacement_from_a_stale_target(
+    dies, monkeypatch, tmp_path
+):
+    """Controller ruling on Codex's review of PR #293: a coin whose spot market has died loses
+    its latest target, so a funding-month close's replacement buy is never sized from a target
+    decided before the market died. BTCUSDT (rising) holds a seeded futures long of about 0.30 of
+    equity that the band keeps, and February is incomplete for its perpetual. Its spot has no
+    bar from January 24 until 01:00 on January 31, so January 24's long target is its last one,
+    and stale. The decision at 00:00 on January 31 schedules the futures leg's funding-month exit
+    for 01:00, where the perpetual has its bar and the spot's data comes back.
+    * at the decision: the last spot bar opens at 23:00 on January 23, so the market has died at
+      00:00 on January 31, whose decision marks the coin a dead market;
+    * at the fill hour: the last spot bar opens at 00:00 on January 24, so the market dies at
+      01:00 on January 31, the exit's own hour.
+    Either way the exit fills at 01:00 and no replacement buy is scheduled or placed: the record
+    is ``replacement_not_needed`` with no target. Without the rule (``_spot_died`` stubbed out)
+    the stale target places a replacement buy at 01:00. The coin buys spot again only through
+    February 1's decision, which has January 31's daily bar."""
+    start = month_start("2024-10")
+    closes = path("50000", (hours_in("2024-10", "2025-02"), "0.0002"), noise="0.002", seed=70)
+    stale_ms = T0 + 23 * DAY  # 00:00 on January 24, the decision of the last target
+    first = stale_ms if dies == "at the decision" else stale_ms + HOUR  # the first masked hour
+    exit_h = LAST_JAN + HOUR  # 01:00 on January 31
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, closes, masked=tuple(range(first, exit_h, HOUR))),
+        PerpetualSpec(
+            series=Series(start, closes), months={"2025-02": "missing_slot"}, funding_rate="0"
+        ),
+    )
+    market = load(
+        tmp_path, World("2025-02", (btc,), every_month("2025-01", "2025-02", ("BTCUSDT",)))
+    )
+    spot = market.coin("BTCUSDT").spot
+    assert spot.bar(exit_h) is not None and spot.last_open_at_or_before(exit_h - 1) == first - HOUR
+    seed_price = closes[(T0 - HOUR - start) // HOUR]
+    long = to_decimal(floor_to(F(3000) / F(seed_price), FUTURES_STEP))  # about 0.30 of equity
+    seed(
+        monkeypatch,
+        T0 - HOUR,
+        [("BTCUSDT", Fill(T0 - HOUR, "futures", "BTCUSDT", 1, long, seed_price, D(0), "seed"))],
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(run, "_spot_died", lambda store, h: False)
+        _, stale = cell_run(market, tmp_path, name="without_the_rule")
+    result, rows = cell_run(market, tmp_path)
+
+    stale_order = order_event(stale, exit_h, "BTCUSDT")
+    assert (stale_order["source"], stale_order["decision_ms"]) == ("replacement buy", stale_ms)
+    assert [f["hour_ms"] for f in of_kind(stale, "fill") if f["reason"] == "replacement buy"] == [
+        exit_h
+    ]
+    assert result.outcome == "complete" and residuals_hold(rows)
+    daily = daily_by(rows)
+    assert D(daily[(stale_ms, "BTCUSDT")]["target"]) > 0
+    for h in range(stale_ms + DAY, FEB, DAY):
+        assert daily[(h, "BTCUSDT")]["no_bar"] and daily[(h, "BTCUSDT")]["target"] is None
+    decision = daily[(LAST_JAN, "BTCUSDT")]
+    assert decision["funding_month_exit"] and not decision["eligible"]
+    assert decision["dead_market"] is (dies == "at the decision")
+    seeded = [("futures", "BTCUSDT", str(long))]
+    assert holdings(rows, exit_h - 1, seeded) == {("futures", "BTCUSDT"): F(long)}  # band kept it
+    (close,) = [f for f in of_kind(rows, "fill") if f["venue"] == "futures"]
+    assert (close["hour_ms"], close["side"], close["reason"]) == (exit_h, -1, "funding-month exit")
+    (not_needed,) = events(rows, "replacement_not_needed")
+    assert (not_needed["hour_ms"], not_needed["coin"]) == (exit_h, "BTCUSDT")
+    assert (not_needed["decision_ms"], not_needed["target"]) == (None, None)
+    assert events(rows, "replacement_scheduled") == []
+    assert not [f for f in of_kind(rows, "fill") if f["reason"] == "replacement buy"]
+    spot_buys = [f for f in of_kind(rows, "fill") if f["venue"] == "spot" and f["side"] == 1]
+    assert (spot_buys[0]["hour_ms"], spot_buys[0]["reason"]) == (FEB + HOUR, "signal")
+    assert order_event(rows, FEB + HOUR, "BTCUSDT")["decision_ms"] == FEB
+
+
 def test_the_audit_holds_every_hour(monkeypatch, tmp_path):
     """Spec "Safety", accounting: the wallet and quantity identities hold exactly and the equity
     residual stays within 1e-18 at the end of every hour, over a world with trades, funding and

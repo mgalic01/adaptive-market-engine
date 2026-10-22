@@ -110,7 +110,9 @@ its scheduled exits stay. So an order made before the outage never fills when th
 back, and the coin re-enters only through a later decision whose day has a bar. A held spot
 leg's dead market closes at step 1 with its own cancel, so this is the rule of a coin flat on
 spot. At a decision it cancels what a dead coin, which gets no target, still has waiting; between
-decisions it catches a market that dies, and perhaps comes back, before the next one.
+decisions it catches a market that dies, and perhaps comes back, before the next one. A V4 arm
+also drops such a coin's latest target (controller ruling), so a funding-month close's
+replacement buy is never sized from a target decided before the market died.
 
 **Outputs** (rulings P3, P5). ``out_dir`` is the cell's own directory: created if missing, and
 refused if ``records.jsonl`` or ``receipt.json`` is already there. Every record goes through
@@ -165,7 +167,8 @@ the failure.
     in the universe, whose newer decisions supersede it);
   - after a funding-month close of a futures leg, of either side: ``replacement_scheduled``
     when the coin's latest target is above 0, else ``replacement_not_needed`` (``decision_ms``
-    and ``target`` of that latest target, both null without one); and ``replacement_skipped``
+    and ``target`` of that latest target, both null without one, as after a dead spot market
+    dropped it); and ``replacement_skipped``
     (``why``: ``not_in_universe``);
   - ``synthetic_closes``, per batch (coin null): the ``legs`` closing (``coin``, ``venue``,
     ``symbol``, ``held``, ``last_close``, the penalised ``price``, ``reason``: ``delisting`` or
@@ -1478,6 +1481,7 @@ class _V4Cell(_CellState):
         self._return_days: dict[str, list[int]] = {}
         # The latest decision's answers, for the fill phase. A coin's pending order always holds
         # its latest target, since the decision that gave the target made the order.
+        # A coin whose spot market dies loses its latest target (``_dead_market_cancels``).
         self._targets: dict[str, Decimal] = {}  # each coin's latest target
         self._target_ms: dict[str, int] = {}  # the decision hour of each coin's latest target
         self._eligible: dict[str, bool] = {}  # each decided coin's eligibility, as decided
@@ -1640,6 +1644,21 @@ class _V4Cell(_CellState):
                     },
                 )
 
+    def _dead_market_cancels(self, h: int) -> None:
+        """The shared cancels of ``_CellState._dead_market_cancels``, then the V4 arm's own part
+        (controller ruling on Codex's review of PR #293): every coin whose spot market has died
+        at ``h`` (``_spot_died``) loses its latest target too. A replacement buy is then sized
+        only from a target decided on a day with a bar (spec "re-enters only through a later
+        daily decision whose decision day has a bar"): ``_replace_or_not`` finds no target and
+        records ``replacement_not_needed``. At a decision hour this runs after the decision, so
+        it drops the stale target of a coin the decision marked a dead market. The shared part
+        runs first, so no coin keeps a pending order without its target (``_ready`` reads it)."""
+        super()._dead_market_cancels(h)
+        dead = [coin for coin in self._targets if _spot_died(self.market.coin(coin).spot, h)]
+        for coin in dead:
+            del self._targets[coin]
+            self._target_ms.pop(coin, None)
+
     def _after_synthetic_close(
         self, h: int, coin: str, closed: Mapping[_Key, tuple[str, Decimal]]
     ) -> None:
@@ -1662,8 +1681,9 @@ class _V4Cell(_CellState):
         """After a funding-month close of the coin's futures leg at ``h`` (spec "Data": a long's
         target moves to spot under the spot-first rule, a short's to 0; "Sizing": only the
         latest target ever produces the buy): a latest target above 0 schedules the replacement
-        spot buy, whatever the closed leg's side, and a target at or below 0, or none, schedules
-        nothing, recorded as ``replacement_not_needed`` with that target."""
+        spot buy, whatever the closed leg's side, and a target at or below 0, or none (a dead
+        spot market drops it, ``_dead_market_cancels``), schedules nothing, recorded as
+        ``replacement_not_needed`` with that target."""
         target = self._targets.get(coin)
         if target is not None and target > 0:
             self._schedule_replacement(h, coin)
