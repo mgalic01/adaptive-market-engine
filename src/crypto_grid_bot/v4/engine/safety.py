@@ -29,8 +29,10 @@ ledger, books a fill or reads the clock.
   (``due(h)`` is refused once a leg has been observed at ``h``). It agrees with the store's own
   answer, ``last_open_at_or_before(h - 1) < h - 168 h``, which the tests check.
 * **Funding-month exit hour.** The fill hour of a futures close before an incomplete funding
-  month. ``funding_exit_hour`` reads only which perpetual hours have a bar, between the decision
-  and the month's first midnight; the month's status is the spec's disclosed look-ahead.
+  month. ``funding_exit_hour`` is a test oracle only, never called at decision time: it reads
+  which perpetual hours have a bar up to the month's first midnight, up to 23 hours after the
+  last-day decision. The hour loop reaches the same hour point in time (the exit fills at the
+  perpetual's first bar from 01:00, or closes synthetically at the month's first midnight).
 
 Synthetic closes at one instant form one batch that the loop values at ``penalised_price``
 together with ``Ledger.mark`` and ``liquidated``; the outcome ``limit_unrestorable`` (reasons
@@ -264,9 +266,14 @@ def funding_exit_hour(market: Market, coin: str, month: str) -> int | Literal["s
     perpetual has a bar there, else the first perpetual bar after that hour and before the
     month's first midnight, else ``"synthetic"``, a close at 00:00 of the month's first day.
 
-    Only the existence of bars is read, up to the month's first midnight. The month's status is
-    not checked: the caller knows which months are incomplete. A coin without a perpetual, or
-    one the packs do not know, is a ValueError.
+    A test oracle only, never called at decision time: it reads bars up to the month's first
+    midnight, up to 23 hours after the last-day decision it answers for. The hour loop reaches
+    the same hour point in time, through the pending book's exit (it fills at the perpetual's
+    first bar from 01:00) and the synthetic close at the month's first midnight.
+
+    Only the existence of bars is read. The month's status is not checked: the caller knows which
+    months are incomplete. A coin without a perpetual, or one the packs do not know, is a
+    ValueError.
     """
     if not isinstance(month, str) or _MONTH.fullmatch(month) is None:
         raise ValueError(f"month must be YYYY-MM, got {month!r:.40}")
