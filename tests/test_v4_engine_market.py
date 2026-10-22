@@ -671,6 +671,51 @@ def test_perpetual_eligibility_is_point_in_time(tmp_path):
     assert market.funding_month("ETHUSDT", "2025-02") is None
 
 
+def test_a_month_after_the_perpetuals_last_bar_is_judged_by_the_168_hour_check_alone(tmp_path):
+    """The data step lists funding months only through the month of the perpetual's last bar.
+    BTCUSDT's perpetual has its last bar at 23:00 on January 31, so February has no status
+    (None). A missing status counts as complete: reading it as ineligible would reveal in
+    advance that the perpetual has no bars all month. Eligibility in February is the 168-hour
+    bar test alone: eligible while the last bar is within 168 hours, and from the 169th hour a
+    dead market. An explicit status that is not ``complete`` still makes its month ineligible,
+    whatever the bars say."""
+    feb, mar = month_start("2025-02"), month_start("2025-03")
+    hours = hours_in("2025-01", "2025-03")
+    perpetual = Series(T0, path("100", (hours_in("2025-01", "2025-01"), "0")))  # ends at feb
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(T0, path("100", (hours, "0"))),
+        perpetual=PerpetualSpec(series=perpetual),
+    )
+    eth = CoinSpec(  # a perpetual with fresh bars in February, but marked incomplete
+        "ETHUSDT",
+        Series(T0, path("10", (hours, "0"))),
+        perpetual=PerpetualSpec(
+            series=Series(T0, path("10", (hours_in("2025-01", "2025-02"), "0"))),
+            months={"2025-02": "missing_slot"},
+        ),
+    )
+    universes = every_month("2025-01", "2025-03", ("BTCUSDT", "ETHUSDT"))
+    market = Market.load(write_world(tmp_path, World("2025-03", (btc, eth), universes)))
+    eligible = market.perpetual_eligible
+
+    assert market.funding_month("BTCUSDT", "2025-01") == "complete"
+    assert market.funding_month("BTCUSDT", "2025-02") is None  # no bars, so no status
+    last_bar = feb - HOUR
+    assert eligible("BTCUSDT", feb - DAY)
+    # February's first hours, with no status: eligible, the bar test says so
+    assert eligible("BTCUSDT", feb)
+    assert eligible("BTCUSDT", feb + 3 * DAY)
+    assert eligible("BTCUSDT", last_bar + 168 * HOUR)  # the last bar is 168 hours before
+    assert not eligible("BTCUSDT", last_bar + 169 * HOUR)  # 169 hours: a dead market
+    assert not eligible("BTCUSDT", feb + 10 * DAY)
+    assert not eligible("BTCUSDT", mar)  # March has no status either; the bar test decides
+    # an explicit incomplete status still bars the month, though the bars are fresh
+    assert market.funding_month("ETHUSDT", "2025-02") == "missing_slot"
+    assert eligible("ETHUSDT", feb - DAY) and not eligible("ETHUSDT", feb + HOUR)
+    assert not eligible("ETHUSDT", mar - HOUR)
+
+
 def test_funding_events_fall_in_their_hour_in_time_order(tmp_path):
     hours = 48
     eight, sixteen = T0 + 8 * HOUR, T0 + 16 * HOUR

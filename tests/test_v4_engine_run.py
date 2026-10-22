@@ -647,6 +647,13 @@ def test_a_missing_next_month_status_does_not_bar_the_perpetual_at_the_last_day_
     assert at["next_month"] == "2025-02" and at["next_month_status"] is None
     assert at["perpetual_eligible"] and at["eligible"] and not at["funding_month_exit"]
     assert D(at["s"]) < 0 and at["signal"] == at["s"]  # not clamped to max(s, 0)
+    # February has no status either, so its eligibility is the 168-hour bar test alone: the last
+    # bar opens at 09:00 on January 31, which is within 168 hours of the decision on February 7
+    # (00:00) and not of the one on February 8.
+    daily = daily_by(rows)
+    assert daily[(FEB, "BTCUSDT")]["perpetual_eligible"]
+    assert daily[(FEB + 6 * DAY, "BTCUSDT")]["perpetual_eligible"]
+    assert not daily[(FEB + 7 * DAY, "BTCUSDT")]["perpetual_eligible"]
     assert events(rows, "exit_scheduled") == []
     assert not [f for f in of_kind(rows, "fill") if f["reason"] == "funding-month exit"]
     assert not [e for e in events(rows, "synthetic_closes") if e["hour_ms"] == FEB]

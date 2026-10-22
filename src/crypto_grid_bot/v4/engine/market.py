@@ -425,7 +425,12 @@ class Market:
     def perpetual_eligible(self, symbol: str, decision_ms: int) -> bool:
         """Whether the coin has an eligible perpetual at ``decision_ms`` (spec "Universe"),
         judged point in time: its first bar is at or before the decision, it has a bar that
-        opens in the 168 hours before it, and the decision's funding month is complete."""
+        opens in the 168 hours before it, and the decision's funding month is not incomplete.
+        A status that is present and not ``complete`` makes the month incomplete. A missing
+        status counts as complete: the data step lists statuses through the month of the
+        perpetual's last bar, so a missing one means the perpetual has no bars in the month,
+        and reading that as ineligible would reveal the delisting in advance. Whether the
+        perpetual is dead is the 168-hour bar check alone."""
         _instant(decision_ms, "decision_ms")
         perpetual = self.coin(symbol).perpetual
         if perpetual is None:
@@ -436,7 +441,8 @@ class Market:
         last = perpetual.store.last_open_at_or_before(decision_ms - 1)
         if last is None or last < decision_ms - DEAD_MARKET_HOURS * HOUR_MS:
             return False
-        return perpetual.months.get(_month_of(decision_ms)) == COMPLETE
+        status = perpetual.months.get(_month_of(decision_ms))
+        return status is None or status == COMPLETE
 
     def funding_events(self, hour_open_ms: int) -> tuple[tuple[str, int, Decimal], ...]:
         """Every funding record in the hour that opens at ``hour_open_ms``, as (perpetual,
