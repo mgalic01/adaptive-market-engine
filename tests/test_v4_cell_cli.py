@@ -19,15 +19,21 @@ and the covariance's 60 days). Four coins, each with one job, selected in this r
   coins at 1000 x the spot price. Its January funding month is incomplete (``missing_slot``): the
   decision on 2024-12-31 bars the perpetual, the short closes at 01:00 that day as a funding-month
   exit, it has no futures in January and shorts again in February.
-* LUNAUSDT rises (held on spot) and is delisted: its data stops at 2025-01-15 00:00, so 168 hours
-  after its last bar the dead-market close sells it at its last close less 10%. Its returns stop
-  too; it leaves the universe in February, before its missing returns could thin the covariance's
-  common days below 40.
+* LUNAUSDT rises (held on spot) and is delisted: its data stops at 2025-01-08 00:00, so 168 hours
+  after its last bar the dead-market close sells it at its last close less 10%. It stays in
+  January's universe, a dead market from the decision of January 15: out of the sizing book, so
+  the others keep trading (controller ruling, Task 15 fix 1; read literally, its kept signal held
+  its missing returns in the covariance's common days, which fell below 40 on January 27 and
+  flattened every coin). It is noisier than the others, so its weight sits below the 0.30 coin
+  cap and the volatility targets size it differently: ``v4_vol25`` and ``v4_vol60`` trade it
+  apart from ``v4_main``.
 
 Each feature has a test that reads the records and checks that it happened, at the hour and price
-the spec gives. The CLI's own behaviour has the rest: the exact one-line output, the refusals that
-write nothing and return 1 (a bad pin, bad data, existing outputs, a failure before the summary),
-argparse's exit code 2, and the failure summary of an engine error, which returns 0.
+the spec gives. The CLI's own behaviour has the rest: the exact one-line output; the refusals and
+failures that return 1, each a fixed line on standard error with the exception's type and never
+its text (a bad pin, bad data, existing outputs, a failure before the summary, a summary that does
+not verify, which writes no summary and no page, and written bytes that are not the verified
+summary's); argparse's exit code 2; and the failure summary of an engine error, which returns 0.
 
 The network is blocked for every test (the autouse fixture, and the module fixture blocks it for
 its own run). Only synthetic worlds in pytest's temporary folders are read.
@@ -99,8 +105,8 @@ HOURS = hours_in(HISTORY, LAST)
 MASKED_DAY = WINDOW_START + 19 * DAY  # 2024-12-20: ETHUSDT's spot hours 00:00 to 04:59 masked
 FUNDING_DECISION = JAN - DAY  # 00:00 on 2024-12-31, the decision before the incomplete month
 CRASH = FEB + 14 * DAY + 12 * HOUR  # the bar of 12:00 on 2025-02-15 closes four times its open
-DEAD = JAN + 14 * DAY  # LUNAUSDT's last bar opens at 23:00 on 2025-01-14
-DEAD_CLOSE = DEAD + 168 * HOUR  # 168 hours after that bar: 00:00 on 2025-01-22
+DEAD = JAN + 7 * DAY  # LUNAUSDT's last bar opens at 23:00 on 2025-01-07
+DEAD_CLOSE = DEAD + 168 * HOUR  # 168 hours after that bar: 00:00 on 2025-01-15
 
 # SHIBUSDT's spot trades in whole coins, many of them at a time.
 SHIB_SPOT = VenueRules(
@@ -172,7 +178,7 @@ def cli_world() -> World:
     )
     luna = CoinSpec(
         "LUNAUSDT",
-        Series(START, path("5", ((DEAD - START) // HOUR, "0.0002"), noise="0.002", seed=4)),
+        Series(START, path("5", ((DEAD - START) // HOUR, "0.0006"), noise="0.01", seed=4)),
     )
     everyone = ("BTCUSDT", "ETHUSDT", "SHIBUSDT", "LUNAUSDT")
     universes = {"2024-12": everyone, "2025-01": everyone, "2025-02": ("BTCUSDT", "SHIBUSDT")}
@@ -363,7 +369,8 @@ def test_cli_runs_every_arm_on_the_synthetic_world(world_dir, cells):
         assert [year["year"] for year in summary["years"]] == [2024, 2025]
         page = (cell.folder / PAGE_FILE).read_text(encoding="utf-8")
         assert spec.cell_id in page and "<script" not in page
-    # The arms do differ: the long-only arm never shorts, and the holds trade spot alone.
+    # The arms do differ: the long-only arm never shorts, and the holds trade spot alone (the
+    # volatility arms: test_the_volatility_targets_size_a_coin_below_the_cap_apart).
     for arm in ("v4_long_only", "hold_universe", "hold_btc"):
         assert not fills(cells[arm].rows, venue="futures"), arm
     assert fills(cells["v4_main"].rows, venue="futures")
@@ -414,6 +421,61 @@ def test_the_world_delists_a_coin_and_its_dead_market_closes(market, cells):
         (ended,) = lifecycles(rows, "LUNAUSDT")
         assert (ended["exit_reason"], ended["exit_ms"]) == ("delisting", DEAD_CLOSE)
         assert not [f for f in fills(rows, coin="LUNAUSDT") if f["timestamp_ms"] > DEAD_CLOSE]
+
+
+def test_the_world_keeps_trading_when_a_universe_coin_dies(cells):
+    """Controller ruling (Task 15, fix 1): LUNAUSDT stays in January's universe after its data
+    stops. From the decision 168 hours after its last bar (DEAD_CLOSE) it is a dead market: in
+    January signal 0, full 0 and no target, and on February 1, when it has left the universe, the
+    universe exit's target of 0. Its returns end on January 7, so read literally its kept signal
+    would have held the common days of the last 60 below 40 from January 27 and flattened the
+    book; every V4 arm keeps sizing instead, and BTCUSDT's short and ETHUSDT's long keep their
+    targets to the month's end."""
+    late = range(JAN + 26 * DAY, FEB, DAY)  # the decisions of January 27 to 31
+    for arm, spec in ARMS.items():
+        if spec.family != "v4":
+            continue
+        rows = cells[arm].rows
+        luna = {r["decision_ms"]: r for r in of_kind(rows, "daily_coin") if r["coin"] == "LUNAUSDT"}
+        assert sorted(h for h, r in luna.items() if r["dead_market"]) == list(
+            range(DEAD_CLOSE, FEB + DAY, DAY)
+        ), arm
+        for h in range(DEAD_CLOSE, FEB, DAY):
+            assert luna[h]["in_universe"] and luna[h]["no_target"] == "no_bar"
+            assert (luna[h]["signal"], luna[h]["full"], luna[h]["target"]) == ("0", "0", None)
+        assert luna[FEB]["universe_exit"] and luna[FEB]["target"] == "0"
+        records = of_kind(rows, "daily_coin")
+        assert not [r for r in records if r["flat_reason"] == "insufficient_common_days"], arm
+        if arm == "v4_long_only":
+            continue  # it holds no short, and BTCUSDT's long signal is 0
+        for h in late:
+            for coin, sign in (("BTCUSDT", -1), ("ETHUSDT", 1)):
+                record = daily(rows, h, coin)
+                assert record["common_days"] >= 40 and record["flat_reason"] is None
+                assert sign * D(record["target"]) > 0, (arm, h, coin)
+
+
+def test_the_volatility_targets_size_a_coin_below_the_cap_apart(cells):
+    """The targets depend on the market alone, not on the account, so the arms' decisions can be
+    compared day by day. Wherever v4_main sizes a coin below the 0.30 coin cap (LUNAUSDT, the
+    noisy one, among others), the volatility scale is linear in the target: ``v4_vol25`` gives it
+    0.25 / 0.40 of v4_main's weight and ``v4_vol60`` 0.60 / 0.40 of it, capped at 0.30 in
+    magnitude. So the two arms trade differently from v4_main."""
+    main = {(r["decision_ms"], r["coin"]): r for r in of_kind(cells["v4_main"].rows, "daily_coin")}
+    uncapped = [
+        key
+        for key, r in main.items()
+        if r["target"] not in (None, "0") and r["capped_by"] == [] and r["flat_reason"] is None
+    ]
+    assert "LUNAUSDT" in {coin for _, coin in uncapped}
+    for arm, target in (("v4_vol25", D("0.25")), ("v4_vol60", D("0.60"))):
+        other = {(r["decision_ms"], r["coin"]): r for r in of_kind(cells[arm].rows, "daily_coin")}
+        for key in uncapped:
+            weight = F(D(main[key]["target"]))  # exact, as the targets' own digits
+            size = min(abs(weight) * F(target) / F(D("0.40")), F(D("0.30")))
+            expected = size if weight > 0 else -size
+            assert abs(F(D(other[key]["target"])) - expected) < F(1, 10**50), (arm, key)
+        assert of_kind(cells[arm].rows, "fill") != of_kind(cells["v4_main"].rows, "fill")
 
 
 def test_the_world_crashes_a_short_book_through_the_3x_ceiling(market, cells):
@@ -575,12 +637,17 @@ def _no_data(data: Path) -> None:
     (data / "data.json").unlink()
 
 
-@pytest.mark.parametrize("spoil", [_bad_pin, _bad_data, _no_data], ids=["pin", "data", "missing"])
-def test_cli_refuses_a_data_dir_with_a_bad_pin(spoil, tmp_path):
+@pytest.mark.parametrize(
+    ("spoil", "kind"),
+    [(_bad_pin, "ValueError"), (_bad_data, "ValueError"), (_no_data, "FileNotFoundError")],
+    ids=["pin", "data", "missing"],
+)
+def test_cli_refuses_a_data_dir_with_a_bad_pin(spoil, kind, tmp_path):
     """A data directory that does not load (a pin that does not match, a validly pinned pack the
     loader refuses, no ``data.json``) is not a cell outcome: nothing is written, not even the
-    cell's folder, and the exit code is 1. The reason goes to standard error, with any decimal
-    number in it hidden, so a bad bar's price never reaches a public log."""
+    cell's folder, and the exit code is 1. Standard error names the step and the exception's
+    type only: the loader's message for the bad bar holds its low, 100.5, which must never reach
+    a public log."""
     data = write_world(tmp_path / "world", tiny_world())
     spoil(data)
     out = tmp_path / "out"
@@ -588,13 +655,13 @@ def test_cli_refuses_a_data_dir_with_a_bad_pin(spoil, tmp_path):
     code, stdout, stderr = run_cli(cell_argv(data, out))
 
     assert (code, stdout) == (1, "")
-    assert stderr.startswith("v4_cell run: v4_main-10000-1x: refused: ")
+    assert stderr == (
+        f"v4_cell run: v4_main-10000-1x: refused: loading the data directory failed: {kind}\n"
+    )
     assert not out.exists()
-    assert re.search(r"[0-9]\.[0-9]", stderr) is None
-    if spoil is _bad_pin:
-        assert "sha256" in stderr
-    if spoil is _bad_data:  # the loader names the bar's low, which is hidden
-        assert "the low <number> is above the body" in stderr
+    if spoil is _bad_data:  # the message the CLI keeps to itself
+        with pytest.raises(ValueError, match="the low 100.5 is above the body"):
+            Market.load(data)
 
 
 @pytest.mark.parametrize("existing", OUTPUT_FILES)
@@ -609,7 +676,9 @@ def test_cli_refuses_a_cell_directory_that_already_holds_outputs(existing, tmp_p
     code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out"))
 
     assert (code, stdout) == (1, "")
-    assert stderr.startswith("v4_cell run: v4_main-10000-1x: refused: ")
+    assert stderr == (
+        f"v4_cell run: v4_main-10000-1x: refused: the cell's folder already holds {existing}\n"
+    )
     assert [item.name for item in folder.iterdir()] == [existing]
     assert (folder / existing).read_bytes() == b"kept"
 
@@ -679,8 +748,8 @@ def test_cli_writes_a_failure_summary_on_engine_error(arm, owner, monkeypatch, t
 
 def test_cli_reports_a_failure_before_the_summary_without_its_message(monkeypatch, tmp_path):
     """An exception after the replay but before the summary is written leaves the replay's
-    records and receipt but no summary: exit code 1, and standard error names the exception's
-    type only, since its message may hold an equity."""
+    records and receipt but no summary: exit code 1, and standard error names the step and the
+    exception's type only, since its message may hold an equity."""
     data = write_world(tmp_path / "world", tiny_world())
 
     def broken(*args: object) -> Mapping[str, object]:
@@ -692,5 +761,51 @@ def test_cli_reports_a_failure_before_the_summary_without_its_message(monkeypatc
 
     folder = tmp_path / "out" / "v4_main-10000-1x"
     assert (code, stdout) == (1, "")
-    assert "ValueError" in stderr and "10234" not in stderr
+    assert stderr == "v4_cell run: v4_main-10000-1x: building the summary failed: ValueError\n"
     assert sorted(item.name for item in folder.iterdir()) == ["receipt.json", "records.jsonl"]
+
+
+def test_cli_verifies_the_summary_before_it_writes_it(monkeypatch, tmp_path):
+    """The summary is verified in memory against the records before ``summary.json`` and
+    ``report.html`` are written. One that does not match its records (here its final equity,
+    changed after it was built) writes neither: exit code 1, the step and the type on standard
+    error, and the replay's records and receipt left as they are."""
+    data = write_world(tmp_path / "world", tiny_world())
+    real = v4_cell.build_summary
+
+    def tampered(*args: Any) -> dict[str, object]:
+        summary = real(*args)
+        summary["final_equity"] = "10000.5"
+        return summary
+
+    monkeypatch.setattr(v4_cell, "build_summary", tampered)
+
+    code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out"))
+
+    folder = tmp_path / "out" / "v4_main-10000-1x"
+    assert (code, stdout) == (1, "")
+    assert stderr == (
+        "v4_cell run: v4_main-10000-1x: the summary does not verify against the records; "
+        "none written: ValueError\n"
+    )
+    assert sorted(item.name for item in folder.iterdir()) == ["receipt.json", "records.jsonl"]
+
+
+def test_cli_requires_the_written_bytes_to_be_the_verified_summary(monkeypatch, tmp_path):
+    """After writing, ``summary.json`` is read back: bytes that are not the canonical JSON of the
+    verified summary (here a writer that wrote another summary) end the cell with exit code 1."""
+    data = write_world(tmp_path / "world", tiny_world())
+    real = v4_cell.write_cell_outputs
+
+    def other(folder: Path, summary: dict[str, object], page: str) -> str:
+        return real(folder, {**summary, "final_equity": "10000.5"}, page)
+
+    monkeypatch.setattr(v4_cell, "write_cell_outputs", other)
+
+    code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out"))
+
+    assert (code, stdout) == (1, "")
+    assert stderr == (
+        "v4_cell run: v4_main-10000-1x: summary.json on disk is not the verified summary's "
+        "canonical JSON\n"
+    )
