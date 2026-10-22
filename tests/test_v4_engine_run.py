@@ -2747,6 +2747,9 @@ def test_the_outputs_are_the_records_and_the_receipt(tmp_path):
         "index_sha256": header["packs"]["hourly_index"]["sha256"],
     }
     assert run.data_record(None) is None  # a market built in memory names no data
+    # The final review: it names the window too, the opens of its first and last hour.
+    assert outcome[0]["window"] == {"start_ms": T0, "end_ms": FEB - HOUR}
+    assert (market.window_start_ms, market.window_end_ms) == (T0, FEB - HOUR)
     before = (out / run.RECORDS_FILE).read_bytes()
     with pytest.raises(ValueError, match="already exists"):
         run.run_v4_cell(market, MAIN, out)

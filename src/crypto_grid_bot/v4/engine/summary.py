@@ -17,11 +17,14 @@ rebuilds the summary the same way and requires equality, with exact types (``tru
 raising a ``ValueError`` that names the first differing field (``open_marks[5][1]``,
 ``eras[2].return``).
 
-**The cell and its data are bound to the records.** The outcome record names its ``cell`` and the
-``data`` it was replayed on (run.py's ``cell_record`` and ``data_record``). The rebuild requires
-that cell to be the one asked for (``build_summary``'s spec, or the summary's own ``cell``), and
-the first open mark, taken before any fill, to equal its capital. So a summary relabelled to
-another arm, capital or cost level does not verify, and every number of a summary,
+**The cell, its window and its data are bound to the records.** The outcome record names its
+``cell``, its ``window`` and the ``data`` it was replayed on (run.py's ``cell_record``,
+``window_record`` and ``data_record``). The rebuild requires that cell to be the one asked for
+(``build_summary``'s spec, or the summary's own ``cell``), and the first open mark, taken before
+any fill, to equal its capital. It requires the first hourly record to be the window's first hour
+(``start_ms``), no hour after its last (``end_ms``), and a complete cell to end at that last hour.
+So a summary relabelled to another arm, capital, cost level or window does not verify, records
+that start late or a complete cell that ends early are refused, and every number of a summary,
 ``initial_equity`` included, is checked against the records.
 
 **Exact JSON.** Every Decimal is a string. Equities are spelled as the records spell them; the
@@ -33,8 +36,9 @@ bytes and SHA-256 are deterministic.
 these keys:
 
 * ``format`` (``v4-summary-1``); ``cell``: ``id``, ``arm``, ``capital``, ``cost_multiple``;
-  ``data``: the outcome record's (``config_sha256``, ``end_month``, ``daily_sha256``,
-  ``index_sha256``), or null for a market built in memory;
+  ``window``: the outcome record's ``start_ms`` and ``end_ms`` (the opens of the window's first
+  and last hour); ``data``: the outcome record's (``config_sha256``, ``end_month``,
+  ``daily_sha256``, ``index_sha256``), or null for a market built in memory;
 * ``outcome``; ``reason`` (null, or for ``limit_unrestorable`` one of run.py's
   ``LIMIT_REASONS``); ``stop_ms`` (the stop's hour, null for ``complete``). Both are always
   present, so no field of a full summary is missing;
@@ -61,8 +65,8 @@ hour, because the window starts after it, the cell never reached it, or it lies 
 stop, has every value null. The years after a stop are not listed: the records do not say where
 the window would have ended.
 
-**A failure summary** has only ``format``, ``cell``, ``data``, ``outcome`` and the failure's
-details:
+**A failure summary** has only ``format``, ``cell``, ``window``, ``data``, ``outcome`` and the
+failure's details:
 ``accounting_failure`` its ``identity`` (``wallet``, ``quantity`` or ``equity``), ``hour_ms`` and
 the residual ``values``; ``engine_error`` the exception's ``type`` and ``message`` and ``hour_ms``
 (null if before the first hour). It holds no audit residual: a result's audit is a fresh ledger's
@@ -124,6 +128,7 @@ ERAS: tuple[tuple[str, int | None, int | None], ...] = (
 SPARKLINE_POINTS = 1000
 
 _CELL_KEYS = frozenset({"id", "arm", "capital", "cost_multiple"})
+_WINDOW_KEYS = frozenset({"start_ms", "end_ms"})
 _DATA_KEYS = frozenset({"config_sha256", "end_month", "daily_sha256", "index_sha256"})
 _PERIOD_KEYS = ("start_ms", "end_ms", "start_equity", "end_equity", "return")
 _NOTE = (
@@ -150,6 +155,7 @@ class _Hour:
 class _Records:
     hours: tuple[_Hour, ...]
     outcome: Mapping[str, object]
+    window: Mapping[str, int]
 
     def marks(self) -> list[tuple[int, str, bool]]:
         return [
@@ -162,8 +168,9 @@ class _Records:
 def _read(records_path: Path, receipt: Receipt, cell: CellSpec) -> _Records:
     """Every ``hourly`` record and the one ``outcome`` record, reading the file to its end (so
     ``read_records`` checks the receipt's counts and final hash before anything is used), once
-    the records are of ``cell``: the outcome record names it, with well-formed ``data``, and the
-    first open mark, before any fill, is its capital."""
+    the records are of ``cell``: the outcome record names it, with a well-formed ``window`` and
+    ``data``, the first open mark, before any fill, is its capital, and the hours lie in the
+    window, the first of them its first hour."""
     hours: list[_Hour] = []
     outcome: dict[str, object] | None = None
     for kind, record in read_records(records_path, receipt):
@@ -186,13 +193,38 @@ def _read(records_path: Path, receipt: Receipt, cell: CellSpec) -> _Records:
         or not all(isinstance(value, str) for value in data.values())
     ):
         raise ValueError("the outcome record's data must be null or its four pins as strings")
+    window = _window(outcome.get("window"))
     if hours:
         first = hours[0]
         if first.equity is None or Decimal(first.equity) != Decimal(cell.capital):
             raise ValueError(
                 f"the first open mark, {first.equity}, is not the capital of {cell.cell_id}"
             )
-    return _Records(tuple(hours), outcome)
+        if first.open_ms != window["start_ms"]:
+            raise ValueError(
+                f"the first hour, {first.open_ms}, is not the window's first, {window['start_ms']}"
+            )
+        if hours[-1].open_ms > window["end_ms"]:
+            raise ValueError(
+                f"the hour {hours[-1].open_ms} is after the window's last, {window['end_ms']}"
+            )
+    return _Records(tuple(hours), outcome, window)
+
+
+def _window(value: object) -> dict[str, int]:
+    """The outcome record's window: the opens of its first and last hour, in order."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != _WINDOW_KEYS
+        or not all(
+            type(item) is int and item >= 0 and item % HOUR_MS == 0 for item in value.values()
+        )
+        or value["start_ms"] > value["end_ms"]
+    ):
+        raise ValueError(
+            "the outcome record's window must be its start_ms and end_ms, hour opens in order"
+        )
+    return {"start_ms": value["start_ms"], "end_ms": value["end_ms"]}
 
 
 def _hour(record: Mapping[str, object], previous: Sequence[_Hour]) -> _Hour:
@@ -371,6 +403,11 @@ def _full(cell: CellSpec, records: _Records, receipt_sha256: str) -> dict[str, o
         raise ValueError(f"{reason!r:.40} is not a reason of {LIMIT_UNRESTORABLE}")
     if name != OUTCOME_COMPLETE and stop_ms != last_ms:
         raise ValueError(f"the stop at {stop_ms} is not the last hour, {last_ms}")
+    if name == OUTCOME_COMPLETE and last_ms != records.window["end_ms"]:
+        raise ValueError(
+            f"a complete cell ends at the window's last hour, {records.window['end_ms']}, "
+            f"not {last_ms}"
+        )
     marks = records.marks()
     if name == OUTCOME_COMPLETE and len(marks) != len(records.hours):
         raise ValueError("every hour of a complete cell has an open mark")
@@ -396,6 +433,7 @@ def _full(cell: CellSpec, records: _Records, receipt_sha256: str) -> dict[str, o
     return {
         "format": SUMMARY_FORMAT,
         "cell": cell_record(cell),
+        "window": dict(records.window),
         "data": records.outcome.get("data"),
         "outcome": name,
         "reason": reason,
@@ -468,6 +506,7 @@ def _failure(cell: CellSpec, records: _Records) -> dict[str, object]:
     head: dict[str, object] = {
         "format": SUMMARY_FORMAT,
         "cell": cell_record(cell),
+        "window": dict(records.window),
         "data": outcome.get("data"),
         "outcome": name,
     }
@@ -629,6 +668,8 @@ def _failure_sections(summary: Mapping[str, object]) -> list[str]:
             continue
         if key == "hour_ms":
             rows.append(("hour", _when(value)))
+        elif key == "window" and isinstance(value, Mapping):
+            rows += [(f"window: {inner}", _when(item)) for inner, item in value.items()]
         elif isinstance(value, Mapping):
             rows += [(f"{key}: {inner}", _plain(item)) for inner, item in value.items()]
         else:
@@ -642,7 +683,14 @@ def _full_sections(summary: Mapping[str, object]) -> list[str]:
     complete = sum(1 for row in marks if isinstance(row, list) and len(row) == 3 and row[2] is True)
     stopped = summary.get("outcome") != OUTCOME_COMPLETE
     after = summary.get("final_after_close")
+    window = summary.get("window")
+    first, last = (
+        (window.get("start_ms"), window.get("end_ms"))
+        if isinstance(window, Mapping)
+        else (None, None)
+    )
     headline = [
+        ("Window (first and last hour)", f"{_when(first)} to {_when(last)}"),
         ("Initial equity", _usdt(summary.get("initial_equity"))),
         (
             "Final equity" + (" (the stop's mark)" if stopped else ""),

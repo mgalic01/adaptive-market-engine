@@ -73,6 +73,7 @@ FAKE = CellSpec("v4_main", 1000, 1)  # the cell of the hand-written records
 FULL_KEYS = {
     "format",
     "cell",
+    "window",
     "data",
     "outcome",
     "reason",
@@ -365,11 +366,13 @@ def fake_rows(
     residuals: Mapping[int, str] | None = None,
     cell: CellSpec = FAKE,
     data: Mapping[str, str] | None = None,
+    window: Mapping[str, int] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """A cell's records by hand, in the engine's ``hourly`` and ``outcome`` shapes: one hour
     from ``first_ms`` per entry of ``equities``, each that hour's open mark (None for an hour
     stopped before its open mark, which can only be the last; the first is the capital), then
-    the outcome, naming ``cell`` and ``data``."""
+    the outcome, naming ``cell``, ``window`` (by default the first hour to the last) and
+    ``data``."""
     rows: list[tuple[str, dict[str, Any]]] = []
     for index, equity in enumerate(equities):
         stamp = first_ms + index * HOUR
@@ -396,6 +399,7 @@ def fake_rows(
         "final_after_close": D(final) if outcome == "complete" else None,
         "audit": {"wallet_residual": D(0), "equity_residual": D(0), "quantity_residuals": []},
         "cell": cell_json(cell),
+        "window": dict(window or {"start_ms": first_ms, "end_ms": last}),
         "data": None if data is None else dict(data),
     }
     if outcome != "complete":
@@ -456,6 +460,7 @@ def test_full_summary_has_every_field_with_exact_decimals(trend):
     assert set(built) == FULL_KEYS
     assert built["format"] == SUMMARY_FORMAT == "v4-summary-1"
     assert built["cell"] == cell_json(MAIN)
+    assert built["window"] == {"start_ms": T0, "end_ms": FEB - HOUR}
     assert built["data"] == data_of(cell.out.parent / "world" / "data")
     assert (built["outcome"], built["reason"], built["stop_ms"]) == ("complete", None, None)
     final = result.final_equity
@@ -600,6 +605,7 @@ def test_failure_summaries_hold_the_failure_only(case, monkeypatch, tmp_path):
     assert built == {
         "format": SUMMARY_FORMAT,
         "cell": cell_json(MAIN),
+        "window": {"start_ms": T0, "end_ms": FEB - HOUR},
         "data": data_of(tmp_path / "world" / "data"),
         "outcome": cell.result.outcome,
         **details,
@@ -649,6 +655,8 @@ def test_verify_summary_rebuilds_and_detects_a_changed_number(trend, tmp_path):
         ("receipt_sha256", ["receipt_sha256"], "0" * 64),
         ("outcome", ["outcome"], "liquidated"),
         ("stop_ms", ["stop_ms"], T0),
+        (r"window\.end_ms", ["window", "end_ms"], FEB),
+        (r"window\.start_ms", ["window", "start_ms"], T0 - HOUR),
     ]
     for name, where, value in cases:
         with pytest.raises(ValueError, match=name):
@@ -918,6 +926,26 @@ def corrupt_data(rows: Rows) -> None:
     rows[-1][1]["data"] = {"config_sha256": "x"}
 
 
+def corrupt_late_start(rows: Rows) -> None:
+    rows[-1][1]["window"]["start_ms"] -= HOUR  # the records start an hour after the window
+
+
+def corrupt_early_end(rows: Rows) -> None:
+    rows[-1][1]["window"]["end_ms"] += HOUR  # a complete cell that ends an hour early
+
+
+def corrupt_after_window(rows: Rows) -> None:
+    rows[-1][1]["window"]["end_ms"] -= HOUR  # the last hour lies after the window
+
+
+def corrupt_window_missing(rows: Rows) -> None:
+    del rows[-1][1]["window"]
+
+
+def corrupt_window_type(rows: Rows) -> None:
+    rows[-1][1]["window"]["start_ms"] = str(rows[-1][1]["window"]["start_ms"])
+
+
 def corrupt_liquidation_reason(rows: Rows) -> None:
     rows[-1][1].update(outcome="liquidated", reason="ceiling", stop_ms=T0 + HOUR)
     rows[-1][1]["final_after_close"] = None
@@ -980,6 +1008,11 @@ def corrupt_outcome(rows: Rows) -> None:
         (corrupt_cell_type, "the records are of the cell 'v4_main-1000-1x', not v4_main-1000-1x"),
         (corrupt_cell_missing, "the records are of the cell None"),
         (corrupt_data, "data must be null or its four pins"),
+        (corrupt_late_start, "the first hour, [0-9]+, is not the window's first"),
+        (corrupt_early_end, "a complete cell ends at the window's last hour"),
+        (corrupt_after_window, "is after the window's last"),
+        (corrupt_window_missing, "window must be its start_ms and end_ms"),
+        (corrupt_window_type, "window must be its start_ms and end_ms"),
         (corrupt_liquidation_reason, "a liquidation has no reason"),
         (corrupt_limit_reason, "'liquidation' is not a reason of limit_unrestorable"),
         (corrupt_identity, "'cash' is not an accounting identity"),
@@ -1046,6 +1079,30 @@ def test_a_relabelled_summary_does_not_verify(trend):
         with pytest.raises(ValueError, match=f"the records are of the cell '{MAIN.cell_id}'"):
             verify_summary(relabelled, cell.records, receipt)
     verify_summary(built, cell.records, receipt)
+
+
+def test_the_records_must_cover_the_window_they_name(trend, tmp_path):
+    """The outcome record names the window the cell replayed. A cell's records that start after
+    the window's first hour (a late start), or a complete cell's that end before its last hour
+    (an early end), are refused; so is a summary that names another window."""
+    cell = trend["v4_main"]
+    outcome = cell.rows[-1][1]
+    assert outcome["window"] == {"start_ms": T0, "end_ms": FEB - HOUR}
+    built = cell.summary()
+    assert built["window"] == outcome["window"]
+    for name, field, shift, message in [
+        ("late-start", "start_ms", -HOUR, "the first hour, [0-9]+, is not the window's first"),
+        ("early-end", "end_ms", HOUR, "a complete cell ends at the window's last hour"),
+    ]:
+        rows = copy.deepcopy(cell.rows)
+        rows[-1][1]["window"][field] += shift
+        receipt = write_records(tmp_path / name, rows)
+        with pytest.raises(ValueError, match=message):
+            verify_summary(built, tmp_path / name / run.RECORDS_FILE, receipt)
+    later = changed(built, ["window", "end_ms"], FEB)
+    with pytest.raises(ValueError, match=r"window\.end_ms"):
+        verify_summary(later, cell.records, cell.result.receipt)
+    verify_summary(built, cell.records, cell.result.receipt)
 
 
 def test_build_summary_refuses_another_cells_spec(trend):

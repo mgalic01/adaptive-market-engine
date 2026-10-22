@@ -355,6 +355,7 @@ def test_cli_runs_every_arm_on_the_synthetic_world(world_dir, cells):
             "cost_multiple": COSTS,
         }
         assert summary["data"] == data
+        assert summary["window"] == {"start_ms": WINDOW_START, "end_ms": LAST_HOUR}
         assert (summary["outcome"], summary["reason"], summary["stop_ms"]) == (
             "complete",
             None,
@@ -727,6 +728,7 @@ def test_cli_writes_a_failure_summary_on_engine_error(arm, owner, monkeypatch, t
     assert cell.summary == {
         "format": "v4-summary-1",
         "cell": {"id": spec.cell_id, "arm": arm, "capital": CAPITAL, "cost_multiple": COSTS},
+        "window": {"start_ms": JAN, "end_ms": FEB - HOUR},
         "data": {
             "config_sha256": CONFIG_SHA256,
             "end_month": "2025-01",

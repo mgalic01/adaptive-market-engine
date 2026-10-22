@@ -174,10 +174,12 @@ the failure.
 * ``lifecycle``: every field of a ``Lifecycle``.
 * ``outcome``, last: ``outcome``, ``reason``, ``stop_ms``, ``hours`` (the open marks taken),
   ``final_equity``, ``equity_2025``, ``final_after_close`` and the last ``audit``; the ``cell``
-  (``cell_record``: ``id``, ``arm``, ``capital``, ``cost_multiple``) and the ``data`` it was
-  replayed on (``data_record`` of ``Market.pins``: ``config_sha256``, ``end_month``,
-  ``daily_sha256``, ``index_sha256``; null for a market built in memory), so the records bind
-  their cell and its data (Task 14 ruling); plus ``values`` (the residuals) for
+  (``cell_record``: ``id``, ``arm``, ``capital``, ``cost_multiple``), its ``window``
+  (``window_record``: ``start_ms`` and ``end_ms``, the opens of the window's first and last
+  hour) and the ``data`` it was replayed on (``data_record`` of ``Market.pins``:
+  ``config_sha256``, ``end_month``, ``daily_sha256``, ``index_sha256``; null for a market built
+  in memory), so the records bind their cell, its window and its data (Task 14 ruling and the
+  final review); plus ``values`` (the residuals) for
   ``accounting_failure``, ``check`` and ``mark`` for a stop, and ``type``, ``message`` and
   ``hour_ms`` for ``engine_error``.
 
@@ -1314,6 +1316,7 @@ class _CellState:
                 "final_after_close": self._final_after_close,
                 "audit": _audit_record(self._audit),
                 "cell": cell_record(self.cell),
+                "window": window_record(self.market),
                 "data": data_record(self.market.pins),
                 **extra,
             },
@@ -1970,6 +1973,12 @@ def cell_record(cell: CellSpec) -> dict[str, object]:
         "capital": cell.capital,
         "cost_multiple": cell.cost_multiple,
     }
+
+
+def window_record(market: Market) -> dict[str, object]:
+    """The window a cell replays, as the outcome record (and the summary) name it: the opens of
+    its first and its last hour, ``Market.window_start_ms`` and ``Market.window_end_ms``."""
+    return {"start_ms": market.window_start_ms, "end_ms": market.window_end_ms}
 
 
 def data_record(pins: DataPins | None) -> dict[str, object] | None:
