@@ -1,8 +1,9 @@
 """The eight arms of the V4 run, the 32 cells they make, and the fixed sizing constants.
 
 Implements the spec's "Versions in the run" (arm table and the neighbours' lookbacks) and
-"Account and execution" (costs). ``v3_as_built`` is not an engine arm (ruling R1), so the
-run has 8 arms x 2 capitals x 2 cost levels = 32 cells here.
+"Account and execution" (costs). ``v3_as_built`` is not an engine arm (ruling R1), and nor is
+``hold_btc_trend``: both are built in step 4. The run has 8 arms x 2 capitals x 2 cost levels =
+32 cells here.
 
 * ``v4_main``, ``v4_long_only``, ``v4_vol25`` and ``v4_vol60`` share the main lookbacks.
 * ``v4_faster`` and ``v4_slower`` scale only the signal lookbacks, by x0.75 and x1.25,

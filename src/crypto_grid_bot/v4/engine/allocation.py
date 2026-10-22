@@ -104,9 +104,10 @@ class CoinState:
     ``target_notional`` is the signed target. ``spot_notional`` is the held spot, dust
     excluded; ``dust_notional`` the unsellable spot dust; ``futures_notional`` the signed
     held futures. ``eligible`` is the coin's eligibility as decided at the decision (a perpetual
-    listed point in time, and at a month's last-day decision a complete funding month next), not
-    whether a perpetual exists: a coin with a perpetual can be ineligible, and is then spot-only
-    here (the hour loop passes the latest decision's, and False for a replacement buy).
+    listed point in time, the decision month's own funding status complete, and at a month's
+    last-day decision a next funding month that is not incomplete), not whether a perpetual
+    exists: a coin with a perpetual can be ineligible, and is then spot-only here (the hour loop
+    passes the latest decision's, and False for a replacement buy).
     ``keeps_legs`` marks a coin that keeps its legs as held (deferred, no-bar or band-kept);
     ``exiting_legs`` are the legs a mandatory exit closes this hour, which count as 0 for such a
     coin.
