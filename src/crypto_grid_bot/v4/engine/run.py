@@ -429,7 +429,6 @@ class _CellState:
         self._hour_ms = -1
         self._bars: dict[_Key, HourBar | None] = {}  # this hour's bars, looked up once
         self._prices: dict[_Key, Decimal] = {}  # this hour's marking price of each held leg
-        self._carried: dict[_Key, Decimal] = {}  # each leg's carried mark, when it needed one
         self._open: tuple[Mark, bool] | None = None  # this hour's open mark and completeness
         self._stop: _Stop | None = None
         # The result.
@@ -599,8 +598,10 @@ class _CellState:
         self, h: int, coin: str, key: _Key, held: Decimal, price: Decimal, reason: str
     ) -> tuple[Fill, Decimal]:
         """Book one synthetic close: the whole ``held`` quantity, with no filter, at the
-        penalised ``price`` and no slippage (the penalty replaces it), paying the venue's fee on
-        that notional, stamped at the hour's open."""
+        penalised ``price`` and no slippage (the penalty replaces it), stamped at the hour's open.
+        The fee is the venue's fee at the cell's own cost level, on that notional, so a
+        doubled-cost cell pays it doubled (controller ruling, Task 12c: the "normal fee" of spec
+        "Safety" contrasts the fee with the slippage the penalty replaces)."""
         venue, symbol = key
         quantity = held.copy_abs()
         charged = fee(quantity, price, self._costs[venue])
@@ -712,7 +713,6 @@ class _CellState:
         carried = self._stores[key].last_close_before(self._hour_ms)
         if carried is None:
             raise ValueError(f"the {key[0]} leg {key[1]} has no bar and no close before it")
-        self._carried[key] = carried
         return carried
 
     def _held_coins(self) -> frozenset[str]:

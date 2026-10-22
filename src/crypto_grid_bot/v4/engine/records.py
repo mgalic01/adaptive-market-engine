@@ -22,8 +22,9 @@ bundle carries a receipt. The module knows records, not prices or the engine's r
   SHA-256 of that file (the summary's ``receipt_sha256``); ``read_receipt`` refuses anything that
   is not exactly such a file.
 * **Streaming.** A real cell writes about 70,000 hourly records and the daily, fill and event
-  records besides, perhaps 100 MB. The writer holds one record and a running SHA-256; the reader
-  holds one line.
+  records besides: about 135 MB for a V4 cell and about 45 MB for a hold cell over the real
+  window, and about 3.6 GB for all the engine's 32 cells (measured in the final review). The
+  writer holds one record and a running SHA-256; the reader holds one line.
 
 ``read_records`` checks the file's SHA-256 against the receipt before it returns, then checks each
 line's schema, link and hash as the lines are yielded, and the receipt's counts and final chain
