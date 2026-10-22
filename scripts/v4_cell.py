@@ -2,9 +2,9 @@
 its report.
 
 Step 4's cells matrix runs it once per cell on GitHub's machines (no heavy work runs on the owner's
-PC). It implements the spec's "Reports" (every cell writes a ``summary.json``, even one that stops
-early) and the "Engineering" bullet "each cell verifies its own report" (rebuild and equality,
-inside the cell job).
+PC). It implements the spec's "Reports" (a cell that runs and verifies writes a ``summary.json``,
+even if it stops early; a cell that cannot run or verify writes none) and the "Engineering" bullet
+"each cell verifies its own report" (rebuild and equality, inside the cell job).
 
 ``run --data D --arm A --capital {1000,10000} --costs {1,2} --out O``:
 
