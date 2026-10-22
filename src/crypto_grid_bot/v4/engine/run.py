@@ -12,7 +12,7 @@ the monthly selection record), "Data" (the funding-month exit and its synthetic 
 stops early ends, accounting), "Records" and the outcomes of "Reports". ``run.py`` composes the
 engine's modules and holds no trading rule of its own; the few small rules no module has are
 private functions or methods here, each citing the spec (``_month_end``, ``_audit_failure``,
-``_cut_quantity``, the decided-coins rule in ``_V4Cell._decide``; in the fill phase
+``_cut_quantity``, the decided-coins rule in ``_V4Cell._decide``, ``_dead_spot``; in the fill phase
 ``_V4Cell._ready``'s dust-offset case, ``_V4Cell._exit_skip`` and
 ``_V4Cell._schedule_replacement``'s universe guard; in the safety phases the rule of
 ``_CellState._synthetic_legs`` for a leg due on both counts, and the time stamp of a cut after a
@@ -82,9 +82,14 @@ no bar for ``d`` keeps its last reading and takes no new target (the no-bar rule
 no reading at all is warming. The signal used is ``s`` (``L`` for ``v4_long_only``), and
 ``max(s, 0)`` when the coin has no eligible perpetual: ``Market.perpetual_eligible`` at ``h``,
 and, at the decision on a month's last day, a complete funding status for the next month (spec
-"Data": no futures exposure is held in an incomplete month). ``size_book`` sizes the book of every
-decided coin (a universe exit with signal 0, so its sigma is still recorded) on each coin's
-trailing returns, and ``PendingBook.decide`` takes the targets.
+"Data": no futures exposure is held in an incomplete month). A universe coin whose spot venue is a
+dead market at the decision, with no spot bar in the 168 hours before it (``_dead_spot``, the
+dead-market rule's test), takes signal 0 and no target (controller ruling, Task 15 fix 1): its
+full weight is then 0, so its missing returns do not thin the common days of the coins still
+trading. The no-bar rule is for missing days; a coin missing fewer than 168 hours keeps its signal
+in the book. ``size_book`` sizes the book of every decided coin (a universe exit or a dead market
+with signal 0, so its sigma is still recorded) on each coin's trailing returns, and
+``PendingBook.decide`` takes the targets.
 
 **Outputs** (rulings P3, P5). ``out_dir`` is the cell's own directory: created if missing, and
 refused if ``records.jsonl`` or ``receipt.json`` is already there. Every record goes through
@@ -103,14 +108,17 @@ the failure.
   volume, bars]``, ``excluded`` pairs ``[symbol, reason]``, ``entered``, ``left``), or null for
   a market without one.
 * ``daily_coin``, per decided coin: ``decision_ms``, ``day_ms``, ``coin``, ``in_universe``,
-  ``universe_exit``, ``no_bar``; the reading (``reading_day_ms``, ``close``, ``speeds`` with each
-  speed's values and vote, ``downtrend`` with its four parts' values and ``confirmed``, ``L``,
-  ``S``, ``s``, ``s_long_only``), all null for a coin with no reading; ``perpetual``,
-  ``perpetual_eligible`` (point in time), ``next_month`` and ``next_month_status`` (at a month's
-  last day, else null), ``eligible``, ``funding_month_exit`` (the exit's precondition) and the
-  ``signal`` used; the sizing (``sigma``, ``raw``, ``full``, ``scaled``, ``after_coin_cap``,
-  ``after_total_cap``, ``capped_by``, ``scale``, ``common_days``, ``flat_reason``); and the
-  ``target``, or ``no_target``: ``no_bar`` or ``warming``. The band result, the split and the
+  ``universe_exit``, ``no_bar``, ``dead_market`` (no spot bar in the 168 hours before the
+  decision, so a signal of 0 and no target; such a coin has no bar for the day either, so its
+  ``no_target`` is ``no_bar``, or ``warming`` before its first bar); the reading
+  (``reading_day_ms``, ``close``, ``speeds`` with each speed's values and vote, ``downtrend``
+  with its four parts' values and ``confirmed``, ``L``, ``S``, ``s``, ``s_long_only``), all null
+  for a coin with no reading; ``perpetual``, ``perpetual_eligible`` (point in time),
+  ``next_month`` and ``next_month_status`` (at a month's last day, else null), ``eligible``,
+  ``funding_month_exit`` (the exit's precondition) and the ``signal`` used; the sizing
+  (``sigma``, ``raw``, ``full``, ``scaled``, ``after_coin_cap``, ``after_total_cap``,
+  ``capped_by``, ``scale``, ``common_days``, ``flat_reason``); and the ``target``, or
+  ``no_target``: ``no_bar`` or ``warming``. The band result, the split and the
   order belong to the fill hour, as an ``event`` of type ``order`` (Task 12b).
 * ``fill``, per fill: ``hour_ms``, ``timestamp_ms``, ``coin``, ``venue``, ``symbol``, ``side``,
   ``quantity`` (venue units), ``price`` (slipped), ``unslipped_price``, ``fee``, ``realised``
@@ -219,6 +227,7 @@ from crypto_grid_bot.v4.engine.allocation import (
 from crypto_grid_bot.v4.engine.arms import (
     ARMS,
     COVARIANCE_DAYS,
+    DEAD_MARKET_HOURS,
     INITIAL_MARGIN_DIVISOR,
     MAINTENANCE_RATE,
     SIGMA_RETURNS,
@@ -1315,6 +1324,7 @@ class _CoinView:
     coin: str
     reading: SignalReading | None
     has_bar: bool
+    dead_market: bool
     in_universe: bool
     perpetual: str | None
     point_in_time: bool
@@ -1454,7 +1464,7 @@ class _V4Cell(_CellState):
         for coin, view in views.items():
             if view.universe_exit:
                 targets[coin] = _ZERO  # overrides the no-bar rule
-            elif view.has_bar:
+            elif view.has_bar and not view.dead_market:
                 targets[coin] = sizing.weights[coin]
         self._record_superseded(h, self._book.decide(h, targets))
         self._targets.update(targets)
@@ -1483,6 +1493,7 @@ class _V4Cell(_CellState):
             perpetual is not None and self._ledger.quantity("futures", perpetual.symbol) != 0
         )
         in_universe = coin in universe
+        dead = _dead_spot(self.market.coin(coin).spot, h)
         s = _ZERO
         if reading is not None:
             s = reading.s_long_only if self.arm.long_only else reading.s
@@ -1491,6 +1502,7 @@ class _V4Cell(_CellState):
             coin=coin,
             reading=reading,
             has_bar=reading is not None and reading.day_ms == day,
+            dead_market=dead,
             in_universe=in_universe,
             perpetual=None if perpetual is None else perpetual.symbol,
             point_in_time=point_in_time,
@@ -1498,7 +1510,7 @@ class _V4Cell(_CellState):
             next_status=next_status,
             eligible=eligible,
             funding_exit=blocked and holds_futures,
-            signal=used if in_universe else _ZERO,
+            signal=used if in_universe and not dead else _ZERO,
         )
 
     def _feed(self, coin: str, day: int) -> SignalReading | None:
@@ -1868,6 +1880,14 @@ def _month_end(h: int, end_month: str) -> str | None:
     return following
 
 
+def _dead_spot(store: SeriesStore, h: int) -> bool:
+    """Whether the coin's spot venue is a dead market at the decision at ``h`` (controller
+    ruling, Task 15 fix 1): no spot bar opens in the 168 hours ``[h - 168 h, h)``. It is the
+    dead-market rule's own test (``DeadMarkets.due``) and reads only bars before ``h``."""
+    last = store.last_open_at_or_before(h - 1)
+    return last is None or last < h - DEAD_MARKET_HOURS * HOUR_MS
+
+
 def _audit_failure(audit: Audit) -> str | None:
     """The first accounting identity the audit breaks, or None (spec "Safety", accounting: the
     wallet and quantity identities are exact, the equity residual at most 1e-18 USDT)."""
@@ -2130,6 +2150,7 @@ def _daily_record(
         "in_universe": view.in_universe,
         "universe_exit": view.universe_exit,
         "no_bar": not view.has_bar,
+        "dead_market": view.dead_market,
         **_reading_fields(reading),
         "perpetual": view.perpetual,
         "perpetual_eligible": view.point_in_time,

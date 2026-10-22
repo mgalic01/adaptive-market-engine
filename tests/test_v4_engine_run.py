@@ -27,7 +27,7 @@ import ast
 import dataclasses
 import socket
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
@@ -461,6 +461,118 @@ def test_a_coin_without_a_daily_bar_keeps_its_signal_and_takes_no_target(monkeyp
     )
     assert targets[after]["BTCUSDT"] == sizing.weights["BTCUSDT"]
     assert daily[(after, "BTCUSDT")]["target"] == text(sizing.weights["BTCUSDT"])
+
+
+def rising_world(*, luna_end_ms: int | None = None, eth_missing: Sequence[int] = ()) -> World:
+    """BTCUSDT (with its perpetual), ETHUSDT and LUNAUSDT rising from 2024-10, all selected in
+    January 2025. LUNAUSDT's data stops at ``luna_end_ms`` (a delisting); ETHUSDT's spot has no
+    row at the ``eth_missing`` opens (an outage)."""
+    start, hours = month_start("2024-10"), hours_in("2024-10", "2025-01")
+    luna_hours = hours if luna_end_ms is None else (luna_end_ms - start) // HOUR
+    coins = (
+        CoinSpec(
+            "BTCUSDT",
+            Series(start, path("50000", (hours, "0.0002"), noise="0.002", seed=41)),
+            perpetual=PerpetualSpec(),
+        ),
+        CoinSpec(
+            "ETHUSDT",
+            Series(
+                start,
+                path("3000", (hours, "0.0002"), noise="0.002", seed=42),
+                missing=tuple(eth_missing),
+            ),
+        ),
+        CoinSpec(
+            "LUNAUSDT",
+            Series(start, path("5", (luna_hours, "0.0002"), noise="0.002", seed=43)),
+        ),
+    )
+    return World("2025-01", coins, {"2025-01": ("BTCUSDT", "ETHUSDT", "LUNAUSDT")})
+
+
+def plain_book(
+    market: Market, h: int, readings: dict[str, dict[int, SignalReading]], dead: Collection[str]
+) -> SizingResult:
+    """``size_book`` for v4_main at the decision ``h`` on the plain inputs: each coin's latest
+    reading (its signal max(s, 0) without an eligible perpetual), a coin in ``dead`` at 0."""
+    day, book = h - DAY, {}
+    for coin, by_day in readings.items():
+        reading = latest(by_day, day)
+        s = D(0) if reading is None else reading.s
+        s = s if market.perpetual_eligible(coin, h) else max(s, D(0))
+        book[coin] = D(0) if coin in dead else s
+    returns = {coin: daily_returns(market.daily(coin)) for coin in readings}
+    return size_book(book, returns, day, vol_target=D("0.40"))
+
+
+def test_a_dead_universe_coin_leaves_the_sizing_book_and_the_others_keep_trading(tmp_path):
+    """Controller ruling (Task 15, fix 1): LUNAUSDT's data stops at 00:00 on 2025-01-08 and it
+    stays in January's universe. Until the decision 168 hours after its last bar (23:00 on
+    January 7), the no-bar rule keeps its signal in the book. From 00:00 on January 15 it is a
+    dead market: signal 0, so full 0 and out of the common days, and no target. Read literally,
+    its kept signal would hold its missing returns in the intersection, and the common days of
+    the last 60 would fall below 40 on January 29, flattening BTCUSDT and ETHUSDT too; they keep
+    their targets instead."""
+    end = T0 + 7 * DAY
+    market = load(tmp_path, rising_world(luna_end_ms=end))
+    coins = ("BTCUSDT", "ETHUSDT", "LUNAUSDT")
+    readings = {coin: readings_by_day(market, coin, ARMS["v4_main"]) for coin in coins}
+
+    _, rows = cell_run(market, tmp_path)
+
+    daily = daily_by(rows)
+    first_dead = end - HOUR + 168 * HOUR + HOUR  # the last bar's open + 168 h, at 00:00
+    assert first_dead == T0 + 14 * DAY
+    literal_flat = 0
+    for h in range(T0, month_start("2025-02"), DAY):
+        luna = daily[(h, "LUNAUSDT")]
+        dead = h >= first_dead
+        assert luna["dead_market"] is dead and luna["in_universe"]
+        assert daily[(h, "BTCUSDT")]["dead_market"] is daily[(h, "ETHUSDT")]["dead_market"] is False
+        sizing = plain_book(market, h, readings, {"LUNAUSDT"} if dead else set())
+        for coin in ("BTCUSDT", "ETHUSDT"):
+            check_sizing(daily[(h, coin)], sizing)
+            assert daily[(h, coin)]["target"] == text(sizing.weights[coin])
+        if dead:
+            assert (luna["signal"], luna["full"], luna["target"]) == ("0", "0", None)
+            assert luna["no_bar"] and luna["no_target"] == "no_bar"
+            literal = plain_book(market, h, readings, set())
+            if literal.flat_reason == "insufficient_common_days":
+                literal_flat += 1
+                assert sizing.flat_reason is None and sizing.common_days >= 40
+                assert all(D(daily[(h, c)]["target"]) > 0 for c in ("BTCUSDT", "ETHUSDT"))
+        elif h > end:
+            # Missing days, not yet 168 hours: the kept signal stays in the book.
+            assert luna["no_bar"] and luna["target"] is None
+            assert luna["signal"] == text(max(latest(readings["LUNAUSDT"], h - DAY).s, D(0)))
+            assert D(luna["full"]) > 0
+    assert literal_flat == 3  # January 29 to 31 would have been flat
+
+
+def test_a_coin_missing_three_days_stays_in_the_sizing_book_with_its_kept_signal(tmp_path):
+    """The no-bar rule for missing days, under the dead-market ruling: ETHUSDT's spot has no row
+    from 00:00 on 2025-01-10 to 23:00 on January 12, 72 hours, fewer than 168. The decisions of
+    January 11 to 13 give it no target, keep its signal (positive) and its full weight in the
+    book, and its missing returns thin the common days that BTCUSDT's weight is sized on."""
+    gap = T0 + 9 * DAY
+    market = load(tmp_path, rising_world(eth_missing=range(gap, gap + 72 * HOUR, HOUR)))
+    coins = ("BTCUSDT", "ETHUSDT", "LUNAUSDT")
+    readings = {coin: readings_by_day(market, coin, ARMS["v4_main"]) for coin in coins}
+
+    _, rows = cell_run(market, tmp_path)
+
+    daily = daily_by(rows)
+    for h in (gap + DAY, gap + 2 * DAY, gap + 3 * DAY):
+        eth = daily[(h, "ETHUSDT")]
+        assert eth["no_bar"] and not eth["dead_market"] and eth["target"] is None
+        assert eth["reading_day_ms"] == gap - DAY
+        assert D(eth["signal"]) > 0 and D(eth["full"]) > 0
+        sizing = plain_book(market, h, readings, set())
+        assert sizing.common_days is not None and sizing.common_days < 60
+        check_sizing(daily[(h, "BTCUSDT")], sizing)
+        assert daily[(h, "BTCUSDT")]["target"] == text(sizing.weights["BTCUSDT"])
+    assert not any(record["dead_market"] for record in daily.values())
 
 
 @pytest.mark.parametrize("status", ["missing_slot", None])
