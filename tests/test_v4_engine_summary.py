@@ -38,6 +38,7 @@ from v4_synthetic import (
     hours_in,
     month_start,
     path,
+    read_data_json,
     write_world,
 )
 
@@ -68,9 +69,11 @@ DEC = month_start("2024-12")
 Y2021 = month_start("2021-01")
 CAPITAL = 10000
 MAIN = CellSpec("v4_main", CAPITAL, 1)
+FAKE = CellSpec("v4_main", 1000, 1)  # the cell of the hand-written records
 FULL_KEYS = {
     "format",
     "cell",
+    "data",
     "outcome",
     "reason",
     "stop_ms",
@@ -294,6 +297,17 @@ def cell_json(cell: CellSpec) -> dict[str, Any]:
     }
 
 
+def data_of(data_dir: Path) -> dict[str, str]:
+    """The pins of a written world, read from its data.json: what a loaded market names."""
+    header = read_data_json(data_dir)
+    return {
+        "config_sha256": header["config_sha256"],
+        "end_month": header["end_month"],
+        "daily_sha256": header["packs"]["daily"]["sha256"],
+        "index_sha256": header["packs"]["hourly_index"]["sha256"],
+    }
+
+
 def static_mask(first_ms: int, hours: int) -> tuple[int, ...]:
     """Hours 00:00 to 04:59 of every day: a spot series masked so has no daily bar, so its coin
     never gets a target and keeps exactly the legs ``seed`` gives it."""
@@ -349,10 +363,13 @@ def fake_rows(
     outcome: str = "complete",
     reason: str | None = None,
     residuals: Mapping[int, str] | None = None,
+    cell: CellSpec = FAKE,
+    data: Mapping[str, str] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """A cell's records by hand, in the engine's ``hourly`` and ``outcome`` shapes: one hour
     from ``first_ms`` per entry of ``equities``, each that hour's open mark (None for an hour
-    stopped before its open mark, which can only be the last), then the outcome."""
+    stopped before its open mark, which can only be the last; the first is the capital), then
+    the outcome, naming ``cell`` and ``data``."""
     rows: list[tuple[str, dict[str, Any]]] = []
     for index, equity in enumerate(equities):
         stamp = first_ms + index * HOUR
@@ -378,6 +395,8 @@ def fake_rows(
         "equity_2025": D(at_2025[0]) if at_2025 and at_2025[0] is not None else None,
         "final_after_close": D(final) if outcome == "complete" else None,
         "audit": {"wallet_residual": D(0), "equity_residual": D(0), "quantity_residuals": []},
+        "cell": cell_json(cell),
+        "data": None if data is None else dict(data),
     }
     if outcome != "complete":
         record["check"] = "adverse_extremes"
@@ -437,6 +456,7 @@ def test_full_summary_has_every_field_with_exact_decimals(trend):
     assert set(built) == FULL_KEYS
     assert built["format"] == SUMMARY_FORMAT == "v4-summary-1"
     assert built["cell"] == cell_json(MAIN)
+    assert built["data"] == data_of(cell.out.parent / "world" / "data")
     assert (built["outcome"], built["reason"], built["stop_ms"]) == ("complete", None, None)
     final = result.final_equity
     assert built["initial_equity"] == "10000"
@@ -510,6 +530,7 @@ def test_a_liquidated_cell_writes_a_full_summary_to_the_stop(monkeypatch, tmp_pa
     assert result.outcome == "liquidated" and result.stop_ms == crash
     assert set(built) == FULL_KEYS
     assert built["cell"] == cell_json(cell_spec)
+    assert built["data"] == data_of(tmp_path / "world" / "data")
     assert (built["outcome"], built["reason"], built["stop_ms"]) == ("liquidated", None, crash)
     assert built["initial_equity"] == "1000"
     assert F(D(built["final_equity"])) == 10 and built["final_equity"] == str(result.final_equity)
@@ -579,9 +600,11 @@ def test_failure_summaries_hold_the_failure_only(case, monkeypatch, tmp_path):
     assert built == {
         "format": SUMMARY_FORMAT,
         "cell": cell_json(MAIN),
+        "data": data_of(tmp_path / "world" / "data"),
         "outcome": cell.result.outcome,
         **details,
     }
+    assert outcome["cell"] == cell_json(MAIN)  # every outcome record names its cell
     verify_summary(built, cell.records, cell.result.receipt)
     page = render_page(built)
     assert cell.result.outcome in page and "<svg" not in page
@@ -638,9 +661,9 @@ def test_verify_summary_rebuilds_and_detects_a_changed_number(trend, tmp_path):
         verify_summary({**built, "extra": 1}, cell.records, receipt)
     with pytest.raises(ValueError, match="cell"):
         verify_summary(changed(built, ["cell", "capital"], 1000), cell.records, receipt)
-    # Another cell's summary fails on its first number (the records do not name their cell),
-    # and another cell's receipt is not the one next to these records.
-    with pytest.raises(ValueError, match=r"summary field final_equity does not match"):
+    # Another cell's summary is refused, since the records name their cell, and another
+    # cell's receipt is not the one next to these records.
+    with pytest.raises(ValueError, match="the records are of the cell 'v4_main-10000-1x', not"):
         verify_summary(trend["hold_btc"].summary(), cell.records, receipt)
     with pytest.raises(ValueError, match="receipt"):
         verify_summary(built, cell.records, trend["hold_btc"].result.receipt)
@@ -756,10 +779,11 @@ def test_eras_and_years_split_at_their_boundaries(tmp_path):
     first, last = Y2021 - 2 * HOUR, T0 + HOUR
     hours = (last - first) // HOUR + 1
     equities = [f"{1000 + index}.25" for index in range(hours)]
+    equities[0] = "1000"  # the first open mark, before any fill, is the capital
     equities[100] = "500.5"
     final = "50000.75"
     residuals = {first + 5 * HOUR: "-3E-19", first + 7 * HOUR: "2E-19"}
-    cell_spec = CellSpec("v4_main", 1000, 1)
+    cell_spec = FAKE
     result = fake_cell(tmp_path / "cell", first, equities, final, residuals=residuals)
     records = tmp_path / "cell" / run.RECORDS_FILE
 
@@ -798,7 +822,14 @@ def test_eras_and_years_split_at_their_boundaries(tmp_path):
 
 @pytest.mark.parametrize(
     "case",
-    ["liquidated in 2024", "ceiling in 2024", "liquidated in 2025", "stopped before 2025's mark"],
+    [
+        "liquidated in 2024",
+        "ceiling in 2024",
+        "margin_cushion in 2024",
+        "required_fill in 2024",
+        "liquidated in 2025",
+        "stopped before 2025's mark",
+    ],
 )
 def test_a_stop_ends_its_era_and_year_and_nulls_the_later_ones(case, tmp_path):
     """Spec "Safety" and "Reports": the era (and year) holding a stop ends at the stop's final
@@ -807,13 +838,9 @@ def test_a_stop_ends_its_era_and_year_and_nulls_the_later_ones(case, tmp_path):
     * in 2025: era 2 ends at the 2025-01-01 open mark, and era 3 runs from it to the stop;
     * a stop at 2025-01-01 00:00 before its open mark (a synthetic close batch): era 2 and 2024
       end at the stop, and era 3 and 2025, which never had an open mark, are null."""
+    limit = case.split()[0]
     outcome, reason = (
-        ("limit_unrestorable", "ceiling")
-        if case.startswith("ceiling")
-        else (
-            "liquidated",
-            None,
-        )
+        ("limit_unrestorable", limit) if limit in run.LIMIT_REASONS else ("liquidated", None)
     )
     if case.endswith("in 2024"):
         first, equities, final = T0 - 4 * HOUR, ["1000", "990", "980"], "400"
@@ -825,9 +852,9 @@ def test_a_stop_ends_its_era_and_year_and_nulls_the_later_ones(case, tmp_path):
     result = fake_cell(tmp_path / "cell", first, equities, final, outcome=outcome, reason=reason)
     records = tmp_path / "cell" / run.RECORDS_FILE
 
-    built = build_summary(CellSpec("v4_main", 1000, 1), result, records)
+    built = build_summary(FAKE, result, records)
 
-    assert set(built) == FULL_KEYS
+    assert set(built) == FULL_KEYS and built["data"] is None  # hand-written: no data dir
     assert (built["outcome"], built["reason"], built["stop_ms"]) == (outcome, reason, stop)
     assert built["liquidations"] == (1 if outcome == "liquidated" else 0)
     assert built["final_equity"] == final and built["final_after_close"] is None
@@ -869,6 +896,41 @@ def corrupt_null_mark(rows: Rows) -> None:
 def corrupt_complete_without_mark(rows: Rows) -> None:
     rows[3][1].update(open_equity=None, complete=None)
     rows[-1][1]["hours"] -= 1
+
+
+def corrupt_first_mark(rows: Rows) -> None:
+    rows[0][1]["open_equity"] = D("1001")  # not the 1,000 USDT capital the outcome names
+
+
+def corrupt_cell(rows: Rows) -> None:
+    rows[-1][1]["cell"] = cell_json(CellSpec("hold_btc", 1000, 1))
+
+
+def corrupt_cell_type(rows: Rows) -> None:
+    rows[-1][1]["cell"]["cost_multiple"] = True  # equal to 1 in Python, but not the same JSON
+
+
+def corrupt_cell_missing(rows: Rows) -> None:
+    del rows[-1][1]["cell"]
+
+
+def corrupt_data(rows: Rows) -> None:
+    rows[-1][1]["data"] = {"config_sha256": "x"}
+
+
+def corrupt_liquidation_reason(rows: Rows) -> None:
+    rows[-1][1].update(outcome="liquidated", reason="ceiling", stop_ms=T0 + HOUR)
+    rows[-1][1]["final_after_close"] = None
+
+
+def corrupt_limit_reason(rows: Rows) -> None:
+    rows[-1][1].update(outcome="limit_unrestorable", reason="liquidation", stop_ms=T0 + HOUR)
+    rows[-1][1]["final_after_close"] = None
+
+
+def corrupt_identity(rows: Rows) -> None:
+    rows[-1][1].update(outcome="accounting_failure", reason="cash", stop_ms=T0 + HOUR)
+    rows[-1][1]["values"] = {"wallet_residual": "1", "equity_residual": "0"}
 
 
 def corrupt_after_outcome(rows: Rows) -> None:
@@ -913,6 +975,14 @@ def corrupt_outcome(rows: Rows) -> None:
         (corrupt_after_close, "after the close"),
         (corrupt_stop, "is not the last hour"),
         (corrupt_outcome, "unknown outcome"),
+        (corrupt_first_mark, "is not the capital of v4_main-1000-1x"),
+        (corrupt_cell, "the records are of the cell 'hold_btc-1000-1x', not v4_main-1000-1x"),
+        (corrupt_cell_type, "the records are of the cell 'v4_main-1000-1x', not v4_main-1000-1x"),
+        (corrupt_cell_missing, "the records are of the cell None"),
+        (corrupt_data, "data must be null or its four pins"),
+        (corrupt_liquidation_reason, "a liquidation has no reason"),
+        (corrupt_limit_reason, "'liquidation' is not a reason of limit_unrestorable"),
+        (corrupt_identity, "'cash' is not an accounting identity"),
     ],
 )
 def test_records_the_engine_would_not_write_are_refused(corrupt, message, tmp_path):
@@ -923,9 +993,72 @@ def test_records_the_engine_would_not_write_are_refused(corrupt, message, tmp_pa
     rows = fake_rows(T0 - 2 * HOUR, ["1000", "1010", "1020", "1030"], "1040")
     corrupt(rows)
     receipt = write_records(tmp_path / "cell", rows)
-    stub = {"format": SUMMARY_FORMAT, "cell": cell_json(CellSpec("v4_main", 1000, 1))}
+    stub = {"format": SUMMARY_FORMAT, "cell": cell_json(FAKE)}
     with pytest.raises(ValueError, match=message):
         verify_summary(stub, tmp_path / "cell" / run.RECORDS_FILE, receipt)
+
+
+@pytest.mark.parametrize("case", ["ends mid-era 1", "ends at 2024-12-31 23:00"])
+def test_a_complete_cell_that_ends_before_2025_has_no_later_era(case, tmp_path):
+    """The era a complete cell ends in closes at the final equity, at the window's end; the
+    eras after it were never reached and are null. A window ending at 2024-12-31 23:00 ends era 2
+    at 2025-01-01 00:00, has no equity at 2025-01-01, and leaves era 3 null."""
+    if case == "ends mid-era 1":
+        first, end = Y2021 - 6 * HOUR, Y2021 - 3 * HOUR  # 18:00 to the end of 20:00, 2020-12-31
+    else:
+        first, end = T0 - 3 * HOUR, T0  # 21:00 to the end of 23:00, 2024-12-31
+    equities = ["1000", "1010", "1020"]
+    result = fake_cell(tmp_path / "cell", first, equities, "1030")
+    records = tmp_path / "cell" / run.RECORDS_FILE
+
+    built = build_summary(FAKE, result, records)
+
+    whole = span(first, end, "1000", "1030")
+    if case == "ends mid-era 1":
+        assert built["eras"] == [era("start-2020", whole), era("2021-2024"), era("2025-end")]
+        assert built["years"] == [year(2020, whole)]
+    else:
+        assert built["eras"] == [era("start-2020"), era("2021-2024", whole), era("2025-end")]
+        assert built["years"] == [year(2024, whole)]
+    assert built["equity_2025"] is None and built["final_after_close"] == "1030"
+    verify_summary(built, records, result.receipt)
+
+
+def test_a_relabelled_summary_does_not_verify(trend):
+    """Fix round 1: the records name their cell, and the first open mark is its capital, so a
+    summary relabelled to another capital, arm or cost level, even consistently in every number
+    the label changes, does not verify (the reviewer's probe: a ``hold_btc-1000-2x`` label on the
+    records of a 10,000 USDT ``v4_main`` cell)."""
+    cell = trend["v4_main"]
+    built = cell.summary()
+    receipt = cell.result.receipt
+    for arm, capital, multiple in [
+        ("v4_main", 1000, 1),
+        ("hold_btc", 10000, 1),
+        ("v4_main", 10000, 2),
+        ("hold_btc", 1000, 2),
+    ]:
+        label = CellSpec(arm, capital, multiple)
+        relabelled = {**copy.deepcopy(built), "cell": cell_json(label)}
+        relabelled["initial_equity"] = str(D(capital))
+        with localcontext(CONTEXT):
+            relabelled["compounded_return"] = str(D(built["final_equity"]) / D(capital) - 1)
+        with pytest.raises(ValueError, match=f"the records are of the cell '{MAIN.cell_id}'"):
+            verify_summary(relabelled, cell.records, receipt)
+    verify_summary(built, cell.records, receipt)
+
+
+def test_build_summary_refuses_another_cells_spec(trend):
+    """``build_summary`` reads the records of the cell it is given: a spec of another capital,
+    arm or cost level is refused, whatever the result says."""
+    cell = trend["v4_main"]
+    for other in (
+        CellSpec("v4_main", 1000, 1),
+        CellSpec("v4_vol25", CAPITAL, 1),
+        CellSpec("v4_main", CAPITAL, 2),
+    ):
+        with pytest.raises(ValueError, match=f"not {other.cell_id}"):
+            build_summary(other, cell.result, cell.records)
 
 
 # ---- the page and the files -----------------------------------------------------------------
@@ -945,6 +1078,10 @@ def test_page_has_no_script_and_states_promising_not_proven(trend):
     for token in FORBIDDEN:
         assert token not in lowered, token
     assert re.search(r"\son[a-z]+\s*=", lowered) is None  # no event handlers
+    assert (
+        '<meta http-equiv="Content-Security-Policy" '
+        "content=\"default-src 'none'; style-src 'unsafe-inline'\">"
+    ) in page
     assert "promising, not proven" in page and "only the third era" in lowered
     assert "complete" in page and MAIN.cell_id in page
     for name in ERA_NAMES:
@@ -959,6 +1096,7 @@ def test_the_page_escapes_every_text_value(trend):
     failure = {
         "format": SUMMARY_FORMAT,
         "cell": cell_json(MAIN),
+        "data": None,
         "outcome": "engine_error",
         "type": "ValueError<i>",
         "message": message,

@@ -44,7 +44,14 @@ from crypto_grid_bot.combined.execution import VenueRules
 from crypto_grid_bot.v4.data.bars import FundingRow
 from crypto_grid_bot.v4.data.pack import COIN_FORMAT, INDEX_FORMAT, coin_pack_file
 from crypto_grid_bot.v4.data.universe import MonthlyUniverse
-from crypto_grid_bot.v4.engine.market import Coin, HourBar, Market, Perpetual, SeriesStore
+from crypto_grid_bot.v4.engine.market import (
+    Coin,
+    DataPins,
+    HourBar,
+    Market,
+    Perpetual,
+    SeriesStore,
+)
 
 D = Decimal
 T0 = month_start("2025-01")  # 2025-01-01 00:00 UTC
@@ -305,6 +312,46 @@ def test_market_loads_the_world_the_builder_wrote(tmp_path):
     assert contract_bar.close == spot_bar.close * 1000
     with pytest.raises(ValueError, match="XRPUSDT"):
         market.coin("XRPUSDT")
+
+
+def test_a_loaded_market_keeps_the_pins_of_data_json(tmp_path):
+    """Task 14 ruling: a market loaded from a data directory names what it was read from:
+    data.json's config_sha256 and end_month and the pins of the daily pack and the hourly index
+    (which pins every coin pack), so a cell's outcome record can carry them. A market built in
+    memory has none, and pins must be well formed and of the market's end month."""
+    data_dir = write_world(tmp_path, three_coins())
+    header = read_data_json(data_dir)
+
+    market = Market.load(data_dir)
+
+    assert market.pins == DataPins(
+        header["config_sha256"],
+        "2025-02",
+        header["packs"]["daily"]["sha256"],
+        header["packs"]["hourly_index"]["sha256"],
+    )
+    coins = [market.coin("BTCUSDT")]
+    assert (
+        Market(end_month="2025-02", universes={"2025-01": ("BTCUSDT",)}, coins=coins).pins is None
+    )
+    with pytest.raises(ValueError, match="end_month"):
+        Market(
+            end_month="2025-03", universes={"2025-01": ("BTCUSDT",)}, coins=coins, pins=market.pins
+        )
+    with pytest.raises(ValueError, match="DataPins"):
+        Market(end_month="2025-02", universes={"2025-01": ("BTCUSDT",)}, coins=coins, pins={})
+    pins = market.pins
+    assert pins is not None
+    with pytest.raises(FrozenInstanceError):
+        pins.end_month = "2025-03"  # type: ignore[misc]
+    for change, message in [
+        ({"daily_sha256": "ABC"}, "daily_sha256"),
+        ({"index_sha256": pins.daily_sha256.upper()}, "index_sha256"),
+        ({"end_month": "2025-13"}, "end_month"),
+        ({"config_sha256": ""}, "config_sha256"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            replace(pins, **change)
 
 
 def test_market_verifies_every_pin_and_refuses_a_tampered_coin_pack(tmp_path):

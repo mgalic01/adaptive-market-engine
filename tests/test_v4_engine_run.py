@@ -49,6 +49,7 @@ from v4_synthetic import (
     hours_in,
     month_start,
     path,
+    read_data_json,
     repack,
     write_world,
 )
@@ -1252,8 +1253,13 @@ def two_way_world() -> World:
 def test_long_only_and_vol_variants_change_only_their_parameters(tmp_path):
     """Spec "Versions in the run": each variant is v4_main with one parameter changed. A
     v4_main cell given a variant's volatility target, signal or lookbacks writes exactly the
-    variant's records (the same receipt), and each parameter does change them. The long-only arm
-    never shorts where v4_main does."""
+    variant's records, but for the cell its outcome record names, and each parameter does change
+    them. The long-only arm never shorts where v4_main does."""
+
+    def unlabelled(rows: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
+        """The records with the outcome's cell label set aside (Task 14: it names the cell)."""
+        return [(kind, {**r, "cell": None} if kind == "outcome" else r) for kind, r in rows]
+
     market = load(tmp_path, two_way_world())
     variants = ("v4_long_only", "v4_vol25", "v4_vol60", "v4_faster", "v4_slower")
     runs = {
@@ -1268,9 +1274,13 @@ def test_long_only_and_vol_variants_change_only_their_parameters(tmp_path):
         )
         assert arm.vol_target is not None and arm.lookbacks is not None
         state = run._V4Cell(market, MAIN, arm, arm.vol_target, arm.lookbacks)
-        result = run._run(state, tmp_path / "out" / f"main-as-{name}")
-        assert result.receipt == runs[name][0].receipt, name
-        assert result.receipt != runs["v4_main"][0].receipt, name
+        out = tmp_path / "out" / f"main-as-{name}"
+        result = run._run(state, out)
+        rows = list(read_records(out / run.RECORDS_FILE, result.receipt))
+        assert rows[-1][1]["cell"] == run.cell_record(MAIN)
+        assert runs[name][1][-1][1]["cell"] == run.cell_record(CellSpec(name, CAPITAL, 1))
+        assert unlabelled(rows) == unlabelled(runs[name][1]), name
+        assert unlabelled(rows) != unlabelled(runs["v4_main"][1]), name
     main_rows, long_rows = runs["v4_main"][1], runs["v4_long_only"][1]
     assert any(f["venue"] == "futures" and f["side"] == -1 for f in of_kind(main_rows, "fill"))
     assert any(r["side"] == "short" for r in of_kind(main_rows, "lifecycle"))
@@ -2610,6 +2620,21 @@ def test_the_outputs_are_the_records_and_the_receipt(tmp_path):
     assert outcome == [rows[-1][1]] and outcome[0]["outcome"] == "complete"
     assert D(outcome[0]["final_after_close"]) == result.final_after_close
     assert outcome[0]["hours"] == len(result.open_marks)
+    # Task 14: the outcome record binds the records to their cell and the data replayed.
+    header = read_data_json(tmp_path / "world" / "data")
+    assert outcome[0]["cell"] == {
+        "id": "v4_main-10000-1x",
+        "arm": "v4_main",
+        "capital": 10000,
+        "cost_multiple": 1,
+    }
+    assert outcome[0]["data"] == {
+        "config_sha256": header["config_sha256"],
+        "end_month": "2025-01",
+        "daily_sha256": header["packs"]["daily"]["sha256"],
+        "index_sha256": header["packs"]["hourly_index"]["sha256"],
+    }
+    assert run.data_record(None) is None  # a market built in memory names no data
     before = (out / run.RECORDS_FILE).read_bytes()
     with pytest.raises(ValueError, match="already exists"):
         run.run_v4_cell(market, MAIN, out)

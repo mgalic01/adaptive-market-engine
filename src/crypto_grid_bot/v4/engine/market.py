@@ -10,10 +10,12 @@ the 168-hour dead-market window of "Safety", over the pack contract in the docst
 verifies the daily pack and the hourly index by their pins, then each coin pack by the pin the
 index gives, one pack at a time. Each pack must carry its own format, and the ``config_sha256``
 and ``end_month`` of ``data.json``. A file is read only by a plain name inside the data
-directory. Only the monthly selection records are kept from the daily pack: each month's
-``MonthlyUniverse`` (the selected symbols, the whole ranking with each candidate's mean quote
-volume and bar count, the exclusions, and who entered and who left), for the cell's ``monthly``
-record (spec "Universe": the selection is recorded every month). Each coin pack's rows become
+directory. The market keeps ``data.json``'s pins as ``Market.pins`` (``DataPins``), so a cell's
+records can name the data they were replayed on; a Market built in memory has none. Only the
+monthly selection records are kept from the daily pack: each month's ``MonthlyUniverse`` (the
+selected symbols, the whole ranking with each candidate's mean quote volume and bar count, the
+exclusions, and who entered and who left), for the cell's ``monthly`` record (spec "Universe":
+the selection is recorded every month). Each coin pack's rows become
 compact stores, and its document is released before the next one is read.
 
 Masking follows the contract: rows include masked bars, and ``SeriesStore.from_rows`` drops
@@ -68,6 +70,7 @@ _SYMBOL = re.compile(r"[A-Z0-9]{2,30}")
 _MONTH = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
 # A pack's file: a plain name, never a path out of the data directory.
 _FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 # normalize() and scaleb() under this context never round a price the data reader accepts (at
 # most 1e18, exponents -18 to 18: 37 digits); a price that would round is refused.
 _EXACT = Context(prec=100, traps=[InvalidOperation, Inexact, Rounded])
@@ -232,6 +235,27 @@ class Coin:
         _symbol(self.symbol, "coin")
 
 
+@dataclass(frozen=True, slots=True)
+class DataPins:
+    """What a market loaded from a data directory was read from: ``data.json``'s
+    ``config_sha256`` and ``end_month``, and the pins (SHA-256) of the daily pack and the hourly
+    index, which pins every coin pack."""
+
+    config_sha256: str
+    end_month: str
+    daily_sha256: str
+    index_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config_sha256, str) or not self.config_sha256:
+            raise ValueError(f"config_sha256 must be a string, got {self.config_sha256!r:.70}")
+        _month(self.end_month, "end_month")
+        for name in ("daily_sha256", "index_sha256"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                raise ValueError(f"{name} must be 64 lowercase hex digits, got {value!r:.70}")
+
+
 class Market:
     """The packs as the engine reads them. ``Market.load`` builds one from a data directory;
     the constructor takes the parts directly.
@@ -240,7 +264,8 @@ class Market:
     must be one of ``coins``. The window opens at 00:00 UTC of the first month whose selection
     is not empty (spec "Data") and ends with the last hour of ``end_month``. ``selections``
     optionally maps a month to its whole selection record; each must be a month of
-    ``universes`` and select exactly its symbols.
+    ``universes`` and select exactly its symbols. ``pins`` (``Market.load`` sets them) name the
+    data directory's files, and must have the market's ``end_month``.
     """
 
     __slots__ = (
@@ -250,6 +275,7 @@ class Market:
         "_selections",
         "_universes",
         "end_month",
+        "pins",
         "symbols",
         "window_end_ms",
         "window_start_ms",
@@ -262,8 +288,13 @@ class Market:
         universes: Mapping[str, Sequence[str]],
         coins: Iterable[Coin],
         selections: Mapping[str, MonthlyUniverse] | None = None,
+        pins: DataPins | None = None,
     ) -> None:
         end_ms = month_bounds_ms(_month(end_month, "end_month"))[1]
+        if pins is not None and not isinstance(pins, DataPins):
+            raise ValueError(f"pins: DataPins required, got {pins!r:.60}")
+        if pins is not None and pins.end_month != end_month:
+            raise ValueError(f"pins: end_month {pins.end_month} is not the market's {end_month}")
         by_symbol: dict[str, Coin] = {}
         owners: dict[str, str] = {}  # perpetual -> its coin
         for coin in coins:
@@ -306,6 +337,7 @@ class Market:
                 raise ValueError(f"selection {month}: its selected symbols are not the universe")
             records[month] = record
         self.end_month = end_month
+        self.pins = pins
         self.window_start_ms = month_bounds_ms(first)[0]
         self.window_end_ms = end_ms - HOUR_MS
         self.symbols = tuple(sorted(by_symbol))
@@ -354,6 +386,12 @@ class Market:
             universes={month: record.selected for month, record in selections.items()},
             coins=coins,
             selections=selections,
+            pins=DataPins(
+                header["config_sha256"],
+                header["end_month"],
+                packs["daily"]["sha256"],
+                packs["hourly_index"]["sha256"],
+            ),
         )
 
     def universe(self, month: str) -> tuple[str, ...]:

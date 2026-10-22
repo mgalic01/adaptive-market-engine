@@ -15,8 +15,14 @@ what the records say, and its receipt must be the ``receipt.json`` next to the r
 mismatch is a ``ValueError`` naming the field. ``verify_summary`` takes the cell from the summary,
 rebuilds the summary the same way and requires equality, with exact types (``true`` is not ``1``),
 raising a ``ValueError`` that names the first differing field (``open_marks[5][1]``,
-``eras[2].return``). The records do not name their cell, so a summary's ``cell`` is checked only for
-being a valid cell whose ``id`` matches its parts; every number is checked against the records.
+``eras[2].return``).
+
+**The cell and its data are bound to the records.** The outcome record names its ``cell`` and the
+``data`` it was replayed on (run.py's ``cell_record`` and ``data_record``). The rebuild requires
+that cell to be the one asked for (``build_summary``'s spec, or the summary's own ``cell``), and
+the first open mark, taken before any fill, to equal its capital. So a summary relabelled to
+another arm, capital or cost level does not verify, and every number of a summary,
+``initial_equity`` included, is checked against the records.
 
 **Exact JSON.** Every Decimal is a string. Equities are spelled as the records spell them; the
 computed values are ``str`` of a Decimal computed under ``CONTEXT``. ``write_cell_outputs``
@@ -27,8 +33,11 @@ bytes and SHA-256 are deterministic.
 these keys:
 
 * ``format`` (``v4-summary-1``); ``cell``: ``id``, ``arm``, ``capital``, ``cost_multiple``;
-* ``outcome``; ``reason`` (null, or the ``limit_unrestorable`` reason); ``stop_ms`` (the stop's
-  hour, null for ``complete``). Both are always present, so no field of a full summary is missing;
+  ``data``: the outcome record's (``config_sha256``, ``end_month``, ``daily_sha256``,
+  ``index_sha256``), or null for a market built in memory;
+* ``outcome``; ``reason`` (null, or for ``limit_unrestorable`` one of run.py's
+  ``LIMIT_REASONS``); ``stop_ms`` (the stop's hour, null for ``complete``). Both are always
+  present, so no field of a full summary is missing;
 * ``initial_equity`` (the capital); ``final_equity`` (the outcome record's: after the window-end
   close, or the stop's mark); ``equity_2025`` (the open mark at 2025-01-01 00:00 UTC, null without
   one); ``final_after_close`` (null for a stop);
@@ -52,18 +61,20 @@ hour, because the window starts after it, the cell never reached it, or it lies 
 stop, has every value null. The years after a stop are not listed: the records do not say where
 the window would have ended.
 
-**A failure summary** has only ``format``, ``cell``, ``outcome`` and the failure's details:
+**A failure summary** has only ``format``, ``cell``, ``data``, ``outcome`` and the failure's
+details:
 ``accounting_failure`` its ``identity`` (``wallet``, ``quantity`` or ``equity``), ``hour_ms`` and
 the residual ``values``; ``engine_error`` the exception's ``type`` and ``message`` and ``hour_ms``
 (null if before the first hour). It holds no audit residual: a result's audit is a fresh ledger's
 zeros until the first audit, so an engine error's would read as clean.
 
 **The page** (``render_page``) is self-contained HTML: no script, nothing fetched, system fonts,
-every text value escaped. It shows the outcome, the plain statement that only the third era was
-unseen when V4 was designed, so a pass means "promising", not "proven", and then either the
-failure's details or the headline numbers (rounded for reading), the equity path as an inline SVG
-sparkline (at most ``SPARKLINE_POINTS`` evenly spaced points, first and last included) and the eras
-and years tables.
+every text value escaped, and a Content-Security-Policy that allows only its inline style. It
+shows the outcome, the plain statement that only the third era was unseen when V4 was designed,
+so a pass means "promising", not "proven", and then either the failure's details or the headline
+numbers (rounded for reading), the equity path as an inline SVG sparkline (at most
+``SPARKLINE_POINTS`` evenly spaced points, first and last included) and the eras and years
+tables.
 """
 
 from __future__ import annotations
@@ -83,21 +94,24 @@ from crypto_grid_bot.v4.engine.market import HOUR_MS
 from crypto_grid_bot.v4.engine.numbers import CONTEXT
 from crypto_grid_bot.v4.engine.records import Receipt, read_receipt, read_records
 from crypto_grid_bot.v4.engine.run import (
+    ACCOUNTING_FAILURE,
+    ACCOUNTING_IDENTITIES,
+    ENGINE_ERROR,
     EQUITY_2025_MS,
+    LIMIT_REASONS,
     LIMIT_UNRESTORABLE,
     LIQUIDATED,
+    OUTCOME_COMPLETE,
     RECEIPT_FILE,
     CellResult,
+    cell_record,
 )
 
 SUMMARY_FORMAT = "v4-summary-1"
 SUMMARY_FILE = "summary.json"
 PAGE_FILE = "report.html"
 
-COMPLETE = "complete"
-ACCOUNTING_FAILURE = "accounting_failure"
-ENGINE_ERROR = "engine_error"
-FULL_OUTCOMES = frozenset({COMPLETE, LIQUIDATED, LIMIT_UNRESTORABLE})
+FULL_OUTCOMES = frozenset({OUTCOME_COMPLETE, LIQUIDATED, LIMIT_UNRESTORABLE})
 FAILURE_OUTCOMES = frozenset({ACCOUNTING_FAILURE, ENGINE_ERROR})
 
 _START_2021 = month_bounds_ms("2021-01")[0]
@@ -110,6 +124,7 @@ ERAS: tuple[tuple[str, int | None, int | None], ...] = (
 SPARKLINE_POINTS = 1000
 
 _CELL_KEYS = frozenset({"id", "arm", "capital", "cost_multiple"})
+_DATA_KEYS = frozenset({"config_sha256", "end_month", "daily_sha256", "index_sha256"})
 _PERIOD_KEYS = ("start_ms", "end_ms", "start_equity", "end_equity", "return")
 _NOTE = (
     "Only the third era, 2025-01-01 to the end, was unseen when V4 was designed, "
@@ -144,9 +159,11 @@ class _Records:
         ]
 
 
-def _read(records_path: Path, receipt: Receipt) -> _Records:
+def _read(records_path: Path, receipt: Receipt, cell: CellSpec) -> _Records:
     """Every ``hourly`` record and the one ``outcome`` record, reading the file to its end (so
-    ``read_records`` checks the receipt's counts and final hash before anything is used)."""
+    ``read_records`` checks the receipt's counts and final hash before anything is used), once
+    the records are of ``cell``: the outcome record names it, with well-formed ``data``, and the
+    first open mark, before any fill, is its capital."""
     hours: list[_Hour] = []
     outcome: dict[str, object] | None = None
     for kind, record in read_records(records_path, receipt):
@@ -158,6 +175,23 @@ def _read(records_path: Path, receipt: Receipt) -> _Records:
             outcome = record
     if outcome is None:
         raise ValueError("the records hold no outcome record")
+    named = outcome.get("cell")
+    if _first_difference(named, cell_record(cell), "cell") is not None:  # exact types
+        label = named.get("id") if isinstance(named, dict) else named
+        raise ValueError(f"the records are of the cell {label!r:.60}, not {cell.cell_id}")
+    data = outcome.get("data")
+    if data is not None and (
+        not isinstance(data, dict)
+        or set(data) != _DATA_KEYS
+        or not all(isinstance(value, str) for value in data.values())
+    ):
+        raise ValueError("the outcome record's data must be null or its four pins as strings")
+    if hours:
+        first = hours[0]
+        if first.equity is None or Decimal(first.equity) != Decimal(cell.capital):
+            raise ValueError(
+                f"the first open mark, {first.equity}, is not the capital of {cell.cell_id}"
+            )
     return _Records(tuple(hours), outcome)
 
 
@@ -239,7 +273,7 @@ def build_summary(cell: CellSpec, result: CellResult, records_path: Path) -> dic
         raise ValueError(f"a CellResult is required, got {result!r:.60}")
     path = Path(records_path)
     receipt_sha256 = _receipt_sha256(path, result.receipt)
-    records = _read(path, result.receipt)
+    records = _read(path, result.receipt, cell)
     _cross_check(records, result)
     return _summary(cell, records, receipt_sha256)
 
@@ -252,7 +286,7 @@ def verify_summary(summary: dict[str, object], records_path: Path, receipt: Rece
         raise ValueError("a summary must be a JSON object")
     cell = _summary_cell(summary)
     path = Path(records_path)
-    expected = _summary(cell, _read(path, receipt), _receipt_sha256(path, receipt))
+    expected = _summary(cell, _read(path, receipt, cell), _receipt_sha256(path, receipt))
     where = _first_difference(summary, expected, "")
     if where is not None:
         raise ValueError(f"summary field {where} does not match the cell's records")
@@ -264,15 +298,6 @@ def _receipt_sha256(records_path: Path, receipt: Receipt) -> str:
     if read_receipt(path) != receipt:
         raise ValueError(f"{path.name} next to the records is not the receipt given")
     return _digest(path.read_bytes())
-
-
-def _cell_json(cell: CellSpec) -> dict[str, object]:
-    return {
-        "id": cell.cell_id,
-        "arm": cell.arm,
-        "capital": cell.capital,
-        "cost_multiple": cell.cost_multiple,
-    }
 
 
 def _summary_cell(summary: Mapping[str, object]) -> CellSpec:
@@ -338,25 +363,29 @@ def _full(cell: CellSpec, records: _Records, receipt_sha256: str) -> dict[str, o
     if not records.hours:
         raise ValueError(f"a {name} cell has no hourly records")
     first_ms, last_ms = records.hours[0].open_ms, records.hours[-1].open_ms
-    if name == COMPLETE and (reason is not None or stop_ms is not None):
+    if name == OUTCOME_COMPLETE and (reason is not None or stop_ms is not None):
         raise ValueError("a complete cell has no reason and no stop")
-    if name != COMPLETE and stop_ms != last_ms:
+    if name == LIQUIDATED and reason is not None:
+        raise ValueError(f"a liquidation has no reason, got {reason!r:.40}")
+    if name == LIMIT_UNRESTORABLE and reason not in LIMIT_REASONS:
+        raise ValueError(f"{reason!r:.40} is not a reason of {LIMIT_UNRESTORABLE}")
+    if name != OUTCOME_COMPLETE and stop_ms != last_ms:
         raise ValueError(f"the stop at {stop_ms} is not the last hour, {last_ms}")
     marks = records.marks()
-    if name == COMPLETE and len(marks) != len(records.hours):
+    if name == OUTCOME_COMPLETE and len(marks) != len(records.hours):
         raise ValueError("every hour of a complete cell has an open mark")
     if outcome.get("hours") != len(marks):
         raise ValueError(f"the outcome record's hours is not the {len(marks)} open marks")
     final_text = _text(outcome.get("final_equity"), "the final equity")
     final = Decimal(final_text)
     after = _optional_text(outcome.get("final_after_close"), "the equity after the close")
-    if after != (final_text if name == COMPLETE else None):
+    if after != (final_text if name == OUTCOME_COMPLETE else None):
         raise ValueError("the equity after the close is the final equity, and null for a stop")
     by_ms = {ms: equity for ms, equity, _ in marks}
     equity_2025 = by_ms.get(EQUITY_2025_MS)
     if outcome.get("equity_2025") != equity_2025:
         raise ValueError("the outcome record's equity_2025 is not the 2025-01-01 open mark")
-    end_ms = last_ms + HOUR_MS if name == COMPLETE else last_ms
+    end_ms = last_ms + HOUR_MS if name == OUTCOME_COMPLETE else last_ms
     ending = _Ending(first_ms, last_ms, by_ms, final_text, end_ms)
     initial = Decimal(cell.capital)
     with localcontext(CONTEXT):
@@ -366,7 +395,8 @@ def _full(cell: CellSpec, records: _Records, receipt_sha256: str) -> dict[str, o
     years = range(_year_of(first_ms), _year_of(last_ms) + 1)
     return {
         "format": SUMMARY_FORMAT,
-        "cell": _cell_json(cell),
+        "cell": cell_record(cell),
+        "data": records.outcome.get("data"),
         "outcome": name,
         "reason": reason,
         "stop_ms": stop_ms,
@@ -435,13 +465,20 @@ def _failure(cell: CellSpec, records: _Records) -> dict[str, object]:
     """A short failure summary: the failure's details and nothing else (module docstring)."""
     outcome = records.outcome
     name = str(outcome["outcome"])
-    head: dict[str, object] = {"format": SUMMARY_FORMAT, "cell": _cell_json(cell), "outcome": name}
+    head: dict[str, object] = {
+        "format": SUMMARY_FORMAT,
+        "cell": cell_record(cell),
+        "data": outcome.get("data"),
+        "outcome": name,
+    }
     if name == ACCOUNTING_FAILURE:
         identity = outcome.get("reason")
         hour_ms = outcome.get("stop_ms")
         values = outcome.get("values")
         if type(identity) is not str or type(hour_ms) is not int or not isinstance(values, dict):
             raise ValueError("an accounting failure needs its identity, hour and values")
+        if identity not in ACCOUNTING_IDENTITIES:
+            raise ValueError(f"{identity!r:.40} is not an accounting identity")
         if not records.hours or records.hours[-1].open_ms != hour_ms:
             raise ValueError(f"the accounting failure at {hour_ms} is not the last hour")
         return {**head, "identity": identity, "hour_ms": hour_ms, "values": values}
@@ -550,6 +587,8 @@ def render_page(summary: dict[str, object]) -> str:
             '<html lang="en">',
             "<head>",
             '<meta charset="utf-8">',
+            '<meta http-equiv="Content-Security-Policy" '
+            "content=\"default-src 'none'; style-src 'unsafe-inline'\">",
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             f"<title>V4 cell {_e(ident)}</title>",
             f"<style>{_STYLE}</style>",
@@ -566,7 +605,7 @@ def render_page(summary: dict[str, object]) -> str:
 def _outcome_line(summary: Mapping[str, object]) -> str:
     outcome = summary.get("outcome")
     line = f"Outcome: <strong>{_e(outcome)}</strong>"
-    if outcome == COMPLETE:
+    if outcome == OUTCOME_COMPLETE:
         return line + ". The window ran to its end and every position was closed."
     if outcome in (LIQUIDATED, LIMIT_UNRESTORABLE):
         if summary.get("reason") is not None:
@@ -601,7 +640,7 @@ def _full_sections(summary: Mapping[str, object]) -> list[str]:
     raw_marks = summary.get("open_marks")
     marks = raw_marks if isinstance(raw_marks, list) else []
     complete = sum(1 for row in marks if isinstance(row, list) and len(row) == 3 and row[2] is True)
-    stopped = summary.get("outcome") != COMPLETE
+    stopped = summary.get("outcome") != OUTCOME_COMPLETE
     after = summary.get("final_after_close")
     headline = [
         ("Initial equity", _usdt(summary.get("initial_equity"))),

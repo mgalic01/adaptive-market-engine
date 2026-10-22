@@ -164,9 +164,13 @@ the failure.
   ``gross_notional``, ``gross`` (null when equity is at or below 0), ``margin_ratio`` (null with
   no futures position, read as +infinity, spec "Safety") and ``equity_residual``, the audit's.
 * ``lifecycle``: every field of a ``Lifecycle``.
-* ``outcome``, last: ``outcome``, ``reason``, ``stop_ms``, ``hours``, ``final_equity``,
-  ``equity_2025``, ``final_after_close`` and the last ``audit``; plus ``values`` (the residuals)
-  for ``accounting_failure``, ``check`` and ``mark`` for a stop, and ``type``, ``message`` and
+* ``outcome``, last: ``outcome``, ``reason``, ``stop_ms``, ``hours`` (the open marks taken),
+  ``final_equity``, ``equity_2025``, ``final_after_close`` and the last ``audit``; the ``cell``
+  (``cell_record``: ``id``, ``arm``, ``capital``, ``cost_multiple``) and the ``data`` it was
+  replayed on (``data_record`` of ``Market.pins``: ``config_sha256``, ``end_month``,
+  ``daily_sha256``, ``index_sha256``; null for a market built in memory), so the records bind
+  their cell and its data (Task 14 ruling); plus ``values`` (the residuals) for
+  ``accounting_failure``, ``check`` and ``mark`` for a stop, and ``type``, ``message`` and
   ``hour_ms`` for ``engine_error``.
 
 **Outcomes.** ``complete``; ``liquidated`` (reason null); ``limit_unrestorable`` (reason
@@ -224,7 +228,14 @@ from crypto_grid_bot.v4.engine.arms import (
 )
 from crypto_grid_bot.v4.engine.ledger import Audit, Fill, Ledger, Mark, Venue
 from crypto_grid_bot.v4.engine.lifecycle import Lifecycle, Lifecycles
-from crypto_grid_bot.v4.engine.market import COMPLETE, HOUR_MS, HourBar, Market, SeriesStore
+from crypto_grid_bot.v4.engine.market import (
+    COMPLETE,
+    HOUR_MS,
+    DataPins,
+    HourBar,
+    Market,
+    SeriesStore,
+)
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
 from crypto_grid_bot.v4.engine.orders import LegPlan, Order, fee, fill_price, plan_leg
 from crypto_grid_bot.v4.engine.pending import Decided, Exit, Pending, PendingBook
@@ -272,6 +283,17 @@ LIMIT_UNRESTORABLE = "limit_unrestorable"
 MARGIN_CUSHION = "margin_cushion"
 CEILING = "ceiling"
 REQUIRED_FILL = "required_fill"
+LIMIT_REASONS: tuple[str, ...] = (MARGIN_CUSHION, CEILING, REQUIRED_FILL)
+# The other outcomes. A complete cell is OUTCOME_COMPLETE, apart from market's COMPLETE, a
+# funding month's status.
+OUTCOME_COMPLETE = "complete"
+ACCOUNTING_FAILURE = "accounting_failure"
+ENGINE_ERROR = "engine_error"
+# The accounting identities, in the order the audit tests them (an accounting failure's reason).
+WALLET_IDENTITY = "wallet"
+QUANTITY_IDENTITY = "quantity"
+EQUITY_IDENTITY = "equity"
+ACCOUNTING_IDENTITIES: tuple[str, ...] = (WALLET_IDENTITY, QUANTITY_IDENTITY, EQUITY_IDENTITY)
 
 _Key = tuple[Venue, str]
 _VENUES: tuple[Venue, ...] = ("spot", "futures")
@@ -432,7 +454,7 @@ class _CellState:
         hour = self._hour_ms if self._hour_ms >= 0 else None  # None: before the first hour
         self._final_after_close = None
         self._finish(
-            "engine_error",
+            ENGINE_ERROR,
             f"{name}: {exc}",
             None,
             {"type": name, "message": str(exc), "hour_ms": hour},
@@ -647,14 +669,14 @@ class _CellState:
         self._record("hourly", _hourly_record(h, self._open, mark, audit))
         failure = _audit_failure(audit)
         if failure is not None:
-            self._finish("accounting_failure", failure, h, {"values": _audit_record(audit)})
+            self._finish(ACCOUNTING_FAILURE, failure, h, {"values": _audit_record(audit)})
             return True
         if self._stop is not None:
             self._finish_stop(h, self._stop)
             return True
         if h == self.market.window_end_ms:
             self._final_after_close = mark.equity
-            self._finish("complete", None, None, {})
+            self._finish(OUTCOME_COMPLETE, None, None, {})
             return True
         return False
 
@@ -1273,6 +1295,8 @@ class _CellState:
                 "equity_2025": self._equity_2025,
                 "final_after_close": self._final_after_close,
                 "audit": _audit_record(self._audit),
+                "cell": cell_record(self.cell),
+                "data": data_record(self.market.pins),
                 **extra,
             },
         )
@@ -1848,11 +1872,11 @@ def _audit_failure(audit: Audit) -> str | None:
     """The first accounting identity the audit breaks, or None (spec "Safety", accounting: the
     wallet and quantity identities are exact, the equity residual at most 1e-18 USDT)."""
     if audit.wallet_residual != 0:
-        return "wallet"
+        return WALLET_IDENTITY
     if any(value != 0 for value in audit.quantity_residuals.values()):
-        return "quantity"
+        return QUANTITY_IDENTITY
     if audit.equity_residual.copy_abs() > EQUITY_RESIDUAL_LIMIT:
-        return "equity"
+        return EQUITY_IDENTITY
     return None
 
 
@@ -1907,6 +1931,29 @@ def _batch_reason(trading: tuple[Decimal, bool, str] | None, exits: Mapping[Venu
 
 
 # ---- record shapes (shared with the hold arms) ---------------------------------------------
+
+
+def cell_record(cell: CellSpec) -> dict[str, object]:
+    """The cell, as the outcome record (and the summary) name it."""
+    return {
+        "id": cell.cell_id,
+        "arm": cell.arm,
+        "capital": cell.capital,
+        "cost_multiple": cell.cost_multiple,
+    }
+
+
+def data_record(pins: DataPins | None) -> dict[str, object] | None:
+    """The data a cell was replayed on, as the outcome record (and the summary) name it: null
+    for a market built in memory."""
+    if pins is None:
+        return None
+    return {
+        "config_sha256": pins.config_sha256,
+        "end_month": pins.end_month,
+        "daily_sha256": pins.daily_sha256,
+        "index_sha256": pins.index_sha256,
+    }
 
 
 def _audit_record(audit: Audit) -> dict[str, object]:
