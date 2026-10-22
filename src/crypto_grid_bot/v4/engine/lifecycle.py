@@ -22,12 +22,14 @@ Implements the spec's "Records" (the "Per trade lifecycle" bullet and its sub-bu
   figure ``Ledger.fill`` gave it), before fees and funding, plus the unrealised P&L when the
   lifecycle is censored. ``fees`` is the sum of the fills' fees and ``funding`` the signed sum
   of the funding passed (positive credits the wallet), so ``gross_pnl - fees + funding`` is the
-  net. ``best_unrealised`` is the maximum, over the marks passed to ``mark``, of the gross
-  realised P&L so far plus that mark's unrealised P&L, and ``given_back`` is ``best_unrealised -
-  gross_pnl``. The caller passes the hourly open mark of the combined position (Ruling R6), and
-  a stop or window-end mark just before ``censor``; every ``mark`` counts. Neither figure is
-  clamped: ``given_back`` is negative when the exit beats every mark. A lifecycle that no mark
-  ever saw (opened and closed within one hour) has ``best_unrealised == gross_pnl``.
+  net. ``best_unrealised`` is the maximum, over the counting marks passed to ``mark`` and the
+  final gross P&L, of the gross realised P&L so far plus that mark's unrealised P&L (the final
+  gross P&L itself at the end), and ``given_back`` is ``best_unrealised - gross_pnl``, so it is
+  never negative. The caller passes the hourly open mark of the combined position as a counting
+  mark (Ruling R6). The mark a stop or the window end takes after its last fills, just before
+  ``censor``, is passed with ``counts=False``: it gives ``censor`` its unrealised P&L and counts
+  only through the final gross P&L. A lifecycle that no counting mark ever saw (opened and closed
+  within one hour) has ``best_unrealised == gross_pnl``.
 * **Censoring.** ``censor`` ends every open lifecycle at once, with ``censored=True`` and the last
   unrealised P&L passed to ``mark``. A lifecycle whose position changed since that mark has no
   usable value, so ``censor`` refuses it. With reason ``window end`` a lifecycle whose last batch
@@ -149,8 +151,10 @@ class _Open:
         leg.fees += to_fraction(fill.fee)
         leg.realised += realised
 
-    def mark(self, unrealised: Fraction) -> None:
+    def mark(self, unrealised: Fraction, *, counts: bool) -> None:
         self.unrealised = unrealised
+        if not counts:
+            return
         value = self.realised() + unrealised
         if self.best is None or value > self.best:
             self.best = value
@@ -158,7 +162,8 @@ class _Open:
     def finish(self, coin: str, exit_ms: int, reason: str, *, censored: bool) -> Lifecycle:
         unrealised = (self.unrealised or _ZERO) if censored else _ZERO
         gross = self.realised() + unrealised
-        best = gross if self.best is None else self.best
+        # The final gross P&L is a point of the path too, so nothing is ever given back below 0.
+        best = gross if self.best is None else max(self.best, gross)
         spot, futures = self.legs["spot"], self.legs["futures"]
         venues: dict[Venue, Mapping[str, Decimal]] = {
             "spot": MappingProxyType(
@@ -301,17 +306,20 @@ class Lifecycles:
             raise ValueError(f"funding for {name}, which has no open lifecycle")
         held.legs["futures"].funding += value
 
-    def mark(self, hour_ms: int, coin: str, unrealised: Decimal) -> None:
-        """Record the coin's unrealised P&L over both venues at this hour (the open mark of the
-        combined position). It counts toward ``best_unrealised`` and is the value ``censor``
-        uses until the next batch that has fills."""
+    def mark(self, hour_ms: int, coin: str, unrealised: Decimal, *, counts: bool = True) -> None:
+        """Record the coin's unrealised P&L over both venues at this hour. It is the value
+        ``censor`` uses until the next batch that has fills. With ``counts`` (the hourly open mark
+        of the combined position) it also counts toward ``best_unrealised``; ``counts=False`` is
+        the mark a stop or the window end takes after its last fills, just before ``censor``."""
         hour = self._time(hour_ms)
         name = _symbol(coin, "coin")
         value = _amount(unrealised, "unrealised", signed=True)
+        if type(counts) is not bool:
+            raise ValueError(f"counts must be a bool, got {counts!r:.40}")
         held = self._open.get(name)
         if held is None:
             raise ValueError(f"a mark for {name}, which has no open lifecycle")
-        held.mark(value)
+        held.mark(value, counts=counts)
         self._last_ms = hour
 
     def censor(self, hour_ms: int, reason: str) -> tuple[Lifecycle, ...]:

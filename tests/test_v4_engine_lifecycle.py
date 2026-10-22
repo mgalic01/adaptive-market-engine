@@ -69,8 +69,12 @@ class Desk:
             "futures", self.perpetual, D(futures_price or spot_price)
         )
 
-    def mark(self, at: int, spot_price: str, futures_price: str | None = None) -> None:
-        self.lifecycles.mark(at, self.coin, self.unrealised(spot_price, futures_price))
+    def mark(
+        self, at: int, spot_price: str, futures_price: str | None = None, *, counts: bool = True
+    ) -> None:
+        self.lifecycles.mark(
+            at, self.coin, self.unrealised(spot_price, futures_price), counts=counts
+        )
 
 
 def venue_view(lifecycle: Lifecycle, venue: Venue) -> dict[str, Decimal]:
@@ -236,14 +240,84 @@ def test_given_back_when_every_mark_is_a_loss() -> None:
     assert ended.given_back == D(13)  # -5 - (-18)
 
 
-def test_given_back_is_negative_when_the_exit_beats_every_open_mark() -> None:
+def test_an_exit_above_every_open_mark_gives_nothing_back() -> None:
+    # The best is the maximum over the open marks and the final gross P&L, so an exit that beats
+    # every mark is the best itself: nothing is given back, never a negative amount.
     life = Lifecycles()
     desk = Desk(life)
     desk.batch(T, [("spot", 1, "1", "100", "0")], "100")
     desk.mark(T + HOUR, "110")  # the only open mark: 10
     ended = ended_of(desk.batch(T + 2 * HOUR, [("spot", -1, "1", "125", "0")], "125"))
-    assert ended.best_unrealised == D(10)
-    assert ended.given_back == D(-15)  # the ruling's formula, best - gross, not clamped
+    assert ended.gross_pnl == D(25)
+    assert ended.best_unrealised == D(25)  # the final gross, above the mark's 10
+    assert ended.given_back == D(0)
+
+
+def test_a_window_end_close_above_every_hourly_open_mark_gives_nothing_back() -> None:
+    # The window end, as the hour loop does it: the hourly open marks count, then the close sells
+    # the whole long at the last hour's close, above every one of them.
+    life = Lifecycles()
+    desk = Desk(life)
+    desk.batch(T, [("spot", 1, "2", "100", "0.2")], "100")
+    desk.mark(T + HOUR, "105")  # 10
+    desk.mark(T + 2 * HOUR, "110")  # 20, the best open mark
+    ended = ended_of(
+        desk.batch(T + 2 * HOUR, [("spot", -1, "2", "125", "0.25")], "125", reason="window end")
+    )
+    assert (ended.exit_reason, ended.censored) == ("window end", False)
+    assert ended.gross_pnl == D(50)  # 2 x (125 - 100)
+    assert (ended.best_unrealised, ended.given_back) == (D(50), D(0))
+
+
+def test_a_censored_lifecycle_never_gives_back_a_negative_amount() -> None:
+    # Window end with dust: the close leaves 0.0004 unsellable, and the mark at the close, taken
+    # after the closing fills, does not count toward the best. The censored gross P&L, above the
+    # only open mark, is the best itself.
+    life = Lifecycles()
+    dusty = Desk(life)
+    dusty.batch(T, [("spot", 1, "1", "100", "0")], "100")
+    dusty.mark(T + HOUR, "105")  # 5
+    left = dusty.batch(
+        T + HOUR, [("spot", -1, "0.9996", "130", "0")], "130", reason="window end", dust=True
+    )
+    assert left is None
+    dusty.mark(T + HOUR, "130", counts=False)  # the dust at the close: 0.0004 x 30 = 0.012
+    (censored,) = life.censor(T + HOUR, "window end")
+    assert censored.exit_reason == "window end (dust)"
+    assert censored.gross_pnl == D("30.000")  # 0.9996 x 30 = 29.988 realised + 0.012
+    assert (censored.best_unrealised, censored.given_back) == (D("30.000"), D(0))
+    # A stop whose mark is above every open mark: the same, since the stop's mark is the end.
+    life = Lifecycles()
+    stopped = Desk(life)
+    stopped.batch(T, [("futures", -1, "1", "100", "0")], "100")
+    stopped.mark(T + HOUR, "98")  # 2
+    stopped.mark(T + 2 * HOUR, "99")  # 1
+    stopped.mark(T + 2 * HOUR, "90", counts=False)  # the stop's mark: 10
+    (stop,) = life.censor(T + 2 * HOUR, "liquidation")
+    assert (stop.unrealised, stop.gross_pnl) == (D(10), D(10))
+    assert (stop.best_unrealised, stop.given_back) == (D(10), D(0))
+
+
+def test_a_mark_that_does_not_count_feeds_censor_but_not_the_best() -> None:
+    life = Lifecycles()
+    desk = Desk(life)
+    desk.batch(T, [("spot", 1, "1", "100", "0")], "100")
+    desk.mark(T + HOUR, "110", counts=False)  # 10, not counted
+    desk.mark(T + 2 * HOUR, "105")  # 5, the best that counts
+    ended = ended_of(desk.batch(T + 3 * HOUR, [("spot", -1, "1", "104", "0")], "104"))
+    assert (ended.gross_pnl, ended.best_unrealised, ended.given_back) == (D(4), D(5), D(1))
+    # It is still the value censor uses.
+    life = Lifecycles()
+    desk = Desk(life)
+    desk.batch(T, [("spot", 1, "1", "100", "0")], "100")
+    desk.mark(T + HOUR, "103")  # 3
+    desk.mark(T + HOUR, "101", counts=False)  # 1
+    (censored,) = life.censor(T + HOUR, "limit_unrestorable")
+    assert (censored.unrealised, censored.best_unrealised, censored.given_back) == (
+        D(1),
+        D(3),
+        D(2),
+    )
 
 
 def test_a_lifecycle_closed_in_its_opening_hour_has_no_mark_and_gives_nothing_back() -> None:
@@ -606,7 +680,7 @@ def test_a_batch_without_fills_keeps_the_mark_fresh() -> None:
     assert stopped.unrealised == D(10)
 
 
-def test_the_last_mark_wins_and_every_mark_counts_toward_the_best() -> None:
+def test_the_last_mark_wins_and_every_counting_mark_counts_toward_the_best() -> None:
     life = Lifecycles()
     desk = Desk(life)
     desk.batch(T, [("spot", 1, "1", "100", "0")], "100")
@@ -749,6 +823,7 @@ def test_a_perpetual_symbol_that_changes_for_one_coin_is_refused() -> None:
         pytest.param(lambda life: life.mark(AT, "btc", D(1)), id="mark bad coin"),
         pytest.param(lambda life: life.mark(T, BTC, D(1)), id="mark backwards in time"),
         pytest.param(lambda life: life.mark(True, BTC, D(1)), id="mark bool hour"),
+        pytest.param(lambda life: life.mark(AT, BTC, D(1), counts=1), id="mark int counts"),
         pytest.param(lambda life: life.funding(BTC, 1.0), id="funding float"),
         pytest.param(lambda life: life.funding(BTC, D("NaN")), id="funding nan"),
         pytest.param(lambda life: life.funding(BTC, D("Infinity")), id="funding infinity"),

@@ -635,9 +635,10 @@ class _CellState:
         remainder stays as dust (no synthetic sale); futures close exactly their quantity
         (reduce-only). Every held coin's batch then goes to its lifecycle with the reason
         ``window end``, fills or none, so the dust flag is judged at the close. The lifecycles
-        still open (dust) are marked at the close prices and censored, a dust-only one as
-        ``window end (dust)``. ``self._prices`` becomes the close prices, so the hour's audit,
-        its ``hourly`` record and ``final_after_close`` are taken after the close."""
+        still open (dust) are marked at the close prices, by a mark that does not count toward
+        the best unrealised profit, and censored, a dust-only one as ``window end (dust)``.
+        ``self._prices`` becomes the close prices, so the hour's audit, its ``hourly`` record and
+        ``final_after_close`` are taken after the close."""
         held = self._ledger.positions()
         if not held:
             return
@@ -654,7 +655,7 @@ class _CellState:
                 )
         for coin in sorted(batches):
             self._close_batch(h, coin, batches[coin], WINDOW_END)
-        self._mark_lifecycles(h, self._ledger.positions(), closes)
+        self._mark_lifecycles(h, self._ledger.positions(), closes, counts=False)
         for lifecycle in self._lifecycles.censor(h, WINDOW_END):
             self._record("lifecycle", _lifecycle_record(lifecycle))
 
@@ -714,17 +715,24 @@ class _CellState:
         return frozenset(self._coin_of[key] for key in self._ledger.positions())
 
     def _mark_lifecycles(
-        self, h: int, held: Mapping[_Key, Decimal], prices: Mapping[_Key, Decimal]
+        self,
+        h: int,
+        held: Mapping[_Key, Decimal],
+        prices: Mapping[_Key, Decimal],
+        *,
+        counts: bool = True,
     ) -> None:
         """Mark each held coin's lifecycle with its unrealised P&L over both venues, summed
-        exactly."""
+        exactly. The hourly open mark counts toward the best unrealised profit; the mark a stop
+        or the window end takes after its last fills, just before censoring, does not
+        (``counts=False``), so it enters only through the final gross P&L."""
         totals: dict[str, Fraction] = {}
         for venue, symbol in held:
             coin = self._coin_of[venue, symbol]
             value = to_fraction(self._ledger.unrealised(venue, symbol, prices[venue, symbol]))
             totals[coin] = totals.get(coin, Fraction(0)) + value
         for coin in sorted(totals):
-            self._lifecycles.mark(h, coin, to_decimal(totals[coin]))
+            self._lifecycles.mark(h, coin, to_decimal(totals[coin]), counts=counts)
 
     # ---- the account: legs, fills, batches and dead markets (shared with the hold arms) ----
 
@@ -1278,9 +1286,10 @@ class _CellState:
         self._prices = dict(prices)
 
     def _finish_stop(self, h: int, stop: _Stop) -> None:
-        """Mark every open lifecycle at the stop's prices, censor them with the outcome, and
-        write the outcome; the stop's mark is the final equity."""
-        self._mark_lifecycles(h, self._ledger.positions(), stop.prices)
+        """Mark every open lifecycle at the stop's prices (a mark that does not count toward the
+        best unrealised profit), censor them with the outcome, and write the outcome; the stop's
+        mark is the final equity."""
+        self._mark_lifecycles(h, self._ledger.positions(), stop.prices, counts=False)
         reason = "liquidation" if stop.outcome == LIQUIDATED else LIMIT_UNRESTORABLE
         for lifecycle in self._lifecycles.censor(h, reason):
             self._record("lifecycle", _lifecycle_record(lifecycle))
