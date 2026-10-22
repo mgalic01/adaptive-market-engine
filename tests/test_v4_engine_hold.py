@@ -625,6 +625,46 @@ def test_a_dead_market_closes_a_held_coin_and_cancels_its_deferred_order(tmp_pat
     check_fill(bbb_fills[2], 1, floor_step(INVESTED * equity / 2 / 50), D(50), SPOT)
 
 
+def test_a_flat_coins_deferred_order_is_cancelled_when_its_market_dies(tmp_path):
+    """Codex review of PR #293 (spec "Pending orders are cancelled"), for the hold arm: BBB's
+    spot has a bar at 00:00 on January 1, the decision's hour, and none from its fill hour on, so
+    its January order waits while it holds nothing. 168 hours after that bar, at 01:00 on
+    January 8, its market has died, and its data comes back in that very hour: the order is
+    cancelled before the hour's fills (``order_cancelled``, reason ``dead market``), where
+    without the cancel (``_spot_died`` stubbed out) it fills on the pre-outage decision. BBB
+    comes back only through February's decision. The selection leaves out a coin with no daily
+    bar in the 7 days before it, so this is a coin that dies after the decision."""
+    hours = hours_in("2025-01", "2025-02")
+    back = T0 + 7 * DAY + HOUR  # the first hour with a bar again
+    aaa = coin("AAAUSDT", path("100", (hours, "0")))
+    bbb = coin("BBBUSDT", path("50", (hours, "0")), masked=range(T0 + HOUR, back, HOUR))
+    world = World("2025-02", (aaa, bbb), every_month("2025-01", "2025-02", ("AAAUSDT", "BBBUSDT")))
+    market = load(tmp_path, world)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(run, "_spot_died", lambda store, h: False)
+        _, stale = cell_run(market, tmp_path, name="without_the_cancel")
+    result, rows = cell_run(market, tmp_path)
+
+    assert order_event(stale, back, "BBBUSDT")["decision_ms"] == T0
+    assert [f["hour_ms"] for f in of_kind(stale, "fill") if f["coin"] == "BBBUSDT"][0] == back
+    assert result.outcome == "complete" and residuals_hold(rows)
+    (cancelled,) = events(rows, "order_cancelled")
+    assert (cancelled["hour_ms"], cancelled["coin"], cancelled["reason"]) == (
+        back,
+        "BBBUSDT",
+        "dead market",
+    )
+    assert cancelled["decision_ms"] == T0 and F(D(cancelled["target"])) == F(495, 1000)
+    assert events(rows, "order_superseded") == []  # nothing was left for February to replace
+    assert not [e for e in events(rows, "order") if e["coin"] == "BBBUSDT" and e["hour_ms"] < FEB]
+    bbb_fills = [f for f in of_kind(rows, "fill") if f["coin"] == "BBBUSDT"]
+    assert [f["hour_ms"] for f in bbb_fills] == [FEB + HOUR, MAR - HOUR]
+    assert order_event(rows, FEB + HOUR, "BBBUSDT")["decision_ms"] == FEB
+    equity = open_equity(result, FEB + HOUR)
+    check_fill(bbb_fills[0], 1, floor_step(INVESTED * equity / 2 / 50), D(50), SPOT)
+
+
 # ---- hold_btc -----------------------------------------------------------------------------
 
 

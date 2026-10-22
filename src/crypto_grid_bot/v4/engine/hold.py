@@ -20,7 +20,14 @@ hour follows the spec's order of events:
    futures maintenance, so on a cash and spot account it never stops the cell;
 2. the open mark, kept in ``open_marks`` (``_CellState._open_mark``), complete only when every
    leg held at it and every leg step 1 closed has its bar at the hour;
-3. at a month's first 00:00, the ``monthly`` record and the decision (below);
+3. at a month's first 00:00, the ``monthly`` record and the decision (below); then, every hour,
+   the cancels of a dead market without a close (``_CellState._dead_market_cancels``, Codex
+   review of PR #293): a coin whose order still waits, flat, while its spot market dies (a bar
+   once, none in the 168 hours before the hour) loses the order, recorded as ``order_cancelled``
+   with the reason ``dead market``, so the order never fills when the data comes back and the
+   coin comes back only through a later month's decision. The month's selection leaves out a
+   coin with no daily bar in the 7 days before it, so this is a coin that dies after the
+   decision;
 4. the fills due this hour (below).
 
 Then each held leg's hour goes to ``DeadMarkets``. The last hour ends with the window-end close:
@@ -39,7 +46,7 @@ market without BTCUSDT is a ValueError, so that cell ends as ``engine_error``. T
 
 **The fills.** From the decision's next hour, a coin's order waits for its own first hour with a
 spot bar when the coin holds spot or its target is above 0 (V4's deferral rule; a flat coin with
-a target of 0 needs no bar). At the coin's fill hour:
+a target of 0 needs no bar), unless its spot market dies first (step 3). At the coin's fill hour:
 
 * **The target notional** is ``0.99 x equity / n``, with the equity of that hour's open mark,
   before the hour's fills, and the n of the order's own decision; a weight of 0 gives 0. There
@@ -68,9 +75,9 @@ has the ``source`` ``rebalance``, its order's ``decision_ms`` and weight as ``ta
 ``eligible`` false, no band (``current`` and ``band`` null) and no exits. Its ``split`` holds on
 spot the target notional net of the coin's dust, as V4's split of a spot-only coin does.
 
-A hold arm's hour costs O(legs held): the open mark, the dead-market checks, the audit and the
-``hourly`` record. It decides only at a month's first midnight and plans only in an hour with an
-order due.
+A hold arm's hour costs O(legs held and orders waiting): the open mark, the dead-market checks,
+the audit and the ``hourly`` record. It decides only at a month's first midnight and plans only
+in an hour with an order due.
 """
 
 from __future__ import annotations
@@ -140,6 +147,7 @@ class _HoldCell(_CellState):
             self._synthetic_closes,
             self._open_mark,
             self._decide,
+            self._dead_market_cancels,
             self._fills,
             self._observe_markets,
         )

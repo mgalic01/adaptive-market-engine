@@ -2645,6 +2645,57 @@ def test_a_synthetic_close_counts_its_source_in_the_open_marks_completeness(
     assert [r["complete"] for r in of_kind(rows, "hourly")] == list(flags.values())
 
 
+@pytest.mark.parametrize("dies", ["at a decision", "between decisions"])
+def test_a_flat_coins_deferred_order_is_cancelled_when_its_market_dies(dies, tmp_path):
+    """Codex review of PR #293 (spec "Pending orders are cancelled"): BTCUSDT (spot only, rising)
+    gets a long target at 00:00 on January 1 that cannot fill, as its spot is masked from then
+    on, so the flat coin's order waits; the decisions of January 2 to 8 find no daily bar and
+    keep it. Once no spot bar has opened in the 168 hours before an hour, the coin's market has
+    died: after that hour's decision and before its fills the order is cancelled
+    (``order_cancelled``, reason ``dead market``). Its data comes back in that very hour, so
+    without the cancel (``_spot_died`` stubbed out) the pre-outage order fills there.
+    * at a decision: the last bar opens at 23:00 on December 31, so the market has died at 00:00
+      on January 8, whose decision marks the coin a dead market with no target;
+    * between decisions: the last bar opens at 00:00 on January 1, so the market dies at 01:00
+      on January 8, an hour after a decision that is not yet a dead market's and keeps the order.
+    The coin re-enters only through January 9's decision, which has January 8's daily bar."""
+    first = T0 if dies == "at a decision" else T0 + HOUR  # the first masked hour
+    back = first + 7 * DAY  # the first hour with a spot bar again, where the market has died
+    btc = one_coin("BTCUSDT", "50000", "0.0003", 11, spot_masked=tuple(range(first, back, HOUR)))
+    market = load(tmp_path, World("2025-01", (btc,), {"2025-01": ("BTCUSDT",)}))
+    store = market.coin("BTCUSDT").spot
+    assert store.bar(back) is not None and store.last_open_at_or_before(back - 1) == first - HOUR
+    reentry = T0 + 8 * DAY  # January 9's decision
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(run, "_spot_died", lambda store, h: False)
+        _, stale = cell_run(market, tmp_path, name="without_the_cancel")
+    result, rows = cell_run(market, tmp_path)
+
+    assert order_event(stale, back, "BTCUSDT")["decision_ms"] == T0
+    assert of_kind(stale, "fill")[0]["hour_ms"] == back
+    assert result.outcome == "complete" and residuals_hold(rows)
+    daily = daily_by(rows)
+    target = daily[(T0, "BTCUSDT")]["target"]
+    assert D(target) > 0
+    for h in range(T0 + DAY, reentry, DAY):
+        assert daily[(h, "BTCUSDT")]["no_bar"] and daily[(h, "BTCUSDT")]["target"] is None
+    assert daily[(T0 + 7 * DAY, "BTCUSDT")]["dead_market"] is (dies == "at a decision")
+    (cancelled,) = events(rows, "order_cancelled")
+    assert (cancelled["hour_ms"], cancelled["coin"], cancelled["reason"]) == (
+        back,
+        "BTCUSDT",
+        "dead market",
+    )
+    assert (cancelled["decision_ms"], cancelled["target"]) == (T0, target)
+    assert events(rows, "replacement_cancelled") == []
+    assert not [e for e in events(rows, "order") if e["decision_ms"] == T0]
+    first_fill = of_kind(rows, "fill")[0]
+    assert (first_fill["hour_ms"], first_fill["reason"]) == (reentry + HOUR, "signal")
+    assert order_event(rows, reentry + HOUR, "BTCUSDT")["decision_ms"] == reentry
+    assert D(daily[(reentry, "BTCUSDT")]["target"]) > 0
+
+
 def test_the_audit_holds_every_hour(monkeypatch, tmp_path):
     """Spec "Safety", accounting: the wallet and quantity identities hold exactly and the equity
     residual stays within 1e-18 at the end of every hour, over a world with trades, funding and

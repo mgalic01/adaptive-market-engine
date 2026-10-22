@@ -674,7 +674,7 @@ def test_cancel_leaves_scheduled_exits_and_other_coins_alone() -> None:
 
 
 def test_the_book_answers_whether_an_exit_or_a_replacement_is_pending() -> None:
-    """The two read-only queries the hour loop uses instead of mirroring the book: an exit leg
+    """Two of the read-only queries the hour loop uses instead of mirroring the book: an exit leg
     is scheduled until ``due_exits`` returns it, and a replacement is pending until it is
     placed, cancelled or superseded. Asking changes nothing."""
     book = PendingBook()
@@ -695,6 +695,27 @@ def test_the_book_answers_whether_an_exit_or_a_replacement_is_pending() -> None:
     book.schedule_replacement("XRP", T + DAY + HOUR)
     assert book.due_replacements(T + DAY + HOUR, always) == ("XRP",)
     assert not book.replacement_pending("XRP")  # placed
+
+
+def test_waiting_lists_the_coins_with_an_order_or_a_replacement_pending() -> None:
+    """The third read-only query: the coins with a pending order or a pending replacement buy,
+    sorted and each once. A filled, cancelled or placed one leaves it, a coin with only an exit
+    scheduled is not waiting, and asking changes nothing."""
+    book = PendingBook()
+    assert book.waiting() == ()
+    book.decide(T, {"SOL": D(".1"), "BTC": D(".2")})
+    book.schedule_replacement("ETH", T + HOUR)
+    book.schedule_replacement("BTC", T + HOUR)
+    book.schedule_exit(Exit("XRP", "spot", "universe exit", T + HOUR))
+    assert book.waiting() == ("BTC", "ETH", "SOL")
+    assert book.waiting() == ("BTC", "ETH", "SOL")  # asking twice changes nothing
+    assert coins_of(book.due(T + HOUR, only("SOL"))) == ["SOL"]  # filled
+    assert book.waiting() == ("BTC", "ETH")
+    assert book.cancel("BTC") == Pending("BTC", T, D(".2"))  # its order and its replacement
+    assert book.waiting() == ("ETH",)
+    assert book.due_replacements(T + HOUR, always) == ("ETH",)  # placed
+    assert book.waiting() == ()
+    assert [e.coin for e in book.due_exits(T + HOUR, every_bar)] == ["XRP"]
 
 
 @pytest.mark.parametrize(("coin", "venue"), [("btc", "spot"), ("BTC", "margin"), (1, "spot")])

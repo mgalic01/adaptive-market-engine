@@ -24,17 +24,21 @@ coin usable this hour" through callbacks, and sizes every order itself.
   reported in ``Decided.cancelled_replacements``), and one scheduled after it in the same hour is
   refused by ``schedule_replacement``, which returns False.
 * ``cancel`` is for the events that end a coin's deferred orders: a universe exit, a
-  funding-month exit and a dead-market close. It removes the coin's pending order and its
-  pending replacement, and leaves scheduled exits alone.
-* **Two read-only queries,** ``exit_scheduled(coin, venue)`` and ``replacement_pending(coin)``,
-  let the hour loop see what the book holds (so it never schedules a second exit for a leg, and
-  can record the replacement a ``cancel`` removes) without keeping a copy of the book's state.
+  funding-month exit, a dead-market close and a dead market without a close (a waiting coin
+  whose spot market has died). It removes the coin's pending order and its pending replacement,
+  and leaves scheduled exits alone.
+* **Three read-only queries,** ``exit_scheduled(coin, venue)``, ``replacement_pending(coin)``
+  and ``waiting()`` (the coins with an order or a replacement buy pending), let the hour loop
+  see what the book holds (so it never schedules a second exit for a leg, can record the
+  replacement a ``cancel`` removes, and can find the waiting coins whose market has died)
+  without keeping a copy of the book's state.
 
 Order of calls in an hour, following the spec's "Order of events in an hour": first the
 synthetic closes due at the hour's open (dead-market and synthetic funding-month closes), each
 with its ``cancel(coin)`` and, for a futures close, its ``schedule_replacement``; then, at 00:00,
 ``decide``, followed by ``cancel(coin)`` for each universe or funding-month exit that decision
-makes (so it drops that decision's own order for the coin); then ``due``, ``due_exits``, the
+makes (so it drops that decision's own order for the coin); then, every hour, ``cancel(coin)``
+for each ``waiting()`` coin whose spot market has died; then ``due``, ``due_exits``, the
 booking of the fills (each futures close of a funding-month exit followed by
 ``schedule_replacement``), and then ``due_replacements``, so that a close filled in an hour can
 be replaced in that same hour. A dead-market close's ``cancel`` must come before ``decide``:
@@ -170,8 +174,9 @@ class PendingBook:
         """Drop the coin's pending order and its pending replacement buy, not its scheduled
         exits. Returns the order.
 
-        For a universe exit, a funding-month exit or a dead-market close. A dead-market close
-        calls it before that hour's ``decide``; a universe or funding-month exit calls it after.
+        For a universe exit, a funding-month exit, a dead-market close or a dead market without
+        a close. A dead-market close calls it before that hour's ``decide``; a universe or
+        funding-month exit, and a dead market without a close, call it after.
         """
         _symbol(coin, "coin")
         self._replacements.pop(coin, None)
@@ -214,6 +219,11 @@ class PendingBook:
         or superseded. Changes nothing."""
         _symbol(coin, "coin")
         return coin in self._replacements
+
+    def waiting(self) -> tuple[str, ...]:
+        """The coins with a pending order or a pending replacement buy, sorted. Changes
+        nothing."""
+        return tuple(sorted(self._pending.keys() | self._replacements.keys()))
 
     def schedule_replacement(self, coin: str, after_ms: int) -> bool:
         """Schedule the spot buy that replaces a funding-month futures close filled at

@@ -12,7 +12,8 @@ the monthly selection record), "Data" (the funding-month exit and its synthetic 
 stops early ends, accounting), "Records" and the outcomes of "Reports". ``run.py`` composes the
 engine's modules and holds no trading rule of its own; the few small rules no module has are
 private functions or methods here, each citing the spec (``_month_end``, ``_audit_failure``,
-``_cut_quantity``, the decided-coins rule in ``_V4Cell._decide``, ``_dead_spot``; in the fill phase
+``_cut_quantity``, the decided-coins rule in ``_V4Cell._decide``, ``_dead_spot``, ``_spot_died``
+and ``_CellState._dead_market_cancels``; in the fill phase
 ``_V4Cell._ready``'s dust-offset case, ``_V4Cell._exit_skip`` and
 ``_V4Cell._schedule_replacement``'s universe guard; in the safety phases the rule of
 ``_CellState._synthetic_legs`` for a leg due on both counts, and the time stamp of a cut after a
@@ -26,7 +27,8 @@ funding record in ``_CellState._funding_events``).
    one liquidation check;
 2. the open mark, kept in ``open_marks`` with its completeness flag, then the pre-fill
    liquidation check;
-3. at 00:00, the daily decision (below), then the mandatory exits it makes;
+3. at 00:00, the daily decision (below), then the mandatory exits it makes; then, every hour,
+   the cancels of a dead market without a close (below);
 4. the fills due this hour (below);
 5. the post-fill mark: its liquidation check, then the margin cushion and its cut, then the 3x
    ceiling and its cut, each cut filling at the open and followed by a new mark;
@@ -100,6 +102,16 @@ sizes the book of every decided coin (a universe exit or a dead market with sign
 sigma is still recorded) on each coin's trailing returns, and ``PendingBook.decide`` takes the
 targets.
 
+**A dead market without a close** (Codex review of PR #293; spec "Pending orders are
+cancelled"). Every hour, after the decision and before the fills, each coin with a pending order
+or replacement buy whose spot market has died, a bar once and none in the 168 hours before ``h``
+(``_spot_died``, ``_dead_spot``'s test), loses both, recorded with the reason ``dead market``;
+its scheduled exits stay. So an order made before the outage never fills when the data comes
+back, and the coin re-enters only through a later decision whose day has a bar. A held spot
+leg's dead market closes at step 1 with its own cancel, so this is the rule of a coin flat on
+spot. At a decision it cancels what a dead coin, which gets no target, still has waiting; between
+decisions it catches a market that dies, and perhaps comes back, before the next one.
+
 **Outputs** (rulings P3, P5). ``out_dir`` is the cell's own directory: created if missing, and
 refused if ``records.jsonl`` or ``receipt.json`` is already there. Every record goes through
 ``RecordWriter``. Every path, a complete cell, a stop, an accounting failure or an exception, ends
@@ -145,8 +157,9 @@ the failure.
     ``target``) and ``replacement_superseded`` (a replacement buy a decision of that hour
     superseded);
   - ``order_cancelled`` (``decision_ms``, ``target``, ``reason``) and ``replacement_cancelled``
-    (``reason``), what a universe exit's, a funding-month exit's or a dead market's (reason
-    ``delisting``) ``cancel`` removed;
+    (``reason``), what a universe exit's, a funding-month exit's, a dead-market close's (reason
+    ``delisting``) or a dead market's without a close (reason ``dead market``) ``cancel``
+    removed;
   - ``exit_scheduled`` (``venue``, ``reason``, ``after_ms``), and ``exit_skipped`` (``venue``,
     ``reason``, ``why``: ``flat``, or ``in_universe`` for a universe exit of a coin that is back
     in the universe, whose newer decisions supersede it);
@@ -298,6 +311,8 @@ WINDOW_END = "window end"
 DELISTING = "delisting"
 MARGIN_CUT = "margin cut"
 CEILING_CUT = "ceiling cut"
+# The reason of the cancels of a waiting coin whose spot market has died without a close.
+DEAD_MARKET = "dead market"
 
 # The outcomes of a stop and the reasons of ``limit_unrestorable`` (spec "Reports").
 LIQUIDATED = "liquidated"
@@ -1003,7 +1018,8 @@ class _CellState:
         book's ``replacement_pending`` says whether there was one). The V4 arms' cancels are
         those of a universe exit and a funding-month exit, after the decision of their hour, and
         of a dead-market close, before it (``_after_synthetic_close``); a hold arm's are those of
-        a dead-market close."""
+        a dead-market close. Both arms also cancel a waiting coin whose spot market has died,
+        after the hour's decision and before its fills (``_dead_market_cancels``)."""
         replacing = self._book.replacement_pending(coin)
         order = self._book.cancel(coin)
         if order is not None:
@@ -1023,6 +1039,16 @@ class _CellState:
                 "event",
                 {"type": "replacement_cancelled", "hour_ms": h, "coin": coin, "reason": reason},
             )
+
+    def _dead_market_cancels(self, h: int) -> None:
+        """A dead market without a close (module docstring; Codex review of PR #293): after the
+        hour's decision and before its fills, every coin still waiting in the pending book whose
+        spot market has died at ``h`` (``_spot_died``) loses its pending order and replacement
+        buy, recorded by ``_cancel`` with the reason ``dead market``. Its scheduled exits
+        stay."""
+        for coin in self._book.waiting():
+            if _spot_died(self.market.coin(coin).spot, h):
+                self._cancel(h, coin, DEAD_MARKET)
 
     def _record_superseded(self, h: int, decided: Decided) -> None:
         for order in decided.cancelled:
@@ -1461,6 +1487,7 @@ class _V4Cell(_CellState):
             self._synthetic_closes,
             self._open_mark,
             self._decide,
+            self._dead_market_cancels,
             self._fills,
             self._post_fill,
             self._funding_events,
@@ -1929,6 +1956,16 @@ def _dead_spot(store: SeriesStore, h: int) -> bool:
     dead-market rule's own test (``DeadMarkets.due``) and reads only bars before ``h``."""
     last = store.last_open_at_or_before(h - 1)
     return last is None or last < h - DEAD_MARKET_HOURS * HOUR_MS
+
+
+def _spot_died(store: SeriesStore, h: int) -> bool:
+    """Whether a waiting coin's spot market has died at ``h`` (Codex review of PR #293):
+    ``_dead_spot``'s test, no spot bar in the 168 hours ``[h - 168 h, h)``, for a coin that has
+    had a bar before them. A coin with no bar yet has not died, so its order waits for its first
+    bar as any deferral does; a hold arm can give one an order, while a V4 coin waits only after
+    a target, so after a bar, and for it the two tests agree."""
+    last = store.last_open_at_or_before(h - 1)
+    return last is not None and last < h - DEAD_MARKET_HOURS * HOUR_MS
 
 
 def _audit_failure(audit: Audit) -> str | None:
