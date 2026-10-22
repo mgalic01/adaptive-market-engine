@@ -29,7 +29,9 @@ and the covariance's 60 days). Four coins, each with one job, selected in this r
   apart from ``v4_main``.
 
 Each feature has a test that reads the records and checks that it happened, at the hour and price
-the spec gives. The CLI's own behaviour has the rest: the exact one-line output; the refusals and
+the spec gives. Two tests hold for the whole run: a rerun of one V4 arm and one hold arm writes
+byte-identical files, and every arm conserves money exactly through its lifecycles (the final
+review). The CLI's own behaviour has the rest: the exact one-line output; the refusals and
 failures that return 1, each a fixed line on standard error with the exception's type and never
 its text (a bad pin, bad data, existing outputs, a failure before the summary, a summary that does
 not verify, which writes no summary and no page, and written bytes that are not the verified
@@ -391,6 +393,75 @@ def test_cli_output_prints_no_prices(cells):
         assert cell.stdout == expected
         assert re.search(r"[0-9]\.[0-9]", cell.stdout) is None
         assert cell.summary["final_equity"] not in cell.stdout
+
+
+# ---- reproducibility and conservation, end to end -----------------------------------------
+
+
+@pytest.mark.parametrize("arm", ["v4_main", "hold_universe"])
+def test_a_rerun_writes_the_same_bytes(arm, world_dir, cells, tmp_path):
+    """The engine is deterministic: one V4 arm and one hold arm, run again through the CLI into
+    another folder, write byte for byte the same ``records.jsonl``, ``receipt.json``,
+    ``summary.json`` and ``report.html``, and print the same line."""
+    code, stdout, stderr = run_cli(cell_argv(world_dir, tmp_path / "again", arm))
+
+    assert (code, stderr) == (0, "")
+    assert stdout == cells[arm].stdout
+    folder = tmp_path / "again" / CellSpec(arm, CAPITAL, COSTS).cell_id
+    assert sorted(item.name for item in folder.iterdir()) == sorted(OUTPUT_FILES)
+    for name in OUTPUT_FILES:
+        assert (folder / name).read_bytes() == (cells[arm].folder / name).read_bytes(), name
+
+
+def test_every_arm_conserves_money_through_its_lifecycles(cells):
+    """For every arm, each fill and each funding payment belongs to exactly one lifecycle, and a
+    lifecycle censored with dust carries its unrealised P&L, so over all lifecycles ``gross -
+    fees + funding`` is final equity minus the capital, exactly. Per coin and venue, the
+    lifecycles' fees, realised P&L and bought and sold quantities are those of the coin's fill
+    records, and per coin their funding is its funding records'. No lifecycle gives back a
+    negative amount (best unrealised at least the gross P&L)."""
+    for arm, cell in cells.items():
+        rows = cell.rows
+        lives = of_kind(rows, "lifecycle")
+        assert lives, arm
+        net = sum(
+            (F(D(r["gross_pnl"])) - F(D(r["fees"])) + F(D(r["funding"])) for r in lives), F(0)
+        )
+        assert net == F(D(cell.summary["final_equity"])) - CAPITAL, arm
+        assert sum(F(D(r["fees"])) for r in lives) == sum(
+            F(D(f["fee"])) for f in of_kind(rows, "fill")
+        ), arm
+        assert sum((F(D(r["funding"])) for r in lives), F(0)) == sum(
+            (F(D(p["amount"])) for p in of_kind(rows, "funding")), F(0)
+        ), arm
+        for coin in sorted({r["coin"] for r in lives}):
+            mine = [r for r in lives if r["coin"] == coin]
+            for venue in ("spot", "futures"):
+                booked = fills(rows, coin=coin, venue=venue)
+                figures = {
+                    "fees": [F(D(f["fee"])) for f in booked],
+                    "realised_pnl": [F(D(f["realised"])) for f in booked],
+                    "bought_quantity": [F(D(f["quantity"])) for f in booked if f["side"] > 0],
+                    "sold_quantity": [F(D(f["quantity"])) for f in booked if f["side"] < 0],
+                }
+                for field, values in figures.items():
+                    total = sum((F(D(r["venues"][venue][field])) for r in mine), F(0))
+                    assert total == sum(values, F(0)), (arm, coin, venue, field)
+            paid = [p for p in of_kind(rows, "funding") if p["coin"] == coin]
+            assert sum((F(D(r["funding"])) for r in mine), F(0)) == sum(
+                (F(D(p["amount"])) for p in paid), F(0)
+            ), (arm, coin)
+        for r in lives:
+            best, gross, back = (
+                F(D(r["best_unrealised"])),
+                F(D(r["gross_pnl"])),
+                F(D(r["given_back"])),
+            )
+            assert back == best - gross >= 0, (arm, r["coin"], r["exit_ms"])
+            assert F(D(r["gross_pnl"])) == sum(
+                (F(D(r["venues"][venue]["realised_pnl"])) for venue in ("spot", "futures")),
+                F(D(r["unrealised"])),
+            )
 
 
 # ---- the world's features, each checked in the records ------------------------------------
