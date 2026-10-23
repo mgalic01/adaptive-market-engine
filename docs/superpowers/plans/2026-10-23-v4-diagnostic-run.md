@@ -89,7 +89,7 @@ Every artifact is kept 1 day, and public logs carry counts only.
     - upload `v4-cell-<cell_id>` with retention 1 day.
   - Job `diagnose` (`needs: cell`):
     - download every `v4-cell-*` artifact and the data;
-    - run `python scripts/v4_diagnose.py --data v4data --cells cells --out diagnosis`;
+    - run `python scripts/v4_diagnose.py --data v4data --cells cells --planned "$PLANNED_CELLS" --out diagnosis` (amended after Codex's review of #294: `--planned` is the plan job's `cell_ids`, the cells the dispatch asked for, so only those are listed as missing);
     - upload `v4-diagnosis` with retention 1 day;
     - print counts only.
 
@@ -110,7 +110,7 @@ Every artifact is kept 1 day, and public logs carry counts only.
 - Test: `tests/test_v4_diagnose.py`
 
 **Interfaces:**
-- `main(argv) -> int`, called as `--data D --cells C --out O`. For each cell directory under `C` it checks:
+- `main(argv) -> int`, called as `--data D --cells C --planned IDS --out O` (`--planned` added after Codex's review of #294). For each cell directory under `C` it checks:
   - the receipt, through `read_receipt`;
   - the records, through `read_records`, streaming them;
   - the summary, through `summary.verify_summary`.

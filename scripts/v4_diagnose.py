@@ -7,9 +7,11 @@ pre-2025 data run (plan ``docs/superpowers/plans/2026-10-23-v4-diagnostic-run.md
 adds no trading rule: it reads what the spec's "Records" and "Reports" write, and its timing
 section is the "Verification" bullet's timing run (cell times, memory and output sizes).
 
-``--data D --cells C --out O``:
+``--data D --cells C --planned IDS --out O``:
 
-1. refuses an ``O`` that already holds ``diagnosis.json`` or ``diagnosis.md``;
+1. refuses an ``O`` that already holds ``diagnosis.json`` or ``diagnosis.md``, and a ``--planned``
+   that is not a comma-separated list of distinct cell ids of ``all_cells()`` (the plan job's
+   ``cell_ids``, the cells the dispatch asked for);
 2. runs ``v4_cells_guard``'s own check on ``D`` (owner decision v4-d03: no market data from
    2025-01 on) before any pack is read, then loads the packs (``Market.load``) and refuses an
    ``end_month`` after the guard's ``LATEST_ALLOWED``;
@@ -21,7 +23,8 @@ section is the "Verification" bullet's timing run (cell times, memory and output
    ``window`` must be those of ``D``'s packs (the regime is computed from them); and a
    ``timing.json``, when there is one, must be the cell's, with the records' size. A full cell's
    records are then streamed once more, to the end, keeping only the aggregates below, never a
-   record; its years must equal the verified summary's. A cell that fails any of these checks,
+   record; its years must equal the verified summary's. Last, the cell must be one of
+   ``--planned``. A cell that fails any of these checks,
    or whose records have a shape the pass refuses, is refused alone: it is listed under the
    missing cells with the step that failed and the exception's type (never its text), and the
    other cells are diagnosed;
@@ -31,9 +34,10 @@ section is the "Verification" bullet's timing run (cell times, memory and output
    stay on the owner's PC (the workflow uploads them as a 1-day artifact).
 
 The diagnosis also names what is missing: every subfolder of ``C`` without a ``summary.json``,
-every cell folder it refused (its folder's name, step and exception type), and every arm of
-``ARMS`` that has no diagnosed cell at a capital and cost level that has one (a cell that was
-not run, failed, timed out or was refused).
+every cell folder it refused (its folder's name, step and exception type), and every cell of
+``--planned`` with no diagnosed cell (one that failed, timed out or was refused), in run order.
+A cell folder of a cell the dispatch did not ask for is refused (step 3), so it is listed with
+the refused folders and never as a missing cell.
 
 **Exit status.** 0 once both files are written and no cell was refused; 1 when a cell was
 refused, after both files were written with the other cells (partial results, never none), and
@@ -47,7 +51,8 @@ failure, is one line on standard error naming the step and the exception's type,
 
 **The page** (``diagnosis.md``) opens with a headline that answers "what did the bot do in year
 X": one table of every cell's return and largest drawdown per year beside BTCUSDT's yearly return
-and the median yearly return of the universe's coins, then each cell's losing years, and one
+and the median yearly return of the universe's coins, then each stopped cell's last year beside
+BTCUSDT and the median coin over the same span (to the stop), each cell's losing years, and one
 plain line per arm, made from ``arms.ARMS``. A glossary follows, then the timing, the missing
 cells, the market regime and one section per cell.
 
@@ -91,15 +96,19 @@ its ``entry_ms`` and counts, with its figures, in the period and year of its ``e
   funding here are the lifecycles' fees and funding booked when paid rather than when the trade
   ended: the same money seen two ways, never to be added together.
 * Counts, from the events: ``margin_cuts`` and ``ceiling_cuts`` (one per cut event);
-  ``dead_market_closes`` and ``funding_month_closes`` (the legs of the synthetic closes, by
-  reason); ``deferrals`` (a daily order, ``signal`` or a hold arm's ``rebalance``, that did not
-  fill in its first fill hour, the decision's hour plus one: counted when it fills later, is
-  superseded or is cancelled); ``refused_orders`` (an order event's legs with a refusal);
+  ``dead_market_closes`` and ``funding_month_closes`` (the legs of the synthetic closes booked,
+  by reason: a batch whose own liquidation check stopped the cell, an outcome with ``check``
+  ``synthetic_closes`` at the batch's hour, booked no fill, so its legs count in neither, though
+  its penalty stays in the costs, since the stop's equity and the censored trades are valued at
+  the penalised prices); ``deferrals`` (a daily order, ``signal`` or a hold arm's
+  ``rebalance``, that did not fill in its first fill hour, the decision's hour plus one: counted
+  when it fills later, is superseded or is cancelled); ``refused_orders`` (an order event's legs
+  with a refusal);
   ``cash_clip_cuts`` (``increase_cut`` events) and ``band_skips`` (orders the band kept).
 * By side, exit reason and coin, per year: lifecycles, wins, win rate (side only), gross P&L,
   fees, funding, net P&L and given back. Both sides are listed every year; exit reasons
   and coins only when they occur. A coin's row also holds ``coin_return``, the coin's own price
-  change in that year (below).
+  change over the cell's year (below).
 * The bot's own trades, per year of ``exit_ms``: ``losing_trades``, the ``LOSERS_PER_YEAR``
   lifecycles with the most negative net P&L (below 0), most negative first and the earlier record
   first on a tie, kept in a bounded heap per year, each with its coin, side, ``entry_ms``,
@@ -112,7 +121,9 @@ its ``entry_ms`` and counts, with its figures, in the period and year of its ``e
   flips (a vote opposite to the coin's last up or down vote; a no-bar day repeats the last
   reading, so it never flips); the shares with no reading, with a confirmed downtrend, with
   S > 0 and with L at 0, 1/3, 2/3 and 1; and the mean number of coins with a nonzero target per
-  decision. A hold arm has none.
+  decision, counted at each decision after its ``daily_coin`` records as the weights are: a coin
+  keeps its last target when it gets none, a dead market's is dropped and a target of 0 drops
+  it. A hold arm has none.
 
 Money is summed exactly in Fractions and written as exact Decimals; shares, rates, returns and
 the regime's figures are computed under ``CONTEXT``.
@@ -137,8 +148,16 @@ first year): ``btc_return``, BTCUSDT's last daily close in that span over its la
 the span, minus 1 (over the coin's own span, from its first close in it, when it has no bar
 before); and ``universe_coins``, ``universe_coins_with_return`` and ``universe_median_return``
 for the coins in the universe in any month of that span, each coin's return computed as
-BTCUSDT's. A coin's ``coin_return`` in the by-coin breakdown is the same figure for that coin and
-year. A coin with fewer than two bars in the span, and none before it, has no return.
+BTCUSDT's. A coin with fewer than two bars in the span, and none before it, has no return.
+
+**The market beside a cell's own periods.** Each of a cell's months holds ``btc_return`` and each
+of its years ``btc_return`` and ``universe_median_return``, and each by-coin row ``coin_return``
+(over that coin's year of the cell), all over the period's own span, ``start_ms`` to ``end_ms``,
+from the daily closes made by ``end_ms`` (a bar whose close comes after it is not read): a
+month's as the regime's month, a year's as ``market_years``' year, the median over the coins in
+the universe in any month the span touches. Over a whole month or year these are the regime's
+and ``market_years``' figures; over a stopped cell's last month and year they end at the stop,
+so no price after the stop is compared with the cell.
 
 A figure without the bars it needs is null, and so is every BTCUSDT figure of packs without it.
 """
@@ -446,11 +465,16 @@ class _Pass:
         self._votes: dict[tuple[str, str], int] = {}
         self._targets: dict[str, Fraction] = {}
         self._lifecycles = 0
+        # The last synthetic-close batch's leg counts by reason, with its hour: counted once the
+        # outcome shows the batch's own liquidation check did not stop the cell.
+        self._closes: tuple[int, Counter[str]] | None = None
 
     def feed(self, kind: str, record: Mapping[str, object]) -> None:
         if self.outcome is not None:
             raise ValueError(f"a {kind} record follows the outcome record")
         self.count += 1
+        if kind == "outcome":
+            self._settle_closes(record)
         if kind == "hourly":
             self._hourly(record)
         elif kind == "fill":
@@ -603,17 +627,21 @@ class _Pass:
         elif kind == "increase_cut":
             counts["cash_clip_cuts"] += 1
         elif kind == "synthetic_closes":
+            # An earlier batch was booked: only the last one can be the batch that stopped.
+            self._settle_closes(None)
+            closed: Counter[str] = Counter()
             for leg in _items(record.get("legs"), "a synthetic close's legs"):
                 held = _fraction(leg.get("held"), "a synthetic close's held quantity")
                 last = _fraction(leg.get("last_close"), "a synthetic close's last close")
                 price = _fraction(leg.get("price"), "a synthetic close's price")
                 month.costs.add("synthetic_close_penalty", abs(last - price) * abs(held))
                 if leg.get("reason") == DELISTING:
-                    counts["dead_market_closes"] += 1
+                    closed["dead_market_closes"] += 1
                 elif leg.get("reason") == FUNDING_EXIT:
-                    counts["funding_month_closes"] += 1
+                    closed["funding_month_closes"] += 1
                 else:
                     raise ValueError("a synthetic close's leg has an unknown reason")
+            self._closes = (hour, closed)
         elif kind == "order":
             counts["band_skips"] += int(record.get("band") == "keep")
             legs = _items(record.get("legs"), "an order's legs")
@@ -622,6 +650,22 @@ class _Pass:
                 counts["deferrals"] += int(self._deferred(record, hour))
         elif kind in ("order_superseded", "order_cancelled"):
             counts["deferrals"] += int(self._deferred(record, hour))
+
+    def _settle_closes(self, outcome: Mapping[str, object] | None) -> None:
+        """Count the last synthetic-close batch's legs, unless ``outcome`` (the outcome record;
+        None for a later batch) stopped the cell at the batch's own liquidation check, its
+        ``check`` ``synthetic_closes`` at the batch's hour: that batch booked no fill (run.py)."""
+        if self._closes is None:
+            return
+        hour, legs = self._closes
+        self._closes = None
+        if (
+            outcome is not None
+            and outcome.get("check") == "synthetic_closes"
+            and outcome.get("stop_ms") == hour
+        ):
+            return
+        self._month(hour).events.counts.update(legs)
 
     @staticmethod
     def _deferred(record: Mapping[str, object], hour: int) -> bool:
@@ -644,7 +688,6 @@ class _Pass:
         target = record.get("target")
         if target is not None:
             weight = _fraction(target, "a target")
-            counts["nonzero_targets"] += int(weight != 0)
             if weight == 0:
                 self._targets.pop(coin, None)
             else:
@@ -678,9 +721,11 @@ class _Pass:
 
     def _close_decision(self) -> None:
         """The last decision's wanted long and short weights, after all its daily records:
-        every coin's last target, positive ones and negative ones' sizes summed."""
+        every coin's last target, positive ones and negative ones' sizes summed; and its coins
+        with a nonzero target, those same coins (each kept target is nonzero)."""
         if self._decision is None:
             return
+        self.signals[_year_of(self._decision)]["coins_with_target"] += len(self._targets)
         exposure = self._month(self._decision).exposure
         exposure.counts["decisions"] += 1
         exposure.add("long_weight", sum((w for w in self._targets.values() if w > 0), _ZERO))
@@ -897,7 +942,7 @@ def _signal_row(year: int, counts: Counter[str]) -> dict[str, Any]:
         "long_fraction": {
             label: _ratio(counts[f"long_{label}"], days) for label in _LONG_LEVELS.values()
         },
-        "mean_coins_with_target": _ratio(counts["nonzero_targets"], counts["decisions"]),
+        "mean_coins_with_target": _ratio(counts["coins_with_target"], counts["decisions"]),
     }
 
 
@@ -905,6 +950,7 @@ def _signal_row(year: int, counts: Counter[str]) -> dict[str, Any]:
 
 
 _REPEATED = "the cell repeats the cell of another folder"
+_UNPLANNED = "the cell is not one of --planned"
 _FAILED = "the diagnosis of the cell failed"
 
 
@@ -1011,11 +1057,32 @@ def diagnose_cell(
         mine = [{key: year[key] for key in _YEAR_KEYS} for year in figures["years"]]
         if mine != summary["years"]:
             raise ValueError("the diagnosis' years are not the summary's")
-    with _Step("the coins' own returns could not be computed"):
-        prices = prices or _Prices(market)
-        for row in figures["coins"]:
-            row["coin_return"] = _text(prices.year_return(row["coin"], row["year"]))
+    with _Step("the market's returns over the cell's periods could not be computed"):
+        _beside_the_market(figures, prices or _Prices(market))
     return {**entry, **{name: figures[name] for name in FIGURE_NAMES}}, timing
+
+
+def _beside_the_market(figures: Mapping[str, Any], prices: _Prices) -> None:
+    """The market over each of the cell's own periods (module docstring): ``btc_return`` on its
+    months and years, ``universe_median_return`` on its years and ``coin_return`` on its by-coin
+    rows, each over the period's ``start_ms`` to ``end_ms``."""
+    spans: dict[int, tuple[int, int]] = {}
+    for label, month in (("months", True), ("years", False)):
+        for row in figures[label]:
+            start, end = row["start_ms"], row["end_ms"]
+            if start is None or end is None:
+                row["btc_return"] = None
+                if not month:
+                    row["universe_median_return"] = None
+                continue
+            row["btc_return"] = _text(prices.closed_return(BTC, start, end, month=month))
+            if not month:
+                row["universe_median_return"] = _text(prices.median_return(start, end))
+                spans[row["year"]] = (start, end)
+    for row in figures["coins"]:
+        span = spans.get(row["year"])
+        found = None if span is None else prices.closed_return(row["coin"], *span)
+        row["coin_return"] = _text(found)
 
 
 # ---- the market regime --------------------------------------------------------------------------
@@ -1137,6 +1204,32 @@ class _Prices:
         if symbol not in self.market.symbols:
             return None
         return self.daily(symbol).span_return(*self.year_span(year))
+
+    def closed_return(
+        self, symbol: str, start: int, end: int, *, month: bool = False
+    ) -> Decimal | None:
+        """``symbol``'s return over ``start`` to ``end`` from the daily closes made by ``end``
+        (a bar opening at or before ``end - DAY_MS``), as a month's (``month_return``) or a
+        year's (``span_return``); None without the coin. Over a whole month or year, which ends
+        at 00:00 UTC, these are the bars ``month_return`` and ``span_return`` read anyway."""
+        if symbol not in self.market.symbols:
+            return None
+        daily, closed_by = self.daily(symbol), end - DAY_MS + 1
+        if month:
+            return daily.month_return(start, closed_by)
+        return daily.span_return(start, closed_by)
+
+    def median_return(self, start: int, end: int) -> Decimal | None:
+        """The median of a year's ``closed_return`` over ``start`` to ``end`` of the coins in
+        the universe in any month the span touches (``start``'s to ``end - 1``'s)."""
+        keys = months(month_of(start), month_of(end - 1))
+        coins = {coin for key in keys for coin in self.market.universe(key)}
+        returns = [
+            change
+            for change in (self.closed_return(coin, start, end) for coin in sorted(coins))
+            if change is not None
+        ]
+        return _median(returns)
 
 
 def _median(values: Sequence[Decimal]) -> Decimal | None:
@@ -1310,13 +1403,15 @@ def _days(hours: object) -> str:
         return _rounded(Decimal(hours) / 24)
 
 
-def _period_tables(
-    rows: Sequence[Mapping[str, Any]], label: str, btc: Mapping[object, object]
-) -> list[str]:
-    """A cell's tables for its years or for the months of one year; ``btc`` is BTCUSDT's
-    return by period."""
+def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
+    """A cell's tables for its years or for the months of one year, each row beside its own
+    ``btc_return``."""
     head = label.capitalize()
-    lines = ["Equity (USDT), beside BTCUSDT's own return over the same period:", ""]
+    lines = [
+        "Equity (USDT), beside BTCUSDT's own return over the same period (for a stopped cell's "
+        "last period, up to the stop):",
+        "",
+    ]
     lines += _table(
         (head, "Start equity", "End equity", "Return", "BTC return", "Max drawdown"),
         (
@@ -1325,7 +1420,7 @@ def _period_tables(
                 _rounded(row["start_equity"]),
                 _rounded(row["end_equity"]),
                 _pct(row["return"]),
-                _pct(btc.get(row[label])),
+                _pct(row["btc_return"]),
                 _share(row["max_drawdown"]),
             )
             for row in rows
@@ -1630,8 +1725,10 @@ def _headline(document: Mapping[str, Any]) -> list[str]:
         "the market's: BTC is BTCUSDT's own price change over the year, and Median coin the "
         "middle yearly price change of the coins in the bot's universe that year. The window's "
         "first year is measured from the window's start, and a stopped cell's last year ends at "
-        "the stop. Trades count in the year they closed (glossary), so a year's return and its "
-        "trades' P&L can differ; each cell's Years section reconciles the two.",
+        "the stop, while BTC and Median coin are the whole year's: the lines under the table "
+        "compare a stopped cell's last year with the market over the same span. Trades count in "
+        "the year they closed (glossary), so a year's return and its trades' P&L can differ; "
+        "each cell's Years section reconciles the two.",
         "",
     ]
     head = ["Year", "BTC", "Median coin"]
@@ -1654,6 +1751,20 @@ def _headline(document: Mapping[str, Any]) -> list[str]:
             )
         body.append(line)
     lines += _table(head, body)
+    stopped = [cell for cell in cells if cell["stop_ms"] is not None and cell["years"]]
+    if stopped:
+        lines += [
+            "Stopped cells: the last year to the stop, and the market over the same span:",
+            "",
+        ]
+        for cell in stopped:
+            last = cell["years"][-1]
+            lines.append(
+                f"- {cell['cell']['id']} stopped at {_when(cell['stop_ms'])}: {last['year']} to "
+                f"the stop {_pct(last['return'])}; BTC {_pct(last['btc_return'])}, median coin "
+                f"{_pct(last['universe_median_return'])}."
+            )
+        lines.append("")
     lines += ["Losing years (a negative return):", ""]
     if not cells:
         lines.append("- No cell was diagnosed (see Missing cells).")
@@ -1682,10 +1793,11 @@ GLOSSARY: tuple[str, ...] = (
     "- **Max drawdown** (max DD): the largest fall from a high to a later low inside the period, "
     "from the hourly values, as a share of that high.",
     "- **BTC, BTC return**: BTCUSDT's own price change over the same period, from its last daily "
-    "close before the period to its last close in it. **Median coin**: the middle yearly price "
-    "change of the coins that were in the universe in any month of the year, each measured the "
-    "same way (from its first close in the year when it started trading that year). **Coin's own "
-    "return** (by coin): that coin's price change in the year, measured the same way.",
+    "close before the period to its last close in it (for a stopped cell's last period, its last "
+    "daily close before the stop). **Median coin**: the middle yearly price change of the coins "
+    "that were in the universe in any month of the year, each measured the same way (from its "
+    "first close in the year when it started trading that year). **Coin's own return** (by "
+    "coin): that coin's price change over the cell's year, measured the same way.",
     "- **Lifecycle** (a trade): one position in one coin on one side, long or short, from when "
     "it opens to when it is closed, over spot and futures together. A trade counts in the month "
     "and the year in which it closed, with all its profit, fees and funding, even if it opened "
@@ -1733,7 +1845,10 @@ GLOSSARY: tuple[str, ...] = (
     "P&L.",
     "- **Traded notional**: the value of everything bought and sold.",
     "- **Dead-market closes, Funding-month closes**: how many positions were closed that way. "
-    "They count legs, not coins: a coin held on both spot and futures counts twice.",
+    "They count legs, not coins: a coin held on both spot and futures counts twice. When the "
+    "close prices themselves liquidate the account (its futures margin backing falls to the "
+    "maintenance margin), the run ends before anything is closed, so those legs are not "
+    "counted; their penalty still is, since the final value uses those prices.",
     "- **Margin cuts, Ceiling cuts**: times the account cut its positions because the futures "
     "margin ran low, or because the total exposure went above 3 times the equity.",
     "- **Deferrals**: daily orders that could not fill in the hour after their decision, "
@@ -1751,7 +1866,8 @@ GLOSSARY: tuple[str, ...] = (
     "**Warming** means neither: not enough history yet, no reading at all, or an exact tie. "
     "**Flips**: how often a reading turned from up to down or back.",
     "- **Coin-day**: one coin at one daily decision. **Mean coins with a target**: how many "
-    "coins the bot wanted a position in, on average per daily decision.",
+    "coins the bot wanted a position in, on average per daily decision; as for the weights, a "
+    "coin with no new target that day keeps its last one.",
     "- **L**: the long fraction, the number of speeds that are up divided by 3 (0, 1/3, 2/3 "
     "or 1). **S**: the short fraction, above 0 (0.25, 0.5 or 1) only when the medium speed is "
     "down and a downtrend is confirmed.",
@@ -1778,7 +1894,7 @@ def _missing_section(missing: Mapping[str, Any]) -> list[str]:
         missing["cells"],
     )
     if not folders and not refused and not cells:
-        return [*lines, "None: every arm has a cell at each capital and cost level present.", ""]
+        return [*lines, "None: every cell this run planned was diagnosed.", ""]
     if folders:
         lines += ["Folders of --cells without a summary.json:", ""]
         lines += [f"- `{name}`" for name in folders]
@@ -1793,8 +1909,7 @@ def _missing_section(missing: Mapping[str, Any]) -> list[str]:
         lines.append("")
     if cells:
         lines += [
-            "Cells absent at a capital and cost level present (not run, failed, timed out or "
-            "refused):",
+            "Cells this run planned that have no diagnosis (failed, timed out or refused):",
             "",
         ]
         lines += [f"- {cell}" for cell in cells]
@@ -1899,8 +2014,6 @@ def render_markdown(document: Mapping[str, Any]) -> str:
             for row in document["market_regime"]
         ),
     )
-    btc_years = {row["year"]: row["btc_return"] for row in document["market_years"]}
-    btc_months = {row["month"]: row["btc_return"] for row in document["market_regime"]}
     for cell in document["cells"]:
         lines += [f"## Cell {cell['cell']['id']}", ""]
         outcome = f"Outcome: {cell['outcome']}"
@@ -1913,11 +2026,11 @@ def render_markdown(document: Mapping[str, Any]) -> str:
             lines += ["A failure summary: the cell has no figures.", ""]
             continue
         lines += ["### Years", ""]
-        lines += _period_tables(cell["years"], "year", btc_years)
+        lines += _period_tables(cell["years"], "year")
         for year in cell["years"]:
             inside = [row for row in cell["months"] if row["month"].startswith(f"{year['year']}-")]
             lines += [f"### Months of {year['year']}", ""]
-            lines += _period_tables(inside, "month", btc_months)
+            lines += _period_tables(inside, "month")
         lines += ["### Biggest losing trades", ""]
         lines += _loser_tables(cell["losing_trades"], [year["year"] for year in cell["years"]])
         lines += ["### Holding time", ""]
@@ -1958,6 +2071,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--cells", type=Path, required=True, help="the cells: one subfolder per cell"
     )
     parser.add_argument(
+        "--planned", required=True, help="the planned cells' ids, comma-separated (cell_ids)"
+    )
+    parser.add_argument(
         "--out", type=Path, required=True, help="the folder for diagnosis.json and .md"
     )
     return parser
@@ -1970,6 +2086,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     found = [name for name in OUTPUT_FILES if (out / name).exists()]
     if found:
         return _fail(f"refused: the out folder already holds {', '.join(found)}")
+    order = {spec.cell_id: index for index, spec in enumerate(all_cells())}
+    try:
+        planned = planned_cells(args.planned, order)
+    except ValueError as exc:
+        return _fail("refused: --planned is not a list of distinct cell ids", exc)
     if v4_cells_guard.main(["--data", str(args.data)]) != 0:
         return _fail("refused: the data directory fails the reserved-window guard")
     try:
@@ -1985,13 +2106,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     cells = [folder for folder in folders if (folder / SUMMARY_FILE).is_file()]
     if not cells:
         return _fail("refused: no cell folder holds a summary.json")
-    order = {spec.cell_id: index for index, spec in enumerate(all_cells())}
     prices = _Prices(market)
     diagnosed: list[tuple[dict[str, Any], dict[str, Any]]] = []
     refused: list[dict[str, str]] = []
     for folder in cells:
         try:
             entry, timing = diagnose_cell(folder, market, prices)
+            if entry["cell"]["id"] not in planned:
+                raise CellRefused(_UNPLANNED, ValueError("a cell the dispatch did not ask for"))
             if any(entry["cell"]["id"] == other["cell"]["id"] for other, _ in diagnosed):
                 raise CellRefused(_REPEATED, ValueError("a cell of another folder"))
         except CellRefused as refusal:
@@ -2006,7 +2128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _fail(f"refused: the cell folder {folder.name!r:.80}: {step}", cause)
         refused.append({"folder": folder.name, "step": step, "error": type(cause).__name__})
     diagnosed.sort(key=lambda item: order[item[0]["cell"]["id"]])
-    missing = _missing(folders, cells, [entry["cell"] for entry, _ in diagnosed], refused)
+    missing = _missing(folders, cells, [entry["cell"] for entry, _ in diagnosed], refused, planned)
     for entry, _ in diagnosed:
         years = 0 if entry["years"] is None else len(entry["years"])
         months_seen = 0 if entry["months"] is None else len(entry["months"])
@@ -2074,19 +2196,27 @@ def _create(path: Path, data: bytes) -> None:
         raise
 
 
+def planned_cells(text: str, order: Mapping[str, int]) -> list[str]:
+    """The cell ids of ``--planned``, in run order: comma-separated, each a key of ``order``
+    (``all_cells()``'s ids), none repeated; otherwise a ``ValueError``."""
+    ids = [item.strip() for item in text.split(",")]
+    if not all(item in order for item in ids):
+        raise ValueError("an item is not a cell id")
+    if len(set(ids)) != len(ids):
+        raise ValueError("a cell id is repeated")
+    return sorted(ids, key=order.__getitem__)
+
+
 def _missing(
     folders: Sequence[Path],
     cells: Sequence[Path],
     present: Sequence[Mapping[str, Any]],
     refused: Sequence[Mapping[str, str]],
+    planned: Sequence[str],
 ) -> dict[str, Any]:
     """The subfolders without a ``summary.json``, the cell folders refused (each with its step
-    and exception type), and the cells of every arm of ``ARMS`` at each capital and cost level
-    that has a diagnosed cell, absent from the diagnosis (in run order)."""
+    and exception type), and the ``planned`` cells absent from the diagnosis (in run order)."""
     found = {cell["id"] for cell in present}
-    levels = {(cell["capital"], cell["cost_multiple"]) for cell in present}
-    # all_cells() is every arm of ARMS at every capital and cost level, in run order.
-    planned = [spec.cell_id for spec in all_cells() if (spec.capital, spec.cost_multiple) in levels]
     with_summary = set(cells)
     return {
         "folders_without_summary": [

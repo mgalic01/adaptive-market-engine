@@ -18,6 +18,7 @@ from crypto_grid_bot.v4.engine.arms import ARMS, CellSpec, all_cells
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import v4_cells_plan  # noqa: E402
+import v4_diagnose  # noqa: E402
 
 ALL_ARMS = ",".join(ARMS)
 
@@ -165,10 +166,24 @@ def test_main_writes_the_validated_id_the_matrix_and_the_cell_count(tmp_path, ca
     code, out, err, output = plan(tmp_path, capsys, arms="v4_main,hold_btc", costs="1,2")
     assert code == 0 and err == ""
     cells = v4_cells_plan.build_cells("v4_main,hold_btc", "10000", "1,2")
+    ids = "v4_main-10000-1x,v4_main-10000-2x,hold_btc-10000-1x,hold_btc-10000-2x"
+    assert [cell.cell_id for cell in cells] == ids.split(",")
     assert output.read_text(encoding="ascii") == (
-        f"data_run=1234567890\nmatrix={v4_cells_plan.matrix_json(cells)}\ncells=4\n"
+        f"data_run=1234567890\nmatrix={v4_cells_plan.matrix_json(cells)}\ncells=4\ncell_ids={ids}\n"
     )
     assert out == "v4_cells_plan: 4 cells planned for data run 1234567890\n"
+
+
+def test_the_cell_ids_are_what_the_diagnosis_takes_as_planned(tmp_path, capsys):
+    """Codex P2 on #294: the diagnosis' --planned is the plan's cell_ids line, which it reads
+    back as the matrix's cells, in the same order."""
+    code, _, _, output = plan(tmp_path, capsys, capitals="1000,10000", costs="1,2")
+    assert code == 0
+    lines = dict(line.split("=", 1) for line in output.read_text(encoding="ascii").splitlines())
+    matrix = [row["cell"] for row in json.loads(lines["matrix"])["include"]]
+    order = {spec.cell_id: index for index, spec in enumerate(all_cells())}
+    assert v4_diagnose.planned_cells(lines["cell_ids"], order) == matrix
+    assert len(matrix) == int(lines["cells"]) == 32
 
 
 def test_main_appends_to_the_output_file(tmp_path, capsys):

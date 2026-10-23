@@ -43,9 +43,10 @@ run-name: v4-cells ${{ inputs.data_run }}
 #   downloads each v4-cell-* artifact into its own folder, cells/v4-cell-<cell id>/, runs the
 #   guard, and runs scripts/v4_diagnose.py under GNU time, whose wall time and peak memory go to
 #   diagnosis/diagnose-timing.json (the proxy for the registered run's verdict step and its 2 GB
-#   memory limit). A cell the diagnosis refuses is listed in it as missing, the others are
-#   diagnosed, and the step still fails; the timing and the upload then run all the same. Its
-#   artifact is v4-diagnosis.
+#   memory limit). Its --planned is the plan's cell_ids, the cells this dispatch asked for, so a
+#   planned cell with no diagnosis is listed as missing and no other is. A cell the diagnosis
+#   refuses is listed in it as missing, the others are diagnosed, and the step still fails; the
+#   timing and the upload then run all the same. Its artifact is v4-diagnosis.
 #
 # Every artifact is kept one day, and the logs are public: each script prints counts, ids, sizes
 # and times only, never a price, an equity or a return. The results stay on the owner's PC: download
@@ -96,6 +97,7 @@ jobs:
       data_run: ${{ steps.plan.outputs.data_run }}
       matrix: ${{ steps.plan.outputs.matrix }}
       cells: ${{ steps.plan.outputs.cells }}
+      cell_ids: ${{ steps.plan.outputs.cell_ids }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -217,6 +219,7 @@ jobs:
     timeout-minutes: 180
     env:
       PLANNED: ${{ needs.plan.outputs.cells }}
+      PLANNED_CELLS: ${{ needs.plan.outputs.cell_ids }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -269,10 +272,12 @@ jobs:
       # The diagnosis is timed as the cells are: its wall time and peak memory are the proxy for
       # the registered run's verdict step and its 2 GB memory limit. It exits 1 when it refused a
       # cell, after writing the diagnosis of the others, so the timing and the upload run after a
-      # failed diagnosis too (the upload's if-no-files-found fails a run that wrote nothing).
+      # failed diagnosis too (the upload's if-no-files-found fails a run that wrote nothing). Its
+      # --planned is the plan's validated cell ids, so the missing cells it lists are those this
+      # dispatch asked for.
       - id: diagnose
         name: Diagnose the cells
-        run: /usr/bin/time -v -o diagnose.time python scripts/v4_diagnose.py --data v4data --cells cells --out diagnosis
+        run: /usr/bin/time -v -o diagnose.time python scripts/v4_diagnose.py --data v4data --cells cells --planned "$PLANNED_CELLS" --out diagnosis
 
       - if: ${{ !cancelled() && (steps.diagnose.outcome == 'success' || steps.diagnose.outcome == 'failure') }}
         name: Keep the diagnosis's wall time and peak memory

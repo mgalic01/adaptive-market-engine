@@ -206,8 +206,13 @@ def run_main(module: Any, argv: Sequence[str]) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
-def diagnose_argv(data: Path, cells: Path, out: Path) -> list[str]:
-    return ["--data", str(data), "--cells", str(cells), "--out", str(out)]
+# What a dispatch with the default arms plans at the module's capital and cost (the plan job's
+# cell_ids): every arm of ARMS, of which the module's world runs two.
+PLANNED_ALL = ",".join(CellSpec(arm, CAPITAL, COSTS).cell_id for arm in ARMS)
+
+
+def diagnose_argv(data: Path, cells: Path, out: Path, planned: str = PLANNED_ALL) -> list[str]:
+    return ["--data", str(data), "--cells", str(cells), "--planned", planned, "--out", str(out)]
 
 
 def cell_folder(cells: Path, arm: str) -> Path:
@@ -970,21 +975,130 @@ def test_event_counts_match_the_records(diagnosis, records):
     assert totals["band_skips"] > 0 and totals["refused_orders"] >= 1
 
 
+def liquidated_by_closes(out: Path, check: str) -> Receipt:
+    """A cell by hand from 2023-12-31 22:00 whose synthetic closes at 00:00 of 2024-01-01 come
+    with an outcome stopping there at ``check``: an earlier batch at 22:00 (one dead-market leg,
+    booked), then at 00:00 a dead-market and a funding-month leg and the liquidated outcome,
+    after that hour's record without an open mark (run.py: step 1 comes before the open mark)
+    and the censored lifecycle."""
+    first, stop = month_start("2024-01") - 2 * HOUR, month_start("2024-01")
+    dead = {"reason": "delisting", "held": D(3), "last_close": D(10), "price": D(9)}
+    funding_month = {"reason": "funding-month exit", "held": D(-2), "last_close": D(50)}
+    funding_month["price"] = D(55)
+    hourly = {"complete": True, "gross": D("0.5")}
+    closes = {"type": "synthetic_closes", "coin": None}
+    with RecordWriter(out / run.RECORDS_FILE) as writer:
+        writer.append("event", {**closes, "hour_ms": first, "legs": [dead]})
+        writer.append("hourly", {"open_ms": first, "open_equity": D(10000), **hourly})
+        writer.append("hourly", {"open_ms": first + HOUR, "open_equity": D(900), **hourly})
+        writer.append("event", {**closes, "hour_ms": stop, "legs": [dead, funding_month]})
+        writer.append("hourly", {"open_ms": stop, "open_equity": None, "complete": None})
+        trade = {"coin": "AAAUSDT", "side": "long", "entry_ms": first, "exit_ms": stop}
+        trade.update(exit_reason="liquidation", gross_pnl=D(-9000), fees=D(1), funding=D(0))
+        writer.append("lifecycle", {**trade, "given_back": D(0)})
+        outcome = {"outcome": "liquidated", "reason": None, "stop_ms": stop, "check": check}
+        writer.append("outcome", {**outcome, "final_equity": D(-5)})
+        return writer.close()
+
+
+@pytest.mark.parametrize("check", ["synthetic_closes", "synthetic_closes_booked"])
+def test_a_batch_that_liquidated_before_booking_counts_no_close(tmp_path, check):
+    """Codex P2 on #294: when the synthetic closes' own liquidation check stops the cell (check
+    ``synthetic_closes`` at the batch's hour), no fill was booked, so the batch's legs count as
+    neither a dead-market nor a funding-month close; the penalty stays in the costs (the stop's
+    equity uses the penalised prices). An earlier batch, and a batch booked before the equity
+    fell to zero (``synthetic_closes_booked``), count as before."""
+    (tmp_path / "cell").mkdir()
+    receipt = liquidated_by_closes(tmp_path / "cell", check)
+    figures = v4_diagnose.cell_figures(tmp_path / "cell" / run.RECORDS_FILE, receipt)
+    december, january = figures["months"]
+    assert (
+        december["counts"]["dead_market_closes"],
+        december["counts"]["funding_month_closes"],
+    ) == (1, 0)
+    booked = int(check == "synthetic_closes_booked")
+    assert (january["counts"]["dead_market_closes"], january["counts"]["funding_month_closes"]) == (
+        booked,
+        booked,
+    )
+    # |10 - 9| x 3 at 22:00; |10 - 9| x 3 + |50 - 55| x 2 at the stop, booked or not.
+    assert (
+        december["costs"]["synthetic_close_penalty"],
+        january["costs"]["synthetic_close_penalty"],
+    ) == (
+        "3",
+        "13",
+    )
+    assert [row["exit_reason"] for row in figures["exit_reasons"]] == ["liquidation"]
+
+
 # ---- signals -------------------------------------------------------------------------------
+
+
+def carried_coins(rows: Rows) -> dict[int, int]:
+    """Each decision's coins with a nonzero target, rebuilt from the daily records: every coin
+    keeps its last target (a target of 0, or a dead market, drops it)."""
+    targets: dict[str, Fraction] = {}
+    counts: dict[int, int] = {}
+    for record in of_kind(rows, "daily_coin"):
+        if record["target"] is not None:
+            targets[record["coin"]] = F(D(record["target"]))
+        elif record["dead_market"] is True:
+            targets[record["coin"]] = F(0)
+        counts[record["decision_ms"]] = sum(value != 0 for value in targets.values())
+    return counts
+
+
+def test_the_coins_with_a_target_keep_their_last_target(tmp_path):
+    """Codex P2 on #294: a coin with no target at a decision (a day with no bar) still counts,
+    across a year end too; a dead market and a target of 0 drop it. Decisions by hand at 00:00
+    of 2023-12-31, 2024-01-01 and 2024-01-02: AAAUSDT 0.3 and BBBUSDT -0.2 (2 coins); both
+    carried (2); AAAUSDT's market dead and BBBUSDT 0 (none). So 2023's mean is 2 and 2024's is
+    (2 + 0) / 2 = 1, where counting only the targets emitted gives 2 and 0."""
+    first = month_start("2024-01") - DAY
+    decisions = (first, first + DAY, first + 2 * DAY)
+    days = (
+        (("AAAUSDT", D("0.3"), False), ("BBBUSDT", D("-0.2"), False)),
+        (("AAAUSDT", None, False), ("BBBUSDT", None, False)),
+        (("AAAUSDT", None, True), ("BBBUSDT", D(0), False)),
+    )
+    empty = dict.fromkeys(("reading_day_ms", "speeds", "downtrend", "L", "S"))
+    out = tmp_path / "cell"
+    out.mkdir()
+    with RecordWriter(out / run.RECORDS_FILE) as writer:
+        for index in range(2 * 24 + 1):
+            ms = first + index * HOUR
+            if ms in decisions:
+                for coin, target, dead in days[decisions.index(ms)]:
+                    record = {"decision_ms": ms, "coin": coin, "target": target, **empty}
+                    writer.append("daily_coin", {**record, "dead_market": dead})
+            writer.append(
+                "hourly", {"open_ms": ms, "open_equity": D(10000), "complete": True, "gross": None}
+            )
+        writer.append("outcome", {"outcome": "complete", "final_equity": D(10000)})
+        receipt = writer.close()
+    figures = v4_diagnose.cell_figures(out / run.RECORDS_FILE, receipt)
+    means = {
+        row["year"]: (row["decisions"], row["mean_coins_with_target"]) for row in figures["signals"]
+    }
+    assert means == {2023: (1, "2"), 2024: (2, "1")}
 
 
 def test_signal_behaviour_counts_the_daily_records(diagnosis, records):
     """Per year of the decisions: each speed's share of coin-days up, down or warming (no
     reading, warming up or an exact tie) and its flips (a vote opposite to the coin's last up
     or down vote); the shares of a confirmed downtrend, of
-    S > 0 and of each L level; and the mean number of coins with a nonzero target per decision.
-    A hold arm has no daily records, so its shares are null."""
+    S > 0 and of each L level; and the mean number of coins with a nonzero target per decision,
+    each coin keeping its last target as for the weights (Codex P2 on #294). A hold arm has no
+    daily records, so its shares are null."""
     rows = of_kind(records["v4_main"], "daily_coin")
     by_year: dict[int, list[dict[str, Any]]] = {}
     for record in rows:
         by_year.setdefault(year_of(record["decision_ms"]), []).append(record)
     entry = entry_of(diagnosis, "v4_main")
     assert [row["year"] for row in entry["signals"]] == sorted(by_year) == [2023, 2024]
+    carried = carried_coins(records["v4_main"])
+    emitted = 0
     last_vote: dict[tuple[str, str], int] = {}
     for row in entry["signals"]:
         days = by_year[row["year"]]
@@ -1019,10 +1133,14 @@ def test_signal_behaviour_counts_the_daily_records(diagnosis, records):
             label: share(sum(D(r["L"]) == level for r in readings), len(days))
             for label, level in levels.items()
         }
-        targets = sum(r["target"] is not None and D(r["target"]) != 0 for r in days)
+        decided = [n for ms, n in carried.items() if year_of(ms) == row["year"]]
         with localcontext(CONTEXT):
-            mean = str(D(targets) / D(row["decisions"]))
+            mean = str(D(sum(decided)) / D(row["decisions"]))
         assert row["mean_coins_with_target"] == mean
+        emitted += sum(r["target"] is not None and D(r["target"]) != 0 for r in days)
+    # The world carries targets over days with no new one (LUNAUSDT's last week, before its
+    # dead market drops it), so counting only the targets emitted would be fewer.
+    assert sum(carried.values()) > emitted
     assert sum(row["speeds"]["fast"]["flips"] for row in entry["signals"]) > 0
     hold = entry_of(diagnosis, "hold_universe")
     assert [row["coin_days"] for row in hold["signals"]] == [0, 0]
@@ -2059,20 +2177,29 @@ def test_each_arm_is_described_from_its_own_figures():
 
 
 def test_the_month_and_year_tables_show_btc_beside_the_bot(diagnosis):
-    """(e): each cell's equity tables show BTCUSDT's return of the same month or year, from the
-    regime, next to the cell's own; the reconciliation and exposure tables follow."""
+    """(e): each cell's equity tables show BTCUSDT's return of the same month or year next to
+    the cell's own: the row's own ``btc_return``, which for a complete cell's whole months and
+    years is the regime's and ``market_years``'; its years' median coin is ``market_years``' too.
+    The reconciliation and exposure tables follow."""
     text = diagnosis.markdown
     btc_months = {row["month"]: row["btc_return"] for row in diagnosis.document["market_regime"]}
-    btc_years = {row["year"]: row["btc_return"] for row in diagnosis.document["market_years"]}
+    market = {row["year"]: row for row in diagnosis.document["market_years"]}
     for arm in ARMS_RUN:
         entry = entry_of(diagnosis, arm)
+        for year in entry["years"]:
+            shown = market[year["year"]]
+            assert (year["btc_return"], year["universe_median_return"]) == (
+                shown["btc_return"],
+                shown["universe_median_return"],
+            )
+        assert all(m["btc_return"] == btc_months[m["month"]] for m in entry["months"])
         section = text[text.index(f"## Cell {entry['cell']['id']}") :]
         years = section[section.index("### Years") : section.index("### Months of 2023")]
         assert "| Year | Start equity | End equity | Return | BTC return | Max drawdown |" in years
         for row, year in zip(table_rows(years, "Year"), entry["years"], strict=True):
             assert row[3:5] == [
                 v4_diagnose._pct(year["return"]),
-                v4_diagnose._pct(btc_years[year["year"]]),
+                v4_diagnose._pct(year["btc_return"]),
             ]
         for name in ("2023", "2024"):
             months = section[section.index(f"### Months of {name}") :]
@@ -2080,9 +2207,154 @@ def test_the_month_and_year_tables_show_btc_beside_the_bot(diagnosis):
                 (month,) = [m for m in entry["months"] if m["month"] == row[0]]
                 assert row[3:5] == [
                     v4_diagnose._pct(month["return"]),
-                    v4_diagnose._pct(btc_months[row[0]]),
+                    v4_diagnose._pct(month["btc_return"]),
                 ]
         assert "| Year | Equity change | Net P&L of trades closed |" in years
         assert "| Year | Mean gross exposure (x equity) | Hours in the market |" in years
     coins = text[text.index("### By coin") :]
     assert "| Year | Coin | Coin's own return | Lifecycles |" in coins
+
+
+def test_a_stopped_cell_is_compared_with_the_market_up_to_its_stop(tmp_path):
+    """Codex P2 on #294: a cell liquidated at 05:00 on 2024-01-15 is compared with BTCUSDT, the
+    median coin and the coin's own return up to its stop, from the daily closes made by then,
+    never with the prices after it. BTCUSDT rises 1% a day through 2024-01-09, closes at 50 from
+    2024-01-10 to 2024-01-14 and at 200 from 2024-01-15 on: up to the stop January falls, while
+    the whole month, and the daily bar the stop falls in, rise. A whole period keeps the
+    market's own figure."""
+    stop = month_start("2024-01") + 14 * DAY + 5 * HOUR
+    days = hours_in("2023-12", "2024-02") // 24
+    drop = (month_start("2024-01") + 9 * DAY - month_start("2023-12")) // DAY
+    rise = (month_start("2024-01") + 14 * DAY - month_start("2023-12")) // DAY
+    with localcontext(CONTEXT):
+        daily = [
+            D(100) * D("1.01") ** day if day < drop else D(50) if day < rise else D(200)
+            for day in range(days)
+        ]
+    world = btc_world(hourly_closes(daily), "2023-12", "2024-02", "2023-12")
+    market = Market.load(write_world(tmp_path / "world", world))
+    first = month_start("2023-12")
+    out = tmp_path / "cell"
+    out.mkdir()
+    with RecordWriter(out / run.RECORDS_FILE) as writer:
+        for index in range((stop - first) // HOUR + 1):
+            ms = first + index * HOUR
+            writer.append(
+                "hourly", {"open_ms": ms, "open_equity": D(10000), "complete": True, "gross": None}
+            )
+        trade = {"coin": "BTCUSDT", "side": "long", "entry_ms": first, "exit_ms": stop}
+        trade.update(exit_reason="liquidation", gross_pnl=D(-5), fees=D(0), funding=D(0))
+        writer.append("lifecycle", {**trade, "given_back": D(0)})
+        outcome = {"outcome": "liquidated", "reason": None, "stop_ms": stop, "check": "post_fill"}
+        writer.append("outcome", {**outcome, "final_equity": D(9000)})
+        receipt = writer.close()
+    figures = v4_diagnose.cell_figures(out / run.RECORDS_FILE, receipt)
+    v4_diagnose._beside_the_market(figures, v4_diagnose._Prices(market))
+    bars = {bar.open_ms: bar.close for bar in market.daily("BTCUSDT")}
+    with localcontext(CONTEXT):
+        to_stop = str(bars[stop - 5 * HOUR - DAY] / bars[month_start("2024-01") - DAY] - 1)
+    assert D(to_stop) < 0
+    december, january = figures["months"]
+    assert january["end_ms"] == stop
+    assert january["btc_return"] == to_stop
+    regime = {row["month"]: row["btc_return"] for row in v4_diagnose.market_regime(market)}
+    assert D(regime["2024-01"]) > 0 and december["btc_return"] == regime["2023-12"]
+    years = {row["year"]: row for row in figures["years"]}
+    assert (years[2024]["btc_return"], years[2024]["universe_median_return"]) == (to_stop, to_stop)
+    whole = {row["year"]: row for row in v4_diagnose.market_years(market)}
+    assert D(whole[2024]["btc_return"]) > 0
+    assert (years[2023]["btc_return"], years[2023]["universe_median_return"]) == (
+        whole[2023]["btc_return"],
+        whole[2023]["universe_median_return"],
+    )
+    (coin,) = figures["coins"]
+    assert (coin["year"], coin["coin"], coin["coin_return"]) == (2024, "BTCUSDT", to_stop)
+
+
+def test_the_headline_compares_a_stopped_cell_over_its_own_span(diagnosis):
+    """A stopped cell's last year is shown under the table beside BTCUSDT and the median coin
+    over the same span, to the stop; a complete cell has no such line."""
+    document = json.loads(json.dumps(diagnosis.document))
+    main = document["cells"][0]
+    main.update({"outcome": "liquidated", "stop_ms": month_start("2024-02") + 9 * HOUR})
+    main["years"][-1].update(
+        {"return": "-0.5", "btc_return": "0.0123", "universe_median_return": "-0.25"}
+    )
+    page = v4_diagnose.render_markdown(document)
+    headline = page[page.index("## Headline") : page.index("## Glossary")]
+    assert (
+        "- v4_main-10000-1x stopped at 2024-02-01 09:00 UTC: 2024 to the stop -50.00%; "
+        "BTC +1.23%, median coin -25.00%." in headline
+    )
+    assert "hold_universe-10000-1x stopped" not in headline
+    assert "Stopped cells" not in diagnosis.markdown
+
+
+# ---- Codex P2 on #294: the missing cells are the planned cells ----------------------------------
+
+
+def test_a_subset_dispatch_lists_no_unplanned_cell(world_dir, cells_dir, tmp_path):
+    """A dispatch of the two arms the world runs plans those two only: none is missing, and the
+    six other arms are never listed."""
+    planned = ",".join(CellSpec(arm, CAPITAL, COSTS).cell_id for arm in ARMS_RUN)
+    out = tmp_path / "out"
+    code, stdout, stderr = run_main(v4_diagnose, diagnose_argv(world_dir, cells_dir, out, planned))
+    assert (code, stderr) == (0, "")
+    document = json.loads((out / "diagnosis.json").read_text(encoding="ascii"))
+    assert document["missing"]["cells"] == []
+    page = (out / "diagnosis.md").read_text(encoding="utf-8")
+    missing = page[page.index("## Missing cells") : page.index("## Market regime")]
+    assert "- `stray`" in missing
+    assert "Cells this run planned that have no diagnosis" not in missing
+    assert "0 planned cells missing" in stdout.splitlines()[-1]
+
+
+def test_a_planned_level_with_no_cell_is_listed(world_dir, cells_dir, tmp_path):
+    """A planned cell at a capital and cost level where no cell produced an artifact is listed
+    as missing, in run order: it was asked for."""
+    lost = [CellSpec(arm, 1000, 2).cell_id for arm in ("hold_universe", "v4_main")]
+    planned = ",".join([*(CellSpec(arm, CAPITAL, COSTS).cell_id for arm in ARMS_RUN), *lost])
+    out = tmp_path / "out"
+    code, stdout, stderr = run_main(v4_diagnose, diagnose_argv(world_dir, cells_dir, out, planned))
+    assert (code, stderr) == (0, "")
+    document = json.loads((out / "diagnosis.json").read_text(encoding="ascii"))
+    assert document["missing"]["cells"] == ["v4_main-1000-2x", "hold_universe-1000-2x"]
+    assert "2 planned cells missing" in stdout.splitlines()[-1]
+
+
+def test_a_cell_the_dispatch_did_not_plan_is_refused_alone(
+    diagnosis, world_dir, cells_dir, tmp_path
+):
+    """A cell folder of a cell not in --planned is refused alone, with its step; the planned
+    cell is diagnosed."""
+    planned = CellSpec("hold_universe", CAPITAL, COSTS).cell_id
+    out = tmp_path / "out"
+    code, _, stderr = run_main(v4_diagnose, diagnose_argv(world_dir, cells_dir, out, planned))
+    assert code == 1
+    document = json.loads((out / "diagnosis.json").read_text(encoding="ascii"))
+    assert [cell["cell"]["id"] for cell in document["cells"]] == [planned]
+    folder = cell_folder(Path("cells"), "v4_main").name
+    (refusal,) = document["missing"]["refused"]
+    assert (refusal["folder"], refusal["step"]) == (folder, "the cell is not one of --planned")
+    assert document["missing"]["cells"] == []
+    assert stderr == (
+        f"v4_diagnose: refused: the cell folder {folder!r}: the cell is not one of --planned: "
+        "ValueError\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "planned",
+    ["", "v4_main-10000-1x,", "v4_main-10000-1x,v4_main-10000-1x", "hold_btc_trend-10000-1x"],
+    ids=["empty", "empty-item", "repeated", "unknown"],
+)
+def test_a_planned_list_that_is_not_cell_ids_is_refused(world_dir, cells_dir, tmp_path, planned):
+    """--planned must be distinct cell ids of all_cells(): otherwise nothing is read or
+    written, and standard error names the refusal and the exception's type."""
+    out = tmp_path / "out"
+    code, stdout, stderr = run_main(v4_diagnose, diagnose_argv(world_dir, cells_dir, out, planned))
+    assert (code, stdout) == (1, "")
+    assert (
+        stderr == "v4_diagnose: refused: --planned is not a list of distinct cell ids: ValueError\n"
+    )
+    assert not out.exists()

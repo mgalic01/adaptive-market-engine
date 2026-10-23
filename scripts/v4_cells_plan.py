@@ -16,10 +16,12 @@ this script through environment variables, never as text in a script:
 The cells are the arms, capitals and costs asked for, in the order of ``arms.all_cells()``: arms
 in ``ARMS`` order, then capital, then cost multiple. At most 8 x 2 x 2 = 32 of them.
 
-Only when every input is valid does it append three lines to the file named by
-``--github-output``: ``data_run=<id>``, ``matrix=<one line of JSON>`` and ``cells=<count>``. The
-matrix is ``{"include": [{"cell": ID, "arm": A, "capital": C, "costs": K}, ...]}``, for a job
-matrix of ``fromJSON``. A refused input writes nothing and exits 1; an offending value is shown as
+Only when every input is valid does it append four lines to the file named by
+``--github-output``: ``data_run=<id>``, ``matrix=<one line of JSON>``, ``cells=<count>`` and
+``cell_ids=<the cells' ids, comma-separated, in that order>``. The matrix is ``{"include":
+[{"cell": ID, "arm": A, "capital": C, "costs": K}, ...]}``, for a job matrix of ``fromJSON``;
+``cell_ids`` is the diagnosis' ``--planned``, so it lists as missing the cells asked for, and
+only those. A refused input writes nothing and exits 1; an offending value is shown as
 its ``repr``, cut at 60 characters, so it stays on one line of the log. Standard output carries
 the number of cells and the run's id.
 """
@@ -115,7 +117,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         print(f"::error::v4_cells_plan: {exc}: refused", file=sys.stderr, flush=True)
         return 1
-    lines = f"data_run={data_run}\nmatrix={matrix_json(cells)}\ncells={len(cells)}\n"
+    ids = ",".join(cell.cell_id for cell in cells)
+    lines = (
+        f"data_run={data_run}\nmatrix={matrix_json(cells)}\ncells={len(cells)}\ncell_ids={ids}\n"
+    )
     try:
         with args.github_output.open("a", encoding="ascii", newline="\n") as output:
             output.write(lines)

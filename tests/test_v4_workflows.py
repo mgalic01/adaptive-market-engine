@@ -210,7 +210,8 @@ DIAGNOSED = (
 )
 DIAGNOSE = (
     "/usr/bin/time -v -o diagnose.time "
-    "python scripts/v4_diagnose.py --data v4data --cells cells --out diagnosis"
+    'python scripts/v4_diagnose.py --data v4data --cells cells --planned "$PLANNED_CELLS" '
+    "--out diagnosis"
 )
 DATA_RUN_CHECK = (
     'gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" '
@@ -375,6 +376,7 @@ def test_cells_workflow_takes_the_data_run_id_only_after_the_plan_validated_it()
         "data_run": "${{ steps.plan.outputs.data_run }}",
         "matrix": "${{ steps.plan.outputs.matrix }}",
         "cells": "${{ steps.plan.outputs.cells }}",
+        "cell_ids": "${{ steps.plan.outputs.cell_ids }}",
     }
     # The raw input is read twice: the run's name, and the plan step's environment.
     text = CELLS_WORKFLOW.read_text(encoding="utf-8")
@@ -529,6 +531,9 @@ def test_cells_workflow_diagnose_runs_after_every_cell_that_finished():
     assert cell_download == {"pattern": "v4-cell-*", "merge-multiple": False, "path": "cells"}
     diagnose = index_of_run("diagnose", "scripts/v4_diagnose.py")
     assert run_text(job["steps"][diagnose]) == DIAGNOSE
+    # Codex P2 on #294: its --planned is the plan's validated cell ids, as an environment
+    # variable, so the missing cells it lists are the dispatch's.
+    assert job["env"]["PLANNED_CELLS"] == "${{ needs.plan.outputs.cell_ids }}"
     (upload,) = uploads("diagnose")
     assert upload["name"] == "v4-diagnosis" and upload["path"] == "diagnosis/"
     # The cells are counted before the diagnosis; none at all stops the job with an error.
