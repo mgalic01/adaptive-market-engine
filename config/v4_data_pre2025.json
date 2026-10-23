@@ -1,0 +1,23 @@
+{
+  "start_day": "2017-08-17",
+  "end_month": "2024-12",
+  "stablecoins": ["USDC", "BUSD", "TUSD", "USDP", "PAX", "DAI", "FDUSD", "USDD", "UST", "EUR", "GBP", "AUD", "TRY", "BRL"],
+  "leveraged_suffixes": ["UP", "DOWN", "BULL", "BEAR"],
+  "wrapped": ["WBTC", "WBETH", "BETH", "STETH"],
+  "stable_band": "0.02",
+  "stable_share": "0.9",
+  "stable_days": 90,
+  "min_daily_bars": 200,
+  "volume_days": 30,
+  "top_n": 10,
+  "filter_snapshots": {
+    "futures": {
+      "path": "config/datasets/v3-20261009/snapshots/futures.json",
+      "sha256": "db6a0c5bde5fc247224826f26be78729da74eecd2bc419a93728f255fd9244f4"
+    },
+    "spot": {
+      "path": "config/datasets/v3-20261009/snapshots/spot.json",
+      "sha256": "d5dbeeb908dde49269e7e654359b59981e7958636b2ed61103999bdec826b05d"
+    }
+  }
+}

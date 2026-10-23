@@ -1489,7 +1489,7 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
     commands = {
         name: "\n".join(step.get("run", "") for step in job["steps"]) for name, job in jobs.items()
     }
-    assert "v4_data.py discover" in commands["discover"]
+    assert 'v4_data.py --config "$CONFIG" discover' in commands["discover"]
     assert "--kind spot_1d" in commands["fetch-daily"]
     assert "--stage candidates" in commands["select-candidates"]
     assert '--kind "$KIND"' in commands["fetch-hourly"]
@@ -1499,7 +1499,7 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
         "--hourly-manifests v4/fetched/manifests/manifest-spot_1h-*.json"
         in commands["select-final"]
     )
-    assert "v4_data.py pack" in commands["pack"]
+    assert 'v4_data.py --config "$CONFIG" pack' in commands["pack"]
     assert "--universe v4/final/universe.json" in commands["pack"]
 
     # What each job downloads, and where: the folders the commands above read.
@@ -1527,7 +1527,8 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
         ],
     }
 
-    guard = "python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4"
+    # The config is the workflow's `config` input, passed as $CONFIG (see test_v4_workflows.py).
+    guard = 'python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4'
     uploads: dict[str, dict] = {}
     for name, job in jobs.items():
         for step in job["steps"]:

@@ -18,6 +18,7 @@ from crypto_grid_bot.v4.data.config import (
 )
 
 COMMITTED = Path("config/v4_data.json")
+PRE2025 = Path("config/v4_data_pre2025.json")
 PREPARE = Path("config/v3_1_prepare.json")
 
 
@@ -38,6 +39,32 @@ def test_committed_config_loads_with_the_spec_values():
 def test_committed_filter_snapshots_are_the_v3_1_prepare_pins():
     pinned = json.loads(PREPARE.read_text(encoding="utf-8"))["filter_snapshots"]
     assert load_data_config(COMMITTED).filter_snapshots == pinned
+
+
+def test_pre2025_config_differs_only_in_end_month():
+    # The diagnostic run (2018-2024) takes this config: the same data step, ending in 2024-12,
+    # so no 2025+ market data is ever requested or read.
+    full, pre2025 = load_data_config(COMMITTED), load_data_config(PRE2025)
+    assert pre2025.end_month == "2024-12"
+    assert replace(pre2025, end_month=full.end_month) == full
+
+
+def test_pre2025_config_is_the_committed_bytes_with_end_month_changed_and_lf():
+    # The packs pin a config by the SHA-256 of its raw bytes: no other difference, and LF.
+    raw = PRE2025.read_bytes()
+    assert b"\r" not in raw
+    assert raw.count(b'"end_month": "2024-12"') == 1
+    changed = raw.replace(b'"end_month": "2024-12"', b'"end_month": "2026-09"')
+    assert changed == COMMITTED.read_bytes()
+
+
+def test_the_pre2025_config_refuses_every_month_after_2024_12():
+    pre2025 = load_data_config(PRE2025)
+    refuse_after_end("2024-12", pre2025)
+    refuse_after_end("2018-01", pre2025)
+    for month in ("2025-01", "2025-02", "2026-09"):
+        with pytest.raises(ValueError, match="after end_month"):
+            refuse_after_end(month, pre2025)
 
 
 def test_the_config_is_frozen():
