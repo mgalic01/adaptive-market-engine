@@ -198,6 +198,8 @@ GUARD = "python scripts/v4_cells_guard.py --data v4data"
 PINNED = re.compile(r"^(?P<action>[\w.-]+/[\w.-]+)@(?P<sha>[0-9a-f]{40})$")
 UPLOAD = "actions/upload-artifact@"
 DOWNLOAD = "actions/download-artifact@"
+# The cell's upload runs when every step passed, or when only the timing step failed.
+UPLOAD_CONDITION = "${{ success() || steps.timing.outcome == 'failure' }}"
 
 
 def cells() -> dict[str, Any]:
@@ -392,7 +394,9 @@ def test_cells_workflow_guard_steps_match_the_guards_parser():
 
 def test_cells_workflow_cell_job_runs_one_matrix_entry_under_gnu_time():
     job = cells()["jobs"]["cell"]
-    assert job["timeout-minutes"] == 90
+    # The first run is where the real cell time is learned: 240 of the 360 minutes a hosted job
+    # may run.
+    assert job["timeout-minutes"] == 240
     assert job["strategy"] == {
         "fail-fast": False,
         "matrix": "${{ fromJSON(needs.plan.outputs.matrix) }}",
@@ -430,14 +434,45 @@ def test_cells_workflow_cell_job_runs_one_matrix_entry_under_gnu_time():
     assert upload["path"] == "out/${{ matrix.cell }}/"
 
 
+def test_cells_workflow_a_failed_timing_step_does_not_discard_the_replay():
+    steps = cell_steps("cell")
+    timing = index_of_run("cell", "scripts/v4_cells_timing.py")
+    assert steps[timing]["id"] == "timing"
+    (upload,) = [i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith(UPLOAD)]
+    assert upload > timing
+    # After a successful run of every step, or after a failed timing step and nothing else: a
+    # failed replay (or guard, or download) leaves the timing step skipped, so nothing uploads.
+    assert steps[upload]["if"] == UPLOAD_CONDITION
+    assert UPLOAD_CONDITION == "${{ success() || steps.timing.outcome == 'failure' }}"
+    # Nothing else that could fail the job follows the upload, so the job still ends red.
+    assert upload == len(steps) - 1
+
+
+def test_cells_workflow_has_no_continue_on_error_and_one_step_condition():
+    text = CELLS_WORKFLOW.read_text(encoding="utf-8")
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert "continue-on-error" not in code
+    conditions = [
+        (job, step["uses"].split("@")[0], step["if"])
+        for job, body in cells()["jobs"].items()
+        for step in body["steps"]
+        if "if" in step
+    ]
+    # The one allowed step condition is the cell's upload (see the test above).
+    assert conditions == [("cell", "actions/upload-artifact", UPLOAD_CONDITION)]
+    # Neither plan nor cell has a job condition (diagnose's own is pinned in its test).
+    for name in ("plan", "cell"):
+        assert "if" not in cells()["jobs"][name], name
+
+
 def test_cells_workflow_diagnose_runs_after_every_cell_that_finished():
     job = cells()["jobs"]["diagnose"]
     assert job["needs"] == ["plan", "cell"]
-    # A failed cell still lets the diagnosis of the others run, a cancelled run does not, and a
-    # failed plan (which skips every cell) never does.
-    assert job["if"] == (
-        "${{ always() && needs.plan.result == 'success' && needs.cell.result != 'cancelled' }}"
-    )
+    # A failed or timed-out cell still lets the diagnosis of the others run: GitHub may report a
+    # timed-out job as cancelled, so the cell's result is not tested. A cancelled run does not
+    # run it, and a failed plan (which skips every cell) never does.
+    assert job["if"] == "${{ !cancelled() && needs.plan.result == 'success' }}"
+    assert "needs.cell.result" not in job["if"] and "always()" not in job["if"]
     (cell_download,) = [d for d in downloads("diagnose") if "pattern" in d]
     assert cell_download == {"pattern": "v4-cell-*", "merge-multiple": False, "path": "cells"}
     diagnose = index_of_run("diagnose", "scripts/v4_diagnose.py")
@@ -470,3 +505,7 @@ def test_cells_workflow_header_says_what_the_run_depends_on():
     assert "24 hours" in header
     # The reserved window.
     assert "v4-d03" in header and "2024-12" in header and "2025-01" in header
+    # No market-data request, which is not "no network request": checkout, pip and the artifact
+    # downloads are network requests.
+    assert "no market-data request" in header
+    assert "no network request" not in header

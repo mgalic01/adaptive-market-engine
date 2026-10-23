@@ -4,7 +4,8 @@ run-name: v4-cells ${{ inputs.data_run }}
 # The V4 diagnostic run's cells on GitHub's machines, over the packs of a v4-data run, so that no
 # heavy work runs on the owner's PC (owner rule 2026-10-19). It never trades, holds no credentials,
 # can only read the repository and the artifacts of its runs, and commits nothing: its results are
-# artifacts. It makes no network request: the packs come from the artifact of the data run.
+# artifacts. It makes no market-data request: the packs come from the artifact of the data run.
+# (It does run checkout, pip installs and artifact downloads, as every workflow here does.)
 #
 # Inputs (all text; scripts/v4_cells_plan.py validates them, and each reaches a script only
 # through an environment variable, never as text in it):
@@ -27,14 +28,17 @@ run-name: v4-cells ${{ inputs.data_run }}
 # - plan: validates the inputs, writes the matrix of cells, downloads the data run's artifact and
 #   runs the guard. No cell starts unless plan succeeded.
 # - cell, one job per cell of the matrix (fail-fast off, so one failed cell leaves the others
-#   running; 90 minutes each): the guard, then scripts/v4_cell.py under GNU time
-#   (/usr/bin/time -v), whose wall time and peak memory go to out/<cell id>/timing.json with the
-#   size of records.jsonl. The cell's folder is its artifact, v4-cell-<cell id>: records.jsonl,
-#   receipt.json, summary.json, report.html and timing.json. A cell that fails uploads nothing.
-# - diagnose: runs after every cell that finished, failed cells included (not after a cancelled
-#   run or a failed plan), over the artifacts of those that succeeded. It downloads each
-#   v4-cell-* artifact into its own folder, cells/v4-cell-<cell id>/, runs the guard, and runs
-#   scripts/v4_diagnose.py. Its artifact is v4-diagnosis.
+#   running; 240 minutes each, since this run is where the real cell time is learned and a hosted
+#   job may run up to 360): the guard, then scripts/v4_cell.py under GNU time (/usr/bin/time -v),
+#   whose wall time and peak memory go to out/<cell id>/timing.json with the size of
+#   records.jsonl. The cell's folder is its artifact, v4-cell-<cell id>: records.jsonl,
+#   receipt.json, summary.json, report.html and timing.json. A cell whose replay fails uploads
+#   nothing. A cell that replayed but whose timing could not be parsed still uploads its files,
+#   without timing.json, and its job still fails.
+# - diagnose: runs after every cell job that ended, failed or timed out included (not after a
+#   cancelled run or a failed plan), over the artifacts of the cells that uploaded one. It
+#   downloads each v4-cell-* artifact into its own folder, cells/v4-cell-<cell id>/, runs the
+#   guard, and runs scripts/v4_diagnose.py. Its artifact is v4-diagnosis.
 #
 # Every artifact is kept one day, and the logs are public: each script prints counts, ids, sizes
 # and times only, never a price, an equity or a return. The results stay on the owner's PC: download
@@ -119,7 +123,7 @@ jobs:
     name: cell ${{ matrix.cell }}
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -167,12 +171,16 @@ jobs:
           /usr/bin/time -v -o "out/$CELL.time" \
             python scripts/v4_cell.py run --data v4data --arm "$ARM" --capital "$CAPITAL" --costs "$COSTS" --out out
 
-      - name: Keep the cell's wall time and peak memory
+      - id: timing
+        name: Keep the cell's wall time and peak memory
         run: python scripts/v4_cells_timing.py --time-file "out/$CELL.time" --cell-dir "out/$CELL"
 
       # The cell's folder is the artifact's root, so the diagnosis finds the cell's files in
-      # cells/v4-cell-<cell id>/.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      # cells/v4-cell-<cell id>/. A timing step that failed must not discard a replay that
+      # succeeded (the job still fails): the upload runs after a failed timing step, and after
+      # nothing else that failed, so a failed replay uploads nothing.
+      - if: ${{ success() || steps.timing.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v4-cell-${{ matrix.cell }}
           path: out/${{ matrix.cell }}/
@@ -182,9 +190,11 @@ jobs:
 
   diagnose:
     needs: [plan, cell]
-    # A failed cell still lets the diagnosis of the others run; a cancelled run does not, and
-    # nor does a failed plan, which skips every cell.
-    if: ${{ always() && needs.plan.result == 'success' && needs.cell.result != 'cancelled' }}
+    # A failed or timed-out cell still lets the diagnosis of the others run: GitHub may report a
+    # job that hit its timeout as cancelled, so the cell's own result is not tested. A cancelled
+    # run does not run it (!cancelled(), as GitHub recommends rather than always()), and nor does
+    # a failed plan, which skips every cell.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
