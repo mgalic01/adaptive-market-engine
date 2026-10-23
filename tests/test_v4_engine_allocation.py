@@ -284,6 +284,49 @@ def test_negative_room_puts_eligible_coins_on_futures_and_zeroes_the_spot_only_c
     }
 
 
+def plain_zero(value: Decimal) -> bool:
+    """Whether ``value`` is a zero written as 0, with exponent 0."""
+    return value == 0 and value.as_tuple().exponent == 0
+
+
+def test_a_zero_spot_share_is_a_plain_zero_whatever_the_digits_of_the_book() -> None:
+    # The diagnostic run's v4_vol60 cell (2023-05-29 01:00 UTC) raised in LegTargets: a share of
+    # 0 x residual / G_E keeps the exponent difference of its operands, so with the engine's long
+    # decimals it came out as 0E+41, and the bound on |value| < 1e37, which reads the exponent,
+    # refused it. Here R = 0.98 x 1000 - 2000 < 0, so s_max = 0 = G_N and the eligible coins share
+    # nothing of spot: BTC's 0 x 6000.5 / (6000.5 + 1E-45) would be 0E+44.
+    result = allocate(
+        D(1000),
+        [
+            coin("BTC", "6000.5"),
+            coin("ETH", "1E-45"),
+            coin("KEEP", "0", spot="2000", keeps=True),
+        ],
+    )
+    assert (result["BTC"].spot, result["BTC"].futures) == (D(0), D("6000.5"))
+    assert (result["ETH"].spot, result["ETH"].futures) == (D(0), D("1E-45"))
+    assert plain_zero(result["BTC"].spot) and plain_zero(result["ETH"].spot)
+
+
+def test_a_zero_spot_only_scale_is_a_plain_zero_whatever_the_digits_of_the_book() -> None:
+    # The other branch: R < 0, so s_max = 0 < G_N and the spot-only coins scale by
+    # k = max(0, R - (G_E + G_S) / 3) / G_N = 0 / (300 + 1E-40), which would be 0E+40, and
+    # ADA's 0E+40 x 300 would be refused the same way.
+    result = allocate(
+        D(1000),
+        [
+            coin("ADA", "300", eligible=False),
+            coin("BTC", "100"),
+            coin("DOT", "1E-40", eligible=False),
+            coin("KEEP", "0", spot="2000", keeps=True),
+        ],
+    )
+    assert (result["ADA"].spot, result["ADA"].futures) == (D(0), D(0))
+    assert (result["DOT"].spot, result["DOT"].futures) == (D(0), D(0))
+    assert (result["BTC"].spot, result["BTC"].futures) == (D(0), D(100))
+    assert plain_zero(result["ADA"].spot) and plain_zero(result["DOT"].spot)
+
+
 def test_when_eligible_futures_do_not_fit_in_the_room_the_cash_clip_is_what_bounds_them() -> None:
     # Equity 10000: KEEP holds 7994 of spot, so the wallet has 2006 of cash. R = 9800 - 7994 =
     # 1806. ADA is spot-only (3000) and BTC, ETH, SOL are eligible (3000 each, G_E = 9000).

@@ -214,16 +214,23 @@ def _allocate(equity: Decimal, states: tuple[CoinState, ...]) -> dict[str, LegTa
         for coin, residual in longs_spot_only:
             legs[coin] = LegTargets(residual, _ZERO)
         for coin, residual in longs_eligible:
-            spot = min(residual, shared * residual / g_e)
+            spot = _plain(min(residual, shared * residual / g_e))
             legs[coin] = LegTargets(spot, residual - spot)
     else:
         # E is fully on futures; N scales by one common factor (g_n > capacity >= 0 here).
-        scale = min(_ONE, max(_ZERO, room - (g_e + g_s) / _MARGIN_DIVISOR) / g_n)
+        scale = _plain(min(_ONE, max(_ZERO, room - (g_e + g_s) / _MARGIN_DIVISOR) / g_n))
         for coin, residual in longs_eligible:
             legs[coin] = LegTargets(_ZERO, residual)
         for coin, residual in longs_spot_only:
-            legs[coin] = LegTargets(scale * residual, _ZERO)
+            legs[coin] = LegTargets(_plain(scale * residual), _ZERO)
     return legs
+
+
+def _plain(value: Decimal) -> Decimal:
+    """``value``, with a zero written as plain 0. A quotient or product with a zero operand keeps
+    its operands' exponents: 0 x 6000.5 / (6000.5 + 1E-45) is 0E+44, which the bound on |value|
+    below 1e37, read from the exponent, refuses (the diagnostic run's v4_vol60 cell)."""
+    return _ZERO if value == 0 else value
 
 
 def clip_increases(
