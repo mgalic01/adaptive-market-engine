@@ -1362,7 +1362,8 @@ def describe_arm(spec: ArmSpec, widest_universe: int) -> str:
     if spec.short_filter == "btc_sma200":
         rules += (
             f" It is short only while BTC is below its {lookbacks.slow}-day average (otherwise "
-            "a short is closed; longs are unchanged)."
+            "a short is closed; longs keep their signals, though their sizes can still change "
+            "through the book's common scale and caps)."
         )
     if spec.confirm_readings is not None:
         rules += f" It acts on a new direction only after {spec.confirm_readings} days in a row."

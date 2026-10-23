@@ -2181,6 +2181,12 @@ def test_each_arm_is_described_from_its_own_figures():
         assert ("short only while BTC is below its 200-day average" in line) == (
             name == "v4_btc200_shorts"
         )
+        # The clamp acts before sizing, and the book's common volatility scale, common days and
+        # 2.7 total cap can change the longs' sizes, so no line says the longs are unchanged.
+        assert ("longs keep their signals, though their sizes can still change" in line) == (
+            name == "v4_btc200_shorts"
+        )
+        assert "unchanged" not in line
         assert ("acts on a new direction only after 3 days in a row" in line) == (
             name == "v4_confirm3"
         )
