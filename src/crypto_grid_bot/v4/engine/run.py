@@ -13,7 +13,8 @@ stops early ends, accounting), "Records" and the outcomes of "Reports". ``run.py
 engine's modules and holds no trading rule of its own; the few small rules no module has are
 private functions or methods here, each citing the spec (``_month_end``, ``_audit_failure``,
 ``_cut_quantity``, the decided-coins rule in ``_V4Cell._decide``, ``_V4Cell._btc_shorts_allowed``
-(ruling R1 of step 4a), ``_dead_spot``, ``_spot_died`` and ``_CellState._dead_market_cancels``;
+and ``_Confirm.read`` (ruling R1 of step 4a), ``_dead_spot``, ``_spot_died`` and
+``_CellState._dead_market_cancels``;
 in the fill phase ``_V4Cell._ready``'s dust-offset case, ``_V4Cell._exit_skip`` and
 ``_V4Cell._schedule_replacement``'s universe guard; in the safety phases the rule of
 ``_CellState._synthetic_legs`` for a leg due on both counts, and the time stamp of a cut after a
@@ -107,6 +108,15 @@ market without BTCUSDT ends that cell as ``engine_error``. ``size_book`` sizes t
 decided coin (a universe exit or a dead market with signal 0, so its sigma is still recorded)
 on each coin's trailing returns, and ``PendingBook.decide`` takes the targets.
 
+**The confirmation of ``v4_confirm3``** (ruling R1 of step 4a). An arm with ``confirm_readings``
+uses each coin's effective signal ``e`` (``_Confirm``) in place of ``s`` above. A reading's
+direction is the sign of its raw ``s``. ``e`` takes the reading's ``s`` at once when that is
+``e``'s own direction, so a size change within one direction follows at once; in another
+direction it does only once that direction's run of readings in a row reaches
+``confirm_readings`` (3), and until then it keeps its value. ``_feed`` updates it once per daily
+bar it feeds, so a catch-up counts every bar and a day without a bar none. The eligibility clamp,
+the filter, the universe exit and the dead market then act on ``e`` as on ``s``, at once.
+
 **A dead market without a close** (Codex review of PR #293; spec "Pending orders are
 cancelled"). Every hour, after the decision and before the fills, each coin with a pending order
 or replacement buy whose spot market has died, a bar once and none in the 168 hours before ``h``
@@ -145,7 +155,10 @@ the failure.
   ``next_month`` and ``next_month_status`` (at a month's last day, else null; null too when the
   next month has no status), ``eligible``, ``funding_month_exit`` (the exit's precondition),
   ``short_filter`` (for an arm with the filter, BTC's ``btc_slow_vote``, +1, -1 or null, and
-  whether shorts were ``allowed``; null for every other arm) and the ``signal`` used; the sizing
+  whether shorts were ``allowed``; null for every other arm), ``confirm`` (for an arm with
+  ``confirm_readings``, the coin's latest reading's ``direction``, +1, 0 or -1, that direction's
+  ``run`` of readings in a row and the ``effective`` signal, all 0 before the first reading; null
+  for every other arm) and the ``signal`` used; the sizing
   (``sigma``, ``raw``, ``full``, ``scaled``, ``after_coin_cap``, ``after_total_cap``,
   ``capped_by``, ``scale``, ``common_days``, ``flat_reason``); and the ``target``, or
   ``no_target``: ``no_bar`` or ``warming``. The band result, the split and the order belong to
@@ -385,8 +398,8 @@ class CellResult:
 
 def run_v4_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     """Replay one V4 cell over ``market`` into ``out_dir`` (module docstring) and return its
-    result. A hold arm, an arm whose rule the loop does not read yet, or an ``out_dir`` that
-    already holds a cell's files, is a ValueError and nothing is written."""
+    result. A hold arm, or an ``out_dir`` that already holds a cell's files, is a ValueError and
+    nothing is written."""
     if not isinstance(market, Market):
         raise ValueError(f"a Market is required, got {market!r:.60}")
     if not isinstance(cell, CellSpec):
@@ -394,10 +407,6 @@ def run_v4_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     arm = ARMS[cell.arm]
     if arm.family != "v4" or arm.vol_target is None or arm.lookbacks is None:
         raise ValueError(f"{cell.arm} is not a V4 arm; the hold arms have their own loop")
-    # v4-d22's confirmation rule is registered before the loop reads it (Task 3 of the arms
-    # plan): run as the main arm it would be a mislabelled cell, so it is refused.
-    if arm.confirm_readings is not None:
-        raise ValueError(f"{cell.arm} is not run yet: the engine does not read its rule")
     return _run(_V4Cell(market, cell, arm, arm.vol_target, arm.lookbacks), Path(out_dir))
 
 
@@ -1421,6 +1430,31 @@ class _CoinView:
         return not self.in_universe
 
 
+@dataclass(slots=True)
+class _Confirm:
+    """Ruling R1 of step 4a: one coin's confirmation state in an arm with ``confirm_readings``
+    (``v4_confirm3``). ``effective`` is the signal the arm uses in place of ``s`` (0 before any
+    reading), ``direction`` the latest reading's (the sign of its raw ``s``: +1, 0 or -1) and
+    ``run`` the number of consecutive readings in that direction; both are 0 before any reading.
+    ``_V4Cell._feed`` updates it once per daily bar it feeds."""
+
+    effective: Decimal
+    direction: int
+    run: int
+
+    def read(self, s: Decimal, needed: int) -> None:
+        """Take one new reading's raw ``s``. The run grows if its direction repeats, else it
+        restarts at 1. A reading in the effective signal's own direction becomes the effective
+        signal at once (a size change within one direction follows at once); one in another
+        direction becomes it only once its run reaches ``needed``, and until then the effective
+        signal keeps its value."""
+        direction = _sign(s)
+        self.run = self.run + 1 if direction == self.direction else 1
+        self.direction = direction
+        if direction == _sign(self.effective) or self.run >= needed:
+            self.effective = s
+
+
 @dataclass(frozen=True, slots=True)
 class _Holding:
     """One coin's legs at the fill hour, quantities in venue units and notionals at the
@@ -1500,6 +1534,9 @@ class _V4Cell(_CellState):
         self._btc_fed = 0
         self._btc_signals = CoinSignals(MAIN_LOOKBACKS)
         self._btc_reading: SignalReading | None = None
+        # An arm with ``confirm_readings`` (ruling R1 of step 4a): each decided coin's
+        # confirmation state, built on its first decision and updated per bar by ``_feed``.
+        self._confirm: dict[str, _Confirm] = {}
         # The latest decision's answers, for the fill phase. A coin's pending order always holds
         # its latest target, since the decision that gave the target made the order.
         # A coin whose spot market dies loses its latest target (``_dead_market_cancels``).
@@ -1570,7 +1607,14 @@ class _V4Cell(_CellState):
             self._record(
                 "daily_coin",
                 _daily_record(
-                    h, day, views[coin], sizing, sizing.coins[coin], targets.get(coin), short_filter
+                    h,
+                    day,
+                    views[coin],
+                    sizing,
+                    sizing.coins[coin],
+                    targets.get(coin),
+                    short_filter,
+                    self._confirm_record(coin),
                 ),
             )
 
@@ -1596,7 +1640,9 @@ class _V4Cell(_CellState):
         in_universe = coin in universe
         dead = _dead_spot(self.market.coin(coin).spot, h)
         s = _ZERO
-        if reading is not None:
+        if self.arm.confirm_readings is not None:
+            s = self._confirm[coin].effective  # ruling R1: the confirmed signal, in place of s
+        elif reading is not None:
             s = reading.s_long_only if self.arm.long_only else reading.s
         used = s if eligible else max(s, _ZERO)  # spot-only coins are long-only
         if self._btc_shorts_allowed(day) is False:
@@ -1618,7 +1664,11 @@ class _V4Cell(_CellState):
 
     def _feed(self, coin: str, day: int) -> SignalReading | None:
         """Feed the coin's signal state every daily bar up to ``day`` it has not seen, never a
-        later one, and return its latest reading (None before its first bar)."""
+        later one, and return its latest reading (None before its first bar). For an arm with
+        ``confirm_readings``, each bar's reading also goes to the coin's ``_Confirm``, so a
+        catch-up of many bars counts every one and a day without a bar counts none (ruling R1
+        of step 4a)."""
+        needed = self.arm.confirm_readings
         if coin not in self._signals:
             bars = self.market.daily(coin)
             returns = daily_returns(bars)
@@ -1627,9 +1677,14 @@ class _V4Cell(_CellState):
             self._signals[coin] = CoinSignals(self._lookbacks)
             self._returns[coin] = returns
             self._return_days[coin] = [row.day_ms for row in returns]
+            if needed is not None:
+                self._confirm[coin] = _Confirm(_ZERO, 0, 0)
         bars, index, signals = self._daily[coin], self._fed[coin], self._signals[coin]
         while index < len(bars) and bars[index].open_ms <= day:
-            self._readings[coin] = signals.update(bars[index])
+            reading = signals.update(bars[index])
+            self._readings[coin] = reading
+            if needed is not None:
+                self._confirm[coin].read(reading.s, needed)
             index += 1
         self._fed[coin] = index
         return self._readings.get(coin)
@@ -1667,6 +1722,15 @@ class _V4Cell(_CellState):
             return None
         reading = self._btc_reading
         return {"btc_slow_vote": None if reading is None else reading.slow, "allowed": allowed}
+
+    def _confirm_record(self, coin: str) -> dict[str, object] | None:
+        """A ``daily_coin`` record's ``confirm`` for an arm with ``confirm_readings``: the
+        coin's latest reading's ``direction``, its ``run`` and the ``effective`` signal after
+        this decision's feed (ruling R1 of step 4a); None for any other arm."""
+        if self.arm.confirm_readings is None:
+            return None
+        confirm = self._confirm[coin]
+        return {"direction": confirm.direction, "run": confirm.run, "effective": confirm.effective}
 
     def _trailing_returns(self, coin: str, day: int) -> tuple[DailyReturn, ...]:
         """The coin's last returns at or before ``day``: all ``size_book`` reads (see above)."""
@@ -2068,6 +2132,10 @@ def _month_of(ms: int) -> str:
     return f"{moment.year:04d}-{moment.month:02d}"
 
 
+def _sign(value: Decimal) -> int:
+    return (value > 0) - (value < 0)
+
+
 def _cut_quantity(held: Decimal, factor: Decimal, step: Decimal) -> Decimal:
     """A cut leg's new quantity (spec "Safety": the tradable positions are cut pro rata by k or
     k'): ``|held| x factor`` computed exactly in Fractions, never under the 60-digit context,
@@ -2302,6 +2370,7 @@ def _daily_record(
     coin: CoinSizing,
     target: Decimal | None,
     short_filter: Mapping[str, object] | None,
+    confirm: Mapping[str, object] | None,
 ) -> dict[str, object]:
     reading = view.reading
     capped_by = [
@@ -2331,6 +2400,7 @@ def _daily_record(
         "eligible": view.eligible,
         "funding_month_exit": view.funding_exit,
         "short_filter": short_filter,
+        "confirm": confirm,
         "signal": view.signal,
         "sigma": coin.sigma,
         "raw": coin.raw,

@@ -31,8 +31,9 @@ and the covariance's 60 days). Four coins, each with one job, selected in this r
 Each feature has a test that reads the records and checks that it happened, at the hour and price
 the spec gives. Two tests hold for the whole run: a rerun of one V4 arm and one hold arm writes
 byte-identical files, and every arm conserves money exactly through its lifecycles (the final
-review). A third pins v4_main's summary and records to those of step 4a's base, but for the null
-``short_filter`` field that v4_btc200_shorts added. The CLI's own behaviour has the rest: the
+review). Two more pin v4_main's summary and records to those of step 4a's base, but for the
+null ``short_filter`` field that v4_btc200_shorts added, and to those of the commit before
+v4_confirm3, but for its null ``confirm`` field. The CLI's own behaviour has the rest: the
 exact one-line output; the refusals and failures that return 1, each a fixed line on standard
 error with the exception's type and never its text (a bad pin, bad data, existing outputs, a
 failure before the summary, a summary that does not verify, which writes no summary and no page,
@@ -426,28 +427,55 @@ def canonical_sha256(value: object) -> str:
 # newline, in order (3189 records).
 MAIN_SUMMARY_SHA256 = "79151b4ef2fd3387d283258b88ea5cb9b82e6ed80f71e2619e84c704fc8d0523"
 MAIN_RECORDS_SHA256 = "dbd7c8b93f9bf4b4d46846a306a617435c1c6c4c0e220b1740c79b4829cca7ee"
+# Its records the same way at f7a4266, after v4_btc200_shorts and before v4_confirm3: the base's
+# records with the null short_filter. Its summary there was still MAIN_SUMMARY_SHA256's.
+MAIN_FILTER_RECORDS_SHA256 = "5917943613a7551af271b220c9f8f455fc9cf32b7851533036f4c451d5e45efc"
+
+
+def records_sha256(rows: Rows, set_aside: Sequence[str]) -> str:
+    """The SHA-256 of ``rows`` as [kind, record] lines, each canonical JSON and a newline, with
+    the ``set_aside`` fields left out of every ``daily_coin`` record."""
+    lines = hashlib.sha256()
+    for kind, record in rows:
+        if kind == "daily_coin":
+            record = {key: value for key, value in record.items() if key not in set_aside}
+        line = json.dumps([kind, record], sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        lines.update(line.encode("ascii") + b"\n")
+    return lines.hexdigest()
 
 
 def test_the_main_arm_is_unchanged_by_the_filter_code(cells):
     """v4_btc200_shorts (step 4a, ruling R1) adds a ``short_filter`` field to every arm's
     ``daily_coin`` records, null for an arm without the filter, so the records' bytes and the
     receipt change. Nothing else may: v4_main's summary.json, but for its receipt_sha256, is
-    the one the step-4a base wrote, and its records with the null field set aside are the base's
-    records, one for one."""
+    the one the step-4a base wrote, and its records with the null field set aside (and the null
+    ``confirm`` that v4_confirm3 added after it) are the base's records, one for one."""
     cell = cells["v4_main"]
     summary = {key: value for key, value in cell.summary.items() if key != "receipt_sha256"}
     assert canonical_sha256(summary) == MAIN_SUMMARY_SHA256
-    lines = hashlib.sha256()
-    for kind, record in cell.rows:
-        if kind == "daily_coin":
-            assert record["short_filter"] is None
-            record = {key: value for key, value in record.items() if key != "short_filter"}
-        line = json.dumps([kind, record], sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-        lines.update(line.encode("ascii") + b"\n")
-    assert len(cell.rows) == 3189 and lines.hexdigest() == MAIN_RECORDS_SHA256
+    assert all(record["short_filter"] is None for record in of_kind(cell.rows, "daily_coin"))
+    assert len(cell.rows) == 3189
+    assert records_sha256(cell.rows, ("short_filter", "confirm")) == MAIN_RECORDS_SHA256
     for arm in (name for name in DIAGNOSTIC_ARMS if ARMS[name].family == "v4"):
         daily = of_kind(cells[arm].rows, "daily_coin")
         assert daily and all(record["short_filter"] is None for record in daily), arm
+
+
+def test_the_main_arm_is_unchanged_by_the_confirmation_code(cells):
+    """v4_confirm3 (step 4a, ruling R1) adds a ``confirm`` field to every arm's ``daily_coin``
+    records, null for an arm without ``confirm_readings``, so the records' bytes and the receipt
+    change again. Nothing else may: v4_main's summary.json, but for its receipt_sha256, is still
+    the one the step-4a base wrote, and its records with the null field set aside are those of
+    f7a4266, the commit before it, one for one."""
+    cell = cells["v4_main"]
+    summary = {key: value for key, value in cell.summary.items() if key != "receipt_sha256"}
+    assert canonical_sha256(summary) == MAIN_SUMMARY_SHA256
+    assert all(record["confirm"] is None for record in of_kind(cell.rows, "daily_coin"))
+    assert len(cell.rows) == 3189
+    assert records_sha256(cell.rows, ("confirm",)) == MAIN_FILTER_RECORDS_SHA256
+    for arm in (name for name in DIAGNOSTIC_ARMS if ARMS[name].family == "v4"):
+        daily = of_kind(cells[arm].rows, "daily_coin")
+        assert daily and all(record["confirm"] is None for record in daily), arm
 
 
 def test_every_arm_conserves_money_through_its_lifecycles(cells):
@@ -823,11 +851,11 @@ def test_cli_refuses_v3_as_built_on_v4_packs(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize("arm", ["v4_confirm3", "hold_btc_trend"])
+@pytest.mark.parametrize("arm", ["hold_btc_trend"])
 def test_cli_refuses_the_new_arms_until_the_engine_runs_them(arm, tmp_path):
-    """The registry lists two new engine arms before the engine can run them (Tasks 3 and 4 of
-    the arms plan): their runners refuse with a ValueError before they write anything, and the
-    CLI reports it as a failure outside the replay's loop, with exit code 1 and no files."""
+    """The registry lists a new engine arm before the engine can run it (Task 4 of the arms
+    plan): its runner refuses with a ValueError before it writes anything, and the CLI reports
+    it as a failure outside the replay's loop, with exit code 1 and no files."""
     data = write_world(tmp_path / "world", tiny_world())
 
     code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out", arm))
