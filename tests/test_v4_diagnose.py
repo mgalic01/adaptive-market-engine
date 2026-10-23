@@ -1578,7 +1578,8 @@ def test_a_failure_cell_is_listed_without_figures(tmp_path, monkeypatch):
     code, stdout, stderr = run_main(v4_diagnose, diagnose_argv(data, cells, out))
     assert (code, stderr) == (0, "")
     count = read_receipt(cells / f"v4-cell-{spec.cell_id}" / run.RECEIPT_FILE).record_count
-    assert f"v4_diagnose: {spec.cell_id}: outcome engine_error, {count} records, 0 years" in stdout
+    assert f"v4_diagnose: {spec.cell_id}: {count} records, 0 years" in stdout
+    assert "engine_error" not in stdout  # an outcome is a result: never in the public log
     (entry,) = json.loads((out / "diagnosis.json").read_text(encoding="ascii"))["cells"]
     assert entry["outcome"] == "engine_error" and entry["record_count"] == count
     names = ("years", "months", "sides", "exit_reasons", "coins", "signals")
@@ -1612,8 +1613,9 @@ def test_a_failed_page_leaves_no_diagnosis_json(world_dir, cells_dir, tmp_path, 
 
 def test_output_prints_no_prices(diagnosis, cells_dir, records):
     """Standard output carries the guard's line (end month and pin), one line per cell (its id,
-    outcome, record, year and month counts) and a last line of counts, and nothing else: no
-    price, equity or return, no decimal number at all. Standard error is empty."""
+    record, year and month counts) and a last line of counts, and nothing else: no price, equity,
+    return or outcome (Codex P2 on #294: an outcome is a result too), no decimal number at all.
+    Standard error is empty."""
     assert diagnosis.code == 0 and diagnosis.stderr == ""
     lines = diagnosis.stdout.splitlines()
     assert lines[0].startswith("v4_cells_guard: data end_month 2024-02, config_sha256 ")
@@ -1621,10 +1623,10 @@ def test_output_prints_no_prices(diagnosis, cells_dir, records):
     for arm in ARMS_RUN:
         spec = CellSpec(arm, CAPITAL, COSTS)
         expected.append(
-            f"v4_diagnose: {spec.cell_id}: outcome complete, {len(records[arm])} records, "
-            "2 years, 4 months"
+            f"v4_diagnose: {spec.cell_id}: {len(records[arm])} records, 2 years, 4 months"
         )
     assert lines[1:3] == expected
+    assert "outcome" not in diagnosis.stdout and "complete" not in diagnosis.stdout
     assert lines[3:] == [
         "v4_diagnose: 2 cells from 3 folders (1 without summary.json, 0 refused), 6 planned "
         "cells missing, 4 regime months; wrote diagnosis.json and diagnosis.md"

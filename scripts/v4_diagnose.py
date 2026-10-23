@@ -44,10 +44,11 @@ refused, after both files were written with the other cells (partial results, ne
 for any other refusal or failure, with nothing written; 2 for bad arguments (argparse's own).
 
 **Output.** Standard output carries the guard's line (the end month and the config pin), one
-line per diagnosed cell (its id, outcome and its record, year and month counts) and a last line
-of counts (cells, folders, folders without a summary, refused cells, missing cells, regime
-months): never a price, an equity or a return (owner rule: public logs). A refused cell, and a
-failure, is one line on standard error naming the step and the exception's type, never its text.
+line per diagnosed cell (its id and its record, year and month counts) and a last line of counts
+(cells, folders, folders without a summary, refused cells, missing cells, regime months): never a
+price, an equity, a return or a cell's outcome, all of them results (owner rule: public logs;
+Codex P2 on #294). A refused cell, and a failure, is one line on standard error naming the step
+and the exception's type, never its text.
 
 **The page** (``diagnosis.md``) opens with a headline that answers "what did the bot do in year
 X": one table of every cell's return and largest drawdown per year beside BTCUSDT's yearly return
@@ -2133,8 +2134,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         years = 0 if entry["years"] is None else len(entry["years"])
         months_seen = 0 if entry["months"] is None else len(entry["months"])
         _say(
-            f"v4_diagnose: {entry['cell']['id']}: outcome {entry['outcome']}, "
-            f"{entry['record_count']} records, {years} years, {months_seen} months"
+            f"v4_diagnose: {entry['cell']['id']}: {entry['record_count']} records, "
+            f"{years} years, {months_seen} months"
         )
     try:
         regime = market_regime(market, prices)

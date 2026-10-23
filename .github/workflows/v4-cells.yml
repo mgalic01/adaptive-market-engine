@@ -11,7 +11,10 @@ run-name: v4-cells ${{ inputs.data_run }}
 # through an environment variable, never as text in it):
 # - data_run: the id of the v4-data run whose v4-data artifact holds the packs, digits only. That
 #   artifact is kept one day, so this run must start within 24 hours of the data run finishing:
-#   after that the download fails and the data run must be repeated.
+#   after that the download fails and the data run must be repeated. Once plan has checked it,
+#   plan uploads that data as this run's own v4-data artifact, kept one day from then, and the
+#   cell and diagnose jobs download that copy: the data run's artifact may expire while the cells
+#   run (Codex P2 on #294).
 # - arms: comma-separated arm names of the engine (arms.ARMS), all eight by default.
 # - capitals: comma-separated, from 1000 and 10000; 10000 by default.
 # - costs: comma-separated cost multiples, from 1 and 2; 1 by default.
@@ -25,16 +28,22 @@ run-name: v4-cells ${{ inputs.data_run }}
 # data run and refuses it unless it is exactly that: a run of .github/workflows/v4-data.yml named
 # "v4-data full config/v4_data_pre2025.json" whose conclusion is success (v4_cells_guard.py
 # --data-run), so the packs of a full-config run, which reach 2026-09, are never downloaded here.
-# The guard prints the data run's end month and config_sha256 for the dispatcher to check.
+# Every guard of the downloaded data also requires its data.json's config_sha256 to be the SHA-256
+# of the checked-in config/v4_data_pre2025.json (--config), so a run of another version of that
+# file under the same name is refused (Codex P2 on #294). The guard prints the data run's end
+# month and config_sha256 for the dispatcher to check.
 #
 # Jobs:
 # - plan: validates the inputs, writes the matrix of cells, checks the data run through the API,
-#   downloads the data run's artifact and runs the guard. No cell starts unless plan succeeded.
+#   downloads the data run's artifact, runs the guard and uploads the checked data as this run's
+#   own v4-data artifact. No cell starts unless plan succeeded.
 # - cell, one job per cell of the matrix (fail-fast off, so one failed cell leaves the others
 #   running; 340 minutes each, since this run is where the real cell time is learned and a hosted
 #   job may run up to 360): the guard, then scripts/v4_cell.py under GNU time (/usr/bin/time -v),
 #   whose wall time and peak memory go to out/<cell id>/timing.json with the size of
-#   records.jsonl. The cell's folder is its artifact, v4-cell-<cell id>: records.jsonl,
+#   records.jsonl. The cell's own line (its outcome and its summary's digest) goes to /dev/null,
+#   not to the public log: an outcome is a result. The cell's folder is its artifact,
+#   v4-cell-<cell id>: records.jsonl,
 #   receipt.json, summary.json, report.html and timing.json. A cell whose replay fails uploads
 #   nothing. A cell that replayed but whose timing could not be parsed still uploads its files,
 #   without timing.json, and its job still fails.
@@ -49,8 +58,8 @@ run-name: v4-cells ${{ inputs.data_run }}
 #   timing and the upload then run all the same. Its artifact is v4-diagnosis.
 #
 # Every artifact is kept one day, and the logs are public: each script prints counts, ids, sizes
-# and times only, never a price, an equity or a return. The results stay on the owner's PC: download
-# them, then offer deletion.
+# and times only, never a price, an equity, a return or a cell's outcome. The results stay on the
+# owner's PC: download them, then offer deletion.
 on:
   workflow_dispatch:
     inputs:
@@ -74,8 +83,8 @@ on:
         default: "1"
         type: string
 
-# actions: read lets the jobs download the artifact of another run (the data run); nothing is
-# written.
+# actions: read lets plan download the artifact of another run (the data run); nothing is written
+# outside this run's own artifacts.
 permissions:
   contents: read
   actions: read
@@ -94,7 +103,6 @@ jobs:
       CAPITALS: ${{ inputs.capitals }}
       COSTS: ${{ inputs.costs }}
     outputs:
-      data_run: ${{ steps.plan.outputs.data_run }}
       matrix: ${{ steps.plan.outputs.matrix }}
       cells: ${{ steps.plan.outputs.cells }}
       cell_ids: ${{ steps.plan.outputs.cell_ids }}
@@ -137,7 +145,19 @@ jobs:
           path: v4data
 
       - name: Refuse a data run that reaches 2025
-        run: python scripts/v4_cells_guard.py --data v4data
+        run: python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json
+
+      # The checked data, as this run's own artifact, kept one day from now: the cell and
+      # diagnose jobs download this copy, so the data run's own artifact may expire while the
+      # cells run (Codex P2 on #294). Only data the guard accepted is uploaded; overwrite lets a
+      # re-run of plan replace its own earlier copy, as a re-run cell replaces its artifact.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v4-data
+          path: v4data/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   cell:
     name: cell ${{ matrix.cell }}
@@ -165,16 +185,15 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
+      # This run's own copy of the data, which plan checked and uploaded.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: v4-data
-          run-id: ${{ needs.plan.outputs.data_run }}
-          github-token: ${{ github.token }}
           path: v4data
 
       # Again, in this job: the cell never starts on data that reaches 2025.
       - name: Refuse a data run that reaches 2025
-        run: python scripts/v4_cells_guard.py --data v4data
+        run: python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json
 
       - name: Check that GNU time is installed
         run: |
@@ -184,12 +203,14 @@ jobs:
           fi
 
       # The cell writes out/<cell id>/ (records.jsonl, receipt.json, summary.json, report.html);
-      # time writes out/<cell id>.time beside that folder.
+      # time writes out/<cell id>.time beside that folder. The cell's standard output, one line
+      # with its outcome, goes to /dev/null: an outcome is a result, and the log is public (Codex
+      # P2 on #294). A failure is still one line on standard error, the exception's type only.
       - name: Replay the cell
         run: |
           mkdir -p out
           /usr/bin/time -v -o "out/$CELL.time" \
-            python scripts/v4_cell.py run --data v4data --arm "$ARM" --capital "$CAPITAL" --costs "$COSTS" --out out
+            python scripts/v4_cell.py run --data v4data --arm "$ARM" --capital "$CAPITAL" --costs "$COSTS" --out out > /dev/null
 
       - id: timing
         name: Keep the cell's wall time and peak memory
@@ -234,16 +255,14 @@ jobs:
       - run: python -m pip install -e . --no-deps
 
       # The diagnosis reads the packs (the market regime per month), so the data is downloaded
-      # and guarded here too.
+      # (this run's own copy, which plan checked and uploaded) and guarded here too.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: v4-data
-          run-id: ${{ needs.plan.outputs.data_run }}
-          github-token: ${{ github.token }}
           path: v4data
 
       - name: Refuse a data run that reaches 2025
-        run: python scripts/v4_cells_guard.py --data v4data
+        run: python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json
 
       # One folder per artifact: cells/v4-cell-<cell id>/ holds that cell's files.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

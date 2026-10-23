@@ -10,6 +10,7 @@ data packs (``E:`` and ``F:``), and the network is blocked for every test.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import socket
@@ -361,3 +362,57 @@ def test_data_run_and_data_are_one_or_the_other():
     for argv in ([], ["--data", "v4data", "--data-run", RUN_ID]):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)
+
+
+# ---- Codex P2 on #294: the data's config pin is the checked-in config's ----
+
+ROOT = Path(__file__).resolve().parents[1]
+PRE2025 = ROOT / "config" / "v4_data_pre2025.json"
+
+
+def test_the_checked_in_pre2025_config_is_the_one_pinned_here():
+    """The diagnostic data run 39885846429 was made from this file: its SHA-256 is the pin the
+    workflow's --config requires."""
+    assert hashlib.sha256(PRE2025.read_bytes()).hexdigest() == PIN
+
+
+def test_guard_accepts_data_of_the_config_given(tmp_path, capsys):
+    folder = write(tmp_path / "v4data", data_json())
+    code, out, err = guard(folder, capsys, "--config", str(PRE2025))
+    assert (code, err) == (0, "")
+    assert out == (
+        f"v4_cells_guard: data end_month 2024-12, config_sha256 {PIN}: accepted (latest allowed "
+        f"month 2024-12, the SHA-256 of {PRE2025.as_posix()!r})\n"
+    )
+
+
+def test_guard_refuses_data_of_another_config(tmp_path, capsys):
+    """A data run made from another version of the config (another universe or other dates
+    under the same run name) is refused, and neither digest is echoed."""
+    other = "0" * 64
+    folder = write(tmp_path / "v4data", data_json(config_sha256=other))
+    before = tree(tmp_path)
+    code, out, err = guard(folder, capsys, "--config", str(PRE2025))
+    assert (code, out) == (1, "")
+    assert err == (
+        "::error::v4_cells_guard: data.json's config_sha256 is not the SHA-256 of "
+        f"{PRE2025.as_posix()!r}: refused\n"
+    )
+    assert tree(tmp_path) == before
+
+
+def test_guard_refuses_a_config_it_cannot_read(tmp_path, capsys):
+    folder = write(tmp_path / "v4data", data_json())
+    missing = tmp_path / "no-such-config.json"
+    code, out, err = guard(folder, capsys, "--config", str(missing))
+    assert (code, out) == (1, "")
+    assert "cannot be read (FileNotFoundError): refused" in err
+
+
+def test_config_goes_with_data_not_with_data_run(capsys, monkeypatch):
+    raw = json.dumps(run_json()).encode("ascii")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw)))
+    code = v4_cells_guard.main(["--data-run", RUN_ID, "--config", str(PRE2025)])
+    captured = capsys.readouterr()
+    assert (code, captured.out) == (1, "")
+    assert "--config goes with --data, not with --data-run: refused" in captured.err

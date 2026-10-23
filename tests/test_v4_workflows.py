@@ -19,6 +19,7 @@ The tests parse the YAML and never call GitHub.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shlex
 import sys
@@ -197,7 +198,9 @@ def test_the_month_guard_follows_the_chosen_config(tmp_path, capsys):
 # ---- the v4-cells workflow ----
 
 CELLS_WORKFLOW = ROOT / ".github" / "workflows" / "v4-cells.yml"
-GUARD = "python scripts/v4_cells_guard.py --data v4data"
+GUARD = "python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json"
+# The SHA-256 of config/v4_data_pre2025.json, the config of the diagnostic data run 39885846429.
+PRE2025_SHA256 = "58032f30391c7e66b239fe47e89b8f98e4a50ffbb33dc2d8a6b59f98b4d71b16"
 PINNED = re.compile(r"^(?P<action>[\w.-]+/[\w.-]+)@(?P<sha>[0-9a-f]{40})$")
 UPLOAD = "actions/upload-artifact@"
 DOWNLOAD = "actions/download-artifact@"
@@ -263,10 +266,21 @@ def test_cells_workflow_guards_before_every_cell():
     # before the cell; and in diagnose before the diagnosis reads the packs.
     for job, after in (("plan", None), ("cell", "scripts/v4_cell.py"), ("diagnose", "v4_diagnose")):
         guard = index_of_run(job, GUARD)
-        named = [s.get("with", {}).get("name") for s in cell_steps(job)]
-        assert named.count("v4-data") == 1 and named.index("v4-data") < guard, job
+        (download,) = [
+            i
+            for i, s in enumerate(cell_steps(job))
+            if str(s.get("uses", "")).startswith(DOWNLOAD) and s["with"].get("name") == "v4-data"
+        ]
+        assert download < guard, job
         if after is not None:
             assert guard < index_of_run(job, after), job
+    # Codex P2 on #294: plan uploads the data it checked as this run's own v4-data, after the
+    # guard, so the cells and the diagnosis never depend on the data run's artifact lasting.
+    steps = cell_steps("plan")
+    (upload,) = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(UPLOAD)]
+    assert index_of_run("plan", GUARD) < upload == len(steps) - 1
+    assert steps[upload]["with"]["path"] == "v4data/" and "if" not in steps[upload]
+    assert steps[upload]["with"]["overwrite"] is True
 
     # No cell starts unless plan, guard included, succeeded: no `if` overrides the default.
     assert jobs["cell"]["needs"] == "plan"
@@ -276,7 +290,7 @@ def test_cells_workflow_guards_before_every_cell():
     # Every upload is kept one day, and an empty one is an error.
     assert [step["name"] for step in uploads("cell")] == ["v4-cell-${{ matrix.cell }}"]
     assert [step["name"] for step in uploads("diagnose")] == ["v4-diagnosis"]
-    assert uploads("plan") == []
+    assert [step["name"] for step in uploads("plan")] == ["v4-data"]
     for job in jobs:
         for step in uploads(job):
             assert step["retention-days"] == 1, job
@@ -373,7 +387,6 @@ def test_cells_workflow_never_expands_an_expression_into_a_script():
 def test_cells_workflow_takes_the_data_run_id_only_after_the_plan_validated_it():
     plan = cells()["jobs"]["plan"]
     assert plan["outputs"] == {
-        "data_run": "${{ steps.plan.outputs.data_run }}",
         "matrix": "${{ steps.plan.outputs.matrix }}",
         "cells": "${{ steps.plan.outputs.cells }}",
         "cell_ids": "${{ steps.plan.outputs.cell_ids }}",
@@ -384,24 +397,24 @@ def test_cells_workflow_takes_the_data_run_id_only_after_the_plan_validated_it()
     assert code.count("inputs.data_run") == 2
     assert plan["env"]["DATA_RUN"] == "${{ inputs.data_run }}"
     assert plan["steps"][index_of_run("plan", "v4_cells_plan.py")]["id"] == "plan"
-    # Every download of the data names the run by the validated output, and the validation
-    # comes first in plan.
+    # The one download of the data run's artifact, in plan, names the run by the validated
+    # output, and the validation comes first. The cell and diagnose jobs download this run's own
+    # copy, which plan uploaded after its guard (Codex P2 on #294): no run-id.
     assert index_of_run("plan", "v4_cells_plan.py") < [
         s.get("with", {}).get("name") for s in plan["steps"]
     ].index("v4-data")
-    for job in ("plan", "cell", "diagnose"):
+    (data,) = [d for d in downloads("plan") if d.get("name") == "v4-data"]
+    assert data == {
+        "name": "v4-data",
+        "run-id": "${{ steps.plan.outputs.data_run }}",
+        "github-token": "${{ github.token }}",
+        "path": "v4data",
+    }
+    for job in ("cell", "diagnose"):
         (data,) = [d for d in downloads(job) if d.get("name") == "v4-data"]
-        wanted = (
-            "${{ steps.plan.outputs.data_run }}"
-            if job == "plan"
-            else ("${{ needs.plan.outputs.data_run }}")
-        )
-        assert data == {
-            "name": "v4-data",
-            "run-id": wanted,
-            "github-token": "${{ github.token }}",
-            "path": "v4data",
-        }, job
+        assert data == {"name": "v4-data", "path": "v4data"}, job
+    assert "outputs.data_run" not in str(cells()["jobs"]["cell"])
+    assert "outputs.data_run" not in str(cells()["jobs"]["diagnose"])
 
 
 def test_cells_workflow_plan_step_matches_the_plan_scripts_parser():
@@ -439,6 +452,10 @@ def test_cells_workflow_guard_steps_match_the_guards_parser():
         assert run == GUARD, job
         args = v4_cells_guard.build_parser().parse_args(shlex.split(run.split("guard.py ")[1]))
         assert args.data == Path("v4data") and args.latest_month == "2024-12"
+        # Codex P2 on #294: the data's config pin must be the checked-in pre-2025 config's.
+        assert args.config == Path("config/v4_data_pre2025.json")
+        digest = hashlib.sha256((ROOT / args.config).read_bytes()).hexdigest()
+        assert digest == PRE2025_SHA256
 
 
 def test_cells_workflow_cell_job_runs_one_matrix_entry_under_gnu_time():
@@ -468,6 +485,10 @@ def test_cells_workflow_cell_job_runs_one_matrix_entry_under_gnu_time():
     assert run.count('/usr/bin/time -v -o "out/$CELL.time" ') == 1
     command = run.split('"out/$CELL.time" ', 1)[1]
     assert command.startswith("python scripts/v4_cell.py run ")
+    # Codex P2 on #294: the cell's own line holds its outcome, a result, so its standard output
+    # goes to /dev/null, never to the public log.
+    assert command.endswith(" > /dev/null") and command.count(">") == 1
+    command = command.removesuffix(" > /dev/null")
     values = {"$ARM": "v4_faster", "$CAPITAL": "1000", "$COSTS": "2"}
     words = [values.get(word, word) for word in shlex.split(command)[2:]]
     args = v4_cell.build_parser().parse_args(words)

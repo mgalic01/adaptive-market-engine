@@ -92,6 +92,10 @@ Every artifact is kept 1 day, and public logs carry counts only.
     - run `python scripts/v4_diagnose.py --data v4data --cells cells --planned "$PLANNED_CELLS" --out diagnosis` (amended after Codex's review of #294: `--planned` is the plan job's `cell_ids`, the cells the dispatch asked for, so only those are listed as missing);
     - upload `v4-diagnosis` with retention 1 day;
     - print counts only.
+  - Amended after Codex's review of #294 at d207222:
+    - every guard of the downloaded data passes `--config config/v4_data_pre2025.json`, so `data.json`'s `config_sha256` must be that checked-in file's SHA-256;
+    - `plan` uploads the data its guard accepted as this run's own `v4-data` (retention 1 day), and the `cell` and `diagnose` jobs download that copy, so the data run's artifact may expire while the cells run;
+    - the cell's own standard output (its outcome, a result) goes to `/dev/null`, and the diagnosis's per-cell line carries no outcome.
 
 - [ ] **Step 1: Write the failing tests.**
   - `test_guard_refuses_a_data_run_reaching_2025`: a synthetic `data.json` with end month `2025-01`, and another with `2026-09`, each exit 1 with no file written.

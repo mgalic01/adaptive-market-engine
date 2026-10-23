@@ -5,13 +5,17 @@ Owner decision v4-d03: no market data from 2025-01 onward is executed before the
 ``v4-data`` run, and runs this guard on the downloaded data directory in every job that reads the
 packs (``plan``, each ``cell`` before the cell, and ``diagnose``).
 
-``--data D [--latest-month YYYY-MM]``: reads ``D/data.json`` (format ``v4-data/1``) and nothing
-else in ``D``. Exit 0 only if its ``end_month`` is not after the latest month, which is
-``2024-12`` unless an earlier one is given. Exit 1, writing nothing, when the data run ends after
-the latest month, when the latest month asked for is after 2024-12 (the window cannot be widened
-from the command line) or is not a month, and when ``data.json`` is missing, is not ASCII JSON
-with no duplicate key, is not an object of that format, or lacks a well-formed ``end_month`` or
-``config_sha256`` (a SHA-256, a pin and not market data).
+``--data D [--latest-month YYYY-MM] [--config FILE]``: reads ``D/data.json`` (format
+``v4-data/1``) and nothing else in ``D``. Exit 0 only if its ``end_month`` is not after the latest
+month, which is ``2024-12`` unless an earlier one is given, and, with ``--config``, its
+``config_sha256`` is the SHA-256 of ``FILE``'s bytes: the workflow passes the checked-in
+``config/v4_data_pre2025.json``, so a data run made from another version of that file (another
+universe or other dates under the same run name) is refused (Codex P2 on #294). Exit 1, writing
+nothing, when the data run ends after the latest month, when the latest month asked for is after
+2024-12 (the window cannot be widened from the command line) or is not a month, when ``data.json``
+is missing, is not ASCII JSON with no duplicate key, is not an object of that format, or lacks a
+well-formed ``end_month`` or ``config_sha256`` (a SHA-256, a pin and not market data), and when
+the ``--config`` file cannot be read or its SHA-256 is another.
 
 Output: one line with the end month, the config pin and the verdict. Nothing else of
 ``data.json`` and nothing from a refused file is echoed.
@@ -24,12 +28,14 @@ input (at most ``MAX_RUN_BYTES``, UTF-8 JSON, no duplicate key) and exits 0 only
 ``display_title`` is that workflow's run name for the full stage with the pre-2025 config, and its
 ``conclusion`` is ``success``. A run of the full config (data to 2026-09) or of the discover
 stage, a failed or unfinished run, a run of another workflow or anything that is not such a JSON
-object exits 1. Its output is the run's id and the verdict, never a field of the run.
+object exits 1, and so does ``--config`` given with ``--data-run``. Its output is the run's id and
+the verdict, never a field of the run.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -83,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=LATEST_ALLOWED,
         help=f"the latest end_month to accept, YYYY-MM, at most {LATEST_ALLOWED} (the default)",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="with --data: the config file whose SHA-256 data.json's config_sha256 must be",
+    )
     return parser
 
 
@@ -127,6 +138,8 @@ def _check_run(run_id: str) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.data_run is not None:
+        if args.config is not None:
+            return _refuse("--config goes with --data, not with --data-run")
         return _check_run(args.data_run)
     latest = args.latest_month
     if _MONTH.fullmatch(latest) is None:
@@ -150,9 +163,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _refuse(f"{DATA_FILE} has no config_sha256 of 64 lowercase hex digits")
     if end_month > latest:
         return _refuse(f"the data run's end_month {end_month} is after the latest month {latest}")
+    pinned = ""
+    if args.config is not None:
+        shown = f"{args.config.as_posix()!r:.80}"
+        try:
+            expected = hashlib.sha256(args.config.read_bytes()).hexdigest()
+        except OSError as exc:
+            return _refuse(f"the config file {shown} cannot be read ({type(exc).__name__})")
+        if pin != expected:
+            return _refuse(f"{DATA_FILE}'s config_sha256 is not the SHA-256 of {shown}")
+        pinned = f", the SHA-256 of {shown}"
     print(
         f"v4_cells_guard: data end_month {end_month}, config_sha256 {pin}: "
-        f"accepted (latest allowed month {latest})",
+        f"accepted (latest allowed month {latest}{pinned})",
         flush=True,
     )
     return 0
