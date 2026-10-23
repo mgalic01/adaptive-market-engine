@@ -920,6 +920,42 @@ def test_hold_btc_trend_starts_in_cash_and_counts_a_warming_sma_as_cash(
     assert all(F(equity) == CAPITAL for stamp, equity, _ in result.open_marks if stamp <= warm)
 
 
+def test_hold_btc_trend_buys_at_the_first_fill_when_btc_is_above_its_sma200_before_the_window(
+    tmp_path,
+):
+    """Final review (M1): BTCUSDT has 245 daily bars before the window, from 2024-05-01, and the
+    last of them, the day before the window, closes above its SMA(200): the price is 100 and then
+    120 from 30 days before the window, so the average is 103 and the close 120. The window's
+    first 00:00 decision reads that bar and invests, so ``0.99 x equity`` is bought at the first
+    01:00 fill, from the capital at that open, and the decision hour is the window's own first,
+    not a day later. The state never changes again, so no other order is made, and the window
+    end sells the holding."""
+    levels = ((BTC_START, "100"), (T0 - 30 * DAY, "120"))
+    market = load(tmp_path, crossing_world(btc_crossing(levels)))
+    before = [bar for bar in market.daily("BTCUSDT") if bar.open_ms <= T0 - DAY]
+    assert len(before) == 245  # more than the 200 the SMA needs, all before the window
+    mean = sum((F(bar.close) for bar in before[-200:]), F(0)) / 200
+    assert mean == 103 and F(before[-1].close) == 120
+    assert market.window_start_ms == T0
+    assert trend_changes(market) == [(T0, True)]  # invested at the window's first decision
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    first_fill = T0 + HOUR
+    buy, sale = of_kind(rows, "fill")
+    assert (buy["hour_ms"], buy["coin"], buy["reason"]) == (first_fill, "BTCUSDT", "signal")
+    assert open_equity(result, first_fill) == CAPITAL
+    check_fill(buy, 1, floor_step(INVESTED * CAPITAL / 120), D(120), SPOT)
+    (order,) = events(rows, "order")  # the window's only order
+    assert (order["decision_ms"], order["hour_ms"]) == (T0, first_fill)
+    assert order["source"] == "signal" and F(D(order["target"])) == INVESTED
+    assert F(D(order["equity"])) == CAPITAL
+    assert sale["reason"] == "window end" and sale["hour_ms"] == MAR - HOUR
+    (lifecycle,) = lifecycles_of(rows, "BTCUSDT")
+    assert (lifecycle["entry_ms"], lifecycle["exit_reason"]) == (first_fill, "window end")
+
+
 @pytest.mark.parametrize(
     ("masked_day", "buys_at", "sells_at"),
     [

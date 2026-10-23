@@ -17,7 +17,9 @@ run-name: v4-cells ${{ inputs.data_run }}
 #   plan uploads that data as this run's own v4-data artifact, kept one day from then, and the
 #   cell and diagnose jobs download that copy: the data run's artifact may expire while the cells
 #   run (Codex P2 on #294).
-# - arms: comma-separated arm names of the engine (arms.ARMS), all eight by default.
+# - arms: comma-separated arm names from arms.DIAGNOSTIC_ARMS, the 8 arms of step 3, all of them
+#   by default. The other 4 arms of the run (v4_btc200_shorts, v4_confirm3, hold_btc_trend and
+#   v3_as_built) are first run in the registered run, so this workflow refuses them.
 # - capitals: comma-separated, from 1000 and 10000; 10000 by default.
 # - costs: comma-separated cost multiples, from 1 and 2; 1 by default.
 # One cell is one arm at one capital and one cost multiple: up to 8 x 2 x 2 = 32 of them.
