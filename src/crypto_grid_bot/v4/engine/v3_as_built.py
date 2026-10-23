@@ -24,12 +24,18 @@ part of "Pass rule" condition 2. Nothing of V3 is re-implemented: V3.1's reviewe
 * **Open marks.** An hour's open mark is V3's ``open`` native mark. It is complete iff every one
   of V3's coins (``v3_coins``: the symbols of the pack's futures hourly bars, the bars V3 trades
   on; 10 in V3's pack) has its hourly bar that hour. This is conservative: V3 holds a subset.
-* **Outcome.** V3's status None is ``complete``; ``liquidation``, V3's one native stop, is
-  ``liquidated``, with the stop at its mark's hour (the last native mark, floored to the hour)
-  and that mark as the final equity; every other V3 stop is ``engine_error``, type ``V3Stop`` and
-  message the status (reason ``"V3Stop: <status>"``), with ``hour_ms`` the hour of V3's last mark
-  (null without one). So a V3 stop is incomplete, never a pass. An exception outside V3's own
-  loop (a refused pin, bad inputs) is not an outcome: it propagates, and nothing is written.
+* **Outcome.** V3's status None is ``complete``, unless V3's own accounting does not reconcile;
+  ``liquidation``, V3's one native stop, is ``liquidated``, with the stop at its mark's hour (the
+  last native mark, floored to the hour) and that mark as the final equity; every other V3 stop
+  is ``engine_error``, type ``V3Stop`` and message the status (reason ``"V3Stop: <status>"``).
+  So a V3 stop is incomplete, never a pass. A status None whose ``accounting_explained`` or
+  ``wallet_quantity_exact`` (``BaselineEvidence``) is not true is ``engine_error`` too, type
+  ``V3Accounting`` and message the first of those two flags that failed, in that order
+  (controller ruling on task 6): the verdict relies on this comparison, so V3's own failed
+  reconciliation makes the cell incomplete, never valid evidence. An ``engine_error``'s
+  ``hour_ms`` is the hour of V3's last mark (null without one; for ``V3Accounting``, the terminal
+  mark's, ``V3_END_MS``). An exception outside V3's own loop (a refused pin, bad inputs) is not
+  an outcome: it propagates, and nothing is written.
 
 **Records** (``records.jsonl`` through ``RecordWriter``, then ``receipt.json``), in this order:
 
@@ -37,7 +43,10 @@ part of "Pass rule" condition 2. Nothing of V3 is re-implemented: V3.1's reviewe
   window's first hour;
 * when V3 has a terminal mark, one ``event`` record ``{type: "terminal", hour_ms, coin: null,
   timestamp_ms, equity}``. The brief names it a ``terminal`` record; ``records.KINDS`` is step
-  3's and has no such kind, so it is an ``event`` of that type;
+  3's and has no such kind, so it is an ``event`` of that type (controller ruling). A complete
+  cell and a ``V3Accounting`` one have exactly one, at ``V3_END_MS``; a liquidated cell has none
+  (V3 marks no terminal after a liquidation); another V3 stop has at most one (V3's unavailable
+  exclusion close marks one where it stops);
 * the ``outcome`` record: ``outcome``, ``reason``, ``stop_ms``, ``hours`` (the open marks),
   ``final_equity``, ``equity_2025`` and ``final_after_close`` (both null), ``liquidations``,
   ``accounting_residual`` (V3's), ``accounting_explained`` and ``wallet_quantity_exact`` (V3's
@@ -51,10 +60,13 @@ under the format ``v4-summary-v3-1``, built from the records alone by ``summary.
 cell, window and data bound to the records, the first open mark the capital, the eras and years
 of ``_Ending`` and ``ERAS``, every value exact. Its ``data`` is the two pins, ``equity_2025`` and
 ``final_after_close`` are null (V3's window ends before 2025-01-01 00:00 and V3 makes no closing
-trade), and ``accounting_residual`` is the absolute value of V3's. A complete cell's periods end
-at the terminal mark, the window's end; a stop's at its hour. An ``engine_error`` has the short
-failure summary. Verification rebuilds the summary with the summary's own cell and requires
-equality, so a summary or records of another cell, window, pack or picks do not verify.
+trade), and ``accounting_residual`` is the absolute value of V3's. A complete cell's final equity
+is read from its one terminal event, which must be at ``V3_END_MS``; its periods end there, the
+window's end; a stop's at its hour. Records with another number of terminal events than their
+outcome has (above) are refused. An ``engine_error`` has the short failure summary; a
+``V3Accounting`` one must name the first flag the outcome record shows as not true. Verification
+rebuilds the summary with the summary's own cell and requires equality, so a summary or records
+of another cell, window, pack or picks do not verify.
 
 **The page** (``render_v3_page``) follows ruling F2: ``summary.render_page`` and
 ``write_cell_outputs`` take only V4's summary format (and the page's "every position was closed"
@@ -131,6 +143,9 @@ V3_END_MS = 1735689600000  # 2025-01-01 00:00 UTC, V3's terminal mark
 V3_SUMMARY_FORMAT = "v4-summary-v3-1"
 PICKS_FILE = "v3_picks.json"
 V3_STOP = "V3Stop"  # the exception type of an engine_error that is a V3 stop
+V3_ACCOUNTING = "V3Accounting"  # that of a completed V3 run whose accounting does not reconcile
+# V3's own reconciliation flags (``BaselineEvidence``), in the order a failure names them.
+ACCOUNTING_FLAGS = ("accounting_explained", "wallet_quantity_exact")
 TERMINAL = "terminal"  # the event type of V3's terminal mark
 # V3.1's registered adapter pin of the selector (config/v3_1_registration.json, adapter_pins):
 # the comparison report V3.1's runner builds names it; this module reads only the native marks.
@@ -345,7 +360,19 @@ def _outcome(evidence: BaselineEvidence, cell: CellSpec, opens: Sequence[NativeM
             raise ValueError("a complete V3 replay ends with its terminal mark at the window's end")
         if not opens or opens[-1].timestamp_ms != V3_END_MS - HOUR_MS:
             raise ValueError("a complete V3 replay marks every hour of the window")
-        fields: dict[str, object] = {
+        failed = _accounting_failure(evidence)
+        if failed is not None:  # V3's reconciliation failed: incomplete, never complete
+            fields: dict[str, object] = {
+                "outcome": ENGINE_ERROR,
+                "reason": f"{V3_ACCOUNTING}: {failed}",
+                "stop_ms": None,
+                "final_equity": terminal.equity,
+                "type": V3_ACCOUNTING,
+                "message": failed,
+                "hour_ms": V3_END_MS,
+            }
+            return _Outcome(fields, terminal)
+        fields = {
             "outcome": OUTCOME_COMPLETE,
             "reason": None,
             "stop_ms": None,
@@ -376,6 +403,15 @@ def _outcome(evidence: BaselineEvidence, cell: CellSpec, opens: Sequence[NativeM
         "hour_ms": hour_ms,
     }
     return _Outcome(fields, terminal)
+
+
+def _accounting_failure(evidence: BaselineEvidence) -> str | None:
+    """The first of V3's reconciliation flags that is not true, or None if both are."""
+    flags = (evidence.accounting_explained, evidence.wallet_quantity_exact)
+    for name, flag in zip(ACCOUNTING_FLAGS, flags, strict=True):
+        if flag is not True:
+            return name
+    return None
 
 
 # ---- the summary ----------------------------------------------------------------------------
@@ -558,20 +594,29 @@ def _failure(cell: CellSpec, records: _V3Records) -> dict[str, object]:
     """The short failure summary of a V3 stop that is not a liquidation (module docstring)."""
     outcome = records.outcome
     kind, message = outcome.get("type"), outcome.get("message")
-    if kind != V3_STOP or type(message) is not str:
-        raise ValueError(f"an engine error of a v3 cell is a {V3_STOP} with V3's status")
+    if kind not in (V3_STOP, V3_ACCOUNTING) or type(message) is not str:
+        raise ValueError(f"an engine error of a v3 cell is a {V3_STOP} or a {V3_ACCOUNTING}")
     if outcome.get("reason") != f"{kind}: {message}" or outcome.get("stop_ms") is not None:
         raise ValueError("the engine error's reason is not its type and message, or it has a stop")
     hour_ms = _optional_int(outcome.get("hour_ms"), "the engine error's hour_ms")
     if (hour_ms is None) != (not records.hours):
         raise ValueError("the engine error's hour is null exactly when V3 marked no hour")
+    if kind == V3_ACCOUNTING:
+        failed = next((flag for flag in ACCOUNTING_FLAGS if outcome.get(flag) is not True), None)
+        if message != failed:
+            raise ValueError(f"a {V3_ACCOUNTING} names the first flag the outcome shows not true")
+        marked = bool(records.hours) and records.hours[-1][0] == V3_END_MS - HOUR_MS
+        if not marked or records.terminal is None or records.terminal[0] != V3_END_MS:
+            raise ValueError(f"a {V3_ACCOUNTING} run marked its window and its terminal mark")
+        if hour_ms != V3_END_MS:
+            raise ValueError(f"a {V3_ACCOUNTING}'s hour is the terminal mark's, {V3_END_MS}")
     return {
         "format": V3_SUMMARY_FORMAT,
         "cell": cell_record(cell),
         "window": v3_window(),
         "data": dict(_mapping(outcome["data"])),
         "outcome": ENGINE_ERROR,
-        "type": V3_STOP,
+        "type": kind,
         "message": message,
         "hour_ms": hour_ms,
     }
@@ -656,6 +701,11 @@ def _outcome_line(summary: Mapping[str, object]) -> str:
         return line + (
             f" at {_e(_when(summary.get('stop_ms')))}. The figures run to the stop, and the "
             "stop's mark is the final equity."
+        )
+    if summary.get("type") == V3_ACCOUNTING:
+        return line + (
+            ": V3 ran to its window's end, but its own accounting did not reconcile "
+            f"({_e(summary.get('message'))}). The cell has no figures."
         )
     return line + ": V3 stopped before its window's end. The cell has no figures."
 

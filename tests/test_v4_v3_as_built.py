@@ -36,7 +36,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from test_combined_baseline_v3 import END, HOUR, PIN, START, SYMBOLS, _daily, inputs
+from test_combined_baseline_v3 import DAY, END, HOUR, PIN, START, SYMBOLS, _daily, inputs
 
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.combined import baseline_v3
@@ -53,6 +53,7 @@ from crypto_grid_bot.v4.engine.numbers import CONTEXT
 from crypto_grid_bot.v4.engine.records import Receipt, RecordWriter, read_receipt, read_records
 from crypto_grid_bot.v4.engine.records import write_receipt as write_receipt_file
 from crypto_grid_bot.v4.engine.v3_as_built import (
+    ACCOUNTING_FLAGS,
     PICKS_FILE,
     V3_SUMMARY_FORMAT,
     build_v3_summary,
@@ -129,16 +130,18 @@ def write_pack(
     return path, write_v3_pack(fields(hourly), path)
 
 
-def train(monkeypatch: pytest.MonkeyPatch, rule: str = "R2L") -> list[D]:
-    """V3.1's ``fake_walk_forward`` pattern: the frozen training returns ``{START: rule}`` and
-    notes the starting capital of the runners it would replay with."""
+def train(
+    monkeypatch: pytest.MonkeyPatch, rule: str = "R2L", picks: dict[int, str] | None = None
+) -> list[D]:
+    """V3.1's ``fake_walk_forward`` pattern: the frozen training returns ``{START: rule}`` (or
+    ``picks``) and notes the starting capital of the runners it would replay with."""
     seen: list[D] = []
 
     def walk(
         decisions: object, filters: object, hourly: object, funding: object, *, record: object
     ):
         seen.append(vars(v3_replay)["TrendRunner"](filters).account.initial)
-        return SimpleNamespace(picks={START: rule}, out_of_sample="oos")
+        return SimpleNamespace(picks=picks or {START: rule}, out_of_sample="oos")
 
     monkeypatch.setattr(baseline_v3, "run_walk_forward", walk)
     return seen
@@ -159,10 +162,11 @@ def world(
     *,
     rule: str = "R2L",
     hourly: Mapping[str, Sequence[Kline]] | None = None,
+    picks: dict[int, str] | None = None,
 ) -> World:
     """A V3 pack, and its picks computed once with ``run_v3_picks``."""
     pack, pack_sha256 = write_pack(folder / "pack", hourly)
-    train(monkeypatch, rule)
+    train(monkeypatch, rule, picks)
     digest = run_v3_picks(pack, pack_sha256, folder / "picks")
     return World(pack, pack_sha256, folder / "picks" / PICKS_FILE, digest, rule)
 
@@ -462,23 +466,215 @@ def test_v3_stops_map_to_v4_outcomes(tmp_path, monkeypatch):
             summary_of(target, forged)
 
 
+def test_a_v3_cell_without_a_pick_before_its_window_is_an_engine_error(tmp_path, monkeypatch):
+    """The picks hold no pick at or before the window's start (the first is a day later), so
+    ``replay_v3_baseline`` replays nothing and returns ``no_selector_pick``: an ``engine_error``
+    of type ``V3Stop`` with that status as its message, no hourly record, no terminal event and a
+    null hour, its final equity the capital."""
+    w = world(tmp_path, monkeypatch, picks={START + DAY: "R2L"})
+    folder, receipt = run_cell(w)
+    found = rows(folder, receipt)
+
+    assert [kind for kind, _ in found] == ["outcome"]
+    (outcome,) = of_kind(found, "outcome")
+    assert {key: outcome[key] for key in ("reason", "stop_ms", "hours", "final_equity")} == {
+        "reason": "V3Stop: no_selector_pick",
+        "stop_ms": None,
+        "hours": 0,
+        "final_equity": "10000",
+    }
+    summary = summary_of(folder, receipt)
+    verify_v3_summary(summary, folder / RECORDS, receipt)
+    assert summary == {
+        "format": V3_SUMMARY_FORMAT,
+        "cell": cell_json(),
+        "window": {"start_ms": START, "end_ms": END - HOUR},
+        "data": pins(w),
+        "outcome": "engine_error",
+        "type": "V3Stop",
+        "message": "no_selector_pick",
+        "hour_ms": None,
+    }
+
+
+def unreconciled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V3.1's ``test_a_missing_residual_is_not_explained`` patch: V3's comparison report without
+    a reconciliation residual, so V3's own ``accounting_explained`` is false."""
+    original = baseline_v3.comparison_report
+
+    def report(*args: Any, **kwargs: Any) -> Any:
+        return replace(original(*args, **kwargs), reconciliation_residual=None)
+
+    monkeypatch.setattr(baseline_v3, "comparison_report", report)
+
+
+def flagged(**flags: object) -> Callable[[pytest.MonkeyPatch], None]:
+    """V3's evidence for the cell with ``flags`` set, the rest of it V3's own."""
+
+    def patch(monkeypatch: pytest.MonkeyPatch) -> None:
+        real = v3_as_built.replay_v3_baseline
+
+        def replay(*args: Any, **kwargs: Any) -> BaselineEvidence:
+            evidence = real(*args, **kwargs)
+            assert evidence.status is None and evidence.accounting_explained is True
+            assert evidence.wallet_quantity_exact is True  # the synthetic run reconciles
+            return replace(evidence, **flags)
+
+        monkeypatch.setattr(v3_as_built, "replay_v3_baseline", replay)
+
+    return patch
+
+
+@pytest.mark.parametrize(
+    ("unexplain", "failed"),
+    [
+        (unreconciled, "accounting_explained"),
+        (flagged(accounting_explained=False), "accounting_explained"),
+        (flagged(wallet_quantity_exact=False), "wallet_quantity_exact"),
+        (flagged(wallet_quantity_exact=None), "wallet_quantity_exact"),
+        (flagged(accounting_explained=False, wallet_quantity_exact=False), "accounting_explained"),
+    ],
+    ids=["residual missing", "explained false", "wallet false", "wallet null", "both false"],
+)
+def test_an_unexplained_v3_accounting_result_is_an_engine_error_not_complete(
+    unexplain, failed, tmp_path, monkeypatch
+):
+    """Controller ruling: a V3 run that completed (status None) but whose own reconciliation
+    failed, ``accounting_explained`` or ``wallet_quantity_exact`` not true, is never
+    ``complete``: it is an ``engine_error`` of type ``V3Accounting`` whose message names the
+    first failed flag, with the short failure summary. Its records keep every open mark and the
+    terminal event. A summary naming another flag, or without the terminal event, is refused."""
+    w = world(tmp_path, monkeypatch)
+    unexplain(monkeypatch)
+    folder, receipt = run_cell(w)
+    found = rows(folder, receipt)
+
+    (outcome,) = of_kind(found, "outcome")
+    assert (outcome["outcome"], outcome["type"], outcome["message"], outcome["reason"]) == (
+        "engine_error",
+        "V3Accounting",
+        failed,
+        f"V3Accounting: {failed}",
+    )
+    assert outcome["stop_ms"] is None
+    assert len(of_kind(found, "hourly")) == 72 and len(of_kind(found, "event")) == 1
+    summary = summary_of(folder, receipt)
+    verify_v3_summary(summary, folder / RECORDS, receipt)
+    assert summary == {
+        "format": V3_SUMMARY_FORMAT,
+        "cell": cell_json(),
+        "window": {"start_ms": START, "end_ms": END - HOUR},
+        "data": pins(w),
+        "outcome": "engine_error",
+        "type": "V3Accounting",
+        "message": failed,
+        "hour_ms": END,
+    }
+    other = next(flag for flag in ACCOUNTING_FLAGS if flag != failed)
+
+    def rename(record: dict) -> None:
+        record.update(message=other, reason=f"V3Accounting: {other}")
+
+    forged = rewrite(folder, receipt, tmp_path / "other_flag", rename)
+    with pytest.raises(ValueError, match="flag"):
+        summary_of(tmp_path / "other_flag", forged)
+    forged = rewrite_rows(
+        folder, receipt, tmp_path / "no_terminal", lambda rs: [r for r in rs if r[0] != "event"]
+    )
+    with pytest.raises(ValueError, match="terminal"):
+        summary_of(tmp_path / "no_terminal", forged)
+    forged = rewrite(
+        folder, receipt, tmp_path / "other_hour", lambda record: record.update(hour_ms=END - HOUR)
+    )
+    with pytest.raises(ValueError, match="hour"):
+        summary_of(tmp_path / "other_hour", forged)
+
+
+def test_a_complete_v3_cell_reads_its_final_equity_from_its_one_terminal_event(
+    tmp_path, monkeypatch
+):
+    """Controller ruling: V3's terminal mark stays an ``event`` of type ``terminal``
+    (``records.KINDS`` unchanged), and the summary reads a complete cell's final equity from it.
+    Records of a complete cell with no such event, two of them, one at another time, or one whose
+    equity is not the outcome's are refused; so are a liquidated cell's records with one."""
+    w = world(tmp_path / "complete", monkeypatch)
+    folder, receipt = run_cell(w)
+    summary = summary_of(folder, receipt)
+    (event,) = of_kind(rows(folder, receipt), "event")
+    assert event["type"] == "terminal" and summary["final_equity"] == event["equity"]
+
+    def before_outcome(extra: Callable[[dict], list[dict]]) -> Callable[[Rows], Rows]:
+        def transform(found: Rows) -> Rows:
+            kept = [(kind, record) for kind, record in found if kind != "event"]
+            events = [record for kind, record in found if kind == "event"]
+            new = [("event", record) for item in events for record in extra(dict(item))]
+            return [*kept[:-1], *new, kept[-1]]
+
+        return transform
+
+    def moved(record: dict) -> list[dict]:
+        return [{**record, "timestamp_ms": END - HOUR, "hour_ms": END - HOUR}]
+
+    forgeries = {
+        "none": before_outcome(lambda record: []),
+        "two": before_outcome(lambda record: [record, record]),
+        "another time": before_outcome(moved),
+        "another equity": before_outcome(lambda record: [{**record, "equity": "10000.5"}]),
+        "another type": before_outcome(lambda record: [{**record, "type": "terminal_mark"}]),
+    }
+    for name, transform in forgeries.items():
+        target = tmp_path / "forged" / name.replace(" ", "_")
+        forged = rewrite_rows(folder, receipt, target, transform)
+        with pytest.raises(ValueError):
+            summary_of(target, forged)
+
+    spike = START + 30 * HOUR
+    liquidated = world(tmp_path / "liquidated", monkeypatch, rule="R1", hourly=spiked(spike, 100))
+    stop_folder, stop_receipt = run_cell(liquidated)
+    assert summary_of(stop_folder, stop_receipt)["outcome"] == "liquidated"
+    terminal = {**event, "equity": "1"}
+
+    def with_terminal(found: Rows) -> Rows:
+        return [*found[:-1], ("event", terminal), found[-1]]
+
+    target = tmp_path / "forged" / "liquidated"
+    forged = rewrite_rows(stop_folder, stop_receipt, target, with_terminal)
+    with pytest.raises(ValueError, match="terminal"):
+        summary_of(target, forged)
+
+
 # ---- the summary binds its cell, window, pack and picks -------------------------------------
+
+
+Rows = list[tuple[str, dict[str, Any]]]
+
+
+def rewrite_rows(
+    folder: Path, receipt: Receipt, target: Path, transform: Callable[[Rows], Rows]
+) -> Receipt:
+    """The cell's records as ``transform`` changes them, re-chained into ``target`` with a
+    receipt of their own: a forgery a reader cannot tell by its hashes."""
+    target.mkdir(parents=True)
+    with RecordWriter(target / RECORDS) as writer:
+        for kind, record in transform(rows(folder, receipt)):
+            writer.append(kind, record)
+        forged = writer.close()
+    write_receipt_file(target / RECEIPT, forged)
+    return forged
 
 
 def rewrite(
     folder: Path, receipt: Receipt, target: Path, change: Callable[[dict], None]
 ) -> Receipt:
-    """The cell's records, re-chained into ``target`` with ``change`` applied to the outcome
-    record, and a receipt of their own: a forgery a reader cannot tell by its hashes."""
-    target.mkdir(parents=True)
-    with RecordWriter(target / RECORDS) as writer:
-        for kind, record in rows(folder, receipt):
+    """The cell's records with ``change`` applied to the outcome record, re-chained."""
+
+    def transform(found: Rows) -> Rows:
+        for kind, record in found:
             if kind == "outcome":
                 change(record)
-            writer.append(kind, record)
-        forged = writer.close()
-    write_receipt_file(target / RECEIPT, forged)
-    return forged
+        return found
+
+    return rewrite_rows(folder, receipt, target, transform)
 
 
 def test_v3_summary_verifies_and_refuses_another_cell_window_pack_or_picks(tmp_path, monkeypatch):
@@ -745,3 +941,7 @@ def test_v3_page_is_self_contained_and_escapes_every_value(tmp_path, monkeypatch
     assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;" in shown
     with pytest.raises(ValueError):
         render_v3_page({**failure, "format": "v4-summary-1"})
+    assert "V3 stopped before its window's end" in shown
+    accounting = render_v3_page({**failure, "type": "V3Accounting", "message": "<b>"})
+    assert "its own accounting did not reconcile (&lt;b&gt;)" in accounting
+    assert "V3 stopped before" not in accounting
