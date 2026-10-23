@@ -13,8 +13,9 @@ cell's ``records.jsonl``, which is about 135 MB for a V4 cell).
 It refuses, writing nothing and exiting 1: a time file that is missing (the runner has no
 ``/usr/bin/time``), one that is not the report of GNU ``time -v`` (exactly one elapsed line and
 one peak-memory line, a clean exit status), a cell folder without ``records.jsonl``, and a
-``timing.json`` that already exists (a cell's files are never replaced). Standard output carries
-the cell's id, seconds, megabytes and bytes: times and sizes only, never a price.
+``timing.json`` that already exists (a cell's files are never replaced); a ``timing.json`` whose
+write fails is removed again, so no partial file is left. Standard output carries the cell's id,
+seconds, megabytes and bytes: times and sizes only, never a price.
 
 ``--time-file diagnose.time --diagnosis-dir diagnosis`` times the ``diagnose`` job's own step the
 same way, as the proxy for the registered run's verdict step and its 2 GB memory limit: it writes
@@ -124,6 +125,20 @@ def _read_time_file(path: Path) -> str | None:
         return None
 
 
+def _create(path: Path, document: dict[str, object]) -> None:
+    """Create ``path`` exclusively (mode "x": a file already there is never replaced) with
+    ``document`` as one line of JSON. A write or close that fails removes the file it made, so
+    no partial file is left behind: the diagnosis refuses a cell whose ``timing.json`` is not the
+    cell's, and the workflow keeps a replay whose timing failed, without its timing."""
+    handle = path.open("x", encoding="ascii", newline="\n")
+    try:
+        with handle:
+            handle.write(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def _diagnose_timing(time_file: Path, folder: Path) -> int:
     """``--diagnosis-dir``: the diagnosis step's ``diagnose-timing.json`` (module docstring)."""
     text = _read_time_file(time_file)
@@ -142,9 +157,8 @@ def _diagnose_timing(time_file: Path, folder: Path) -> int:
         "exit_status": timing.exit_status,
     }
     try:
-        # Mode "x" in a folder that must exist: the diagnosis's own files are never replaced.
-        with (folder / DIAGNOSE_TIMING_FILE).open("x", encoding="ascii", newline="\n") as handle:
-            handle.write(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+        # In a folder that must exist: the diagnosis's own files are never replaced.
+        _create(folder / DIAGNOSE_TIMING_FILE, document)
     except OSError as exc:
         return _fail(f"cannot create {DIAGNOSE_TIMING_FILE} ({type(exc).__name__})")
     print(
@@ -180,9 +194,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "records_bytes": records_bytes,
     }
     try:
-        # Mode "x": a cell's files are never replaced.
-        with (args.cell_dir / TIMING_FILE).open("x", encoding="ascii", newline="\n") as handle:
-            handle.write(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+        # A cell's files are never replaced.
+        _create(args.cell_dir / TIMING_FILE, document)
     except OSError as exc:
         return _fail(f"cannot create {TIMING_FILE} of {cell} ({type(exc).__name__})")
     print(

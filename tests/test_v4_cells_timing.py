@@ -16,6 +16,7 @@ import re
 import sys
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -283,6 +284,54 @@ def test_an_existing_timing_json_is_never_replaced(tmp_path, capsys):
     code, out, err = run(tmp_path, capsys)
     assert code == 1 and out == "" and "timing.json" in err
     assert (folder / "timing.json").read_text(encoding="ascii") == "earlier\n"
+
+
+class ShortWrite:
+    """A created file whose write stops part way and raises, as on a full disk."""
+
+    def __init__(self, handle: Any) -> None:
+        self.handle = handle
+
+    def __enter__(self) -> ShortWrite:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.handle.close()
+
+    def write(self, text: str) -> int:
+        self.handle.write(text[:5])
+        raise OSError(28, "No space left on device")
+
+
+def fail_created_writes(monkeypatch) -> None:
+    """Every file opened with mode "x" is created, then its write fails part way."""
+    real_open = Path.open
+
+    def open_short(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        handle = real_open(self, mode, *args, **kwargs)
+        return ShortWrite(handle) if "x" in mode else handle
+
+    monkeypatch.setattr(Path, "open", open_short)
+
+
+def test_a_timing_json_whose_write_fails_is_removed(tmp_path, capsys, monkeypatch):
+    """Codex P2 on #294: a timing.json created but not fully written is removed again, so the
+    workflow keeps the replay without a timing.json rather than with a partial one the diagnosis
+    would refuse; the cell's own files stay."""
+    folder = cell_folder(tmp_path)
+    time_file(tmp_path, gnu_time())
+    fail_created_writes(monkeypatch)
+    code, out, err = run(tmp_path, capsys)
+    assert code == 1 and out == ""
+    assert err == f"::error::v4_cells_timing: cannot create timing.json of {CELL} (OSError)\n"
+    assert sorted(path.name for path in folder.iterdir()) == ["records.jsonl"]
+
+
+def test_a_diagnose_timing_whose_write_fails_is_removed(tmp_path, capsys, monkeypatch):
+    fail_created_writes(monkeypatch)
+    code, out, err = diagnose(tmp_path, capsys, gnu_time())
+    assert code == 1 and out == "" and "cannot create diagnose-timing.json (OSError)" in err
+    assert list((tmp_path / "diagnosis").iterdir()) == []
 
 
 # ---- the diagnose step's own timing ----
