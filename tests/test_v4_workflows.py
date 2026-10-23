@@ -14,6 +14,11 @@ one-day retention of every upload, the pinned actions, the way each input reache
 (through the environment, never expanded into a script), the shape of the jobs, and the timing
 and upload of a diagnosis that refused a cell.
 
+``.github/workflows/v4-v3.yml`` rebuilds V3's input pack on GitHub (the ``pack`` job, then
+whatever else the V3 arm's run adds). Its tests pin that it is dispatch-only and read-only, installs
+as the data workflow does, runs the pack script with no input in its text, and keeps what it
+makes for one day.
+
 The tests parse the YAML and never call GitHub.
 """
 
@@ -621,3 +626,86 @@ def test_cells_workflow_header_says_what_the_run_depends_on():
     # downloads are network requests.
     assert "no market-data request" in header
     assert "no network request" not in header
+
+
+# ---- the v4-v3 workflow ----
+
+V3_WORKFLOW = ROOT / ".github" / "workflows" / "v4-v3.yml"
+# The steps every job of the data workflow starts with: checkout, setup-python, three installs.
+SETUP_STEPS = 5
+
+
+def v3_workflow() -> dict[str, Any]:
+    document = yaml.safe_load(V3_WORKFLOW.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+def test_v4_v3_workflow_pack_job():
+    document = v3_workflow()
+    # Dispatch only, and no input: the pack is one fixed thing, so nothing reaches a script.
+    assert list(document[True]) == ["workflow_dispatch"]
+    assert not (document[True]["workflow_dispatch"] or {}).get("inputs")
+    assert document["permissions"] == {"contents": "read"}
+
+    job = document["jobs"]["pack"]
+    assert "permissions" not in job and job["runs-on"] == "ubuntu-latest"
+    steps = job["steps"]
+
+    # It checks out without keeping the token, sets up Python 3.12 and installs exactly as the
+    # data workflow's jobs do (the same SHA-pinned actions, the same pip cache, the same locks).
+    checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkouts) == 1 and checkouts[0]["with"] == {"persist-credentials": False}
+    data_steps = yaml.safe_load(DATA_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["discover"][
+        "steps"
+    ]
+    assert steps[:SETUP_STEPS] == data_steps[:SETUP_STEPS]
+    assert steps[1]["with"]["python-version"] == "3.12"
+
+    # It runs the pack script on the two folders, and only that.
+    scripts = [run_text(s) for s in steps if "scripts/" in str(s.get("run", ""))]
+    assert scripts == ["python scripts/v4_v3_pack.py --work work --out out"]
+
+    # It uploads out/ as v4-v3-pack, kept one day, and fails when there is nothing to upload.
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith(UPLOAD)]
+    assert steps.index(upload) > max(
+        i for i, s in enumerate(steps) if "scripts/" in str(s.get("run", ""))
+    )
+    assert upload["with"]["name"] == "v4-v3-pack"
+    assert upload["with"]["path"] == "out/"
+    assert upload["with"]["retention-days"] == 1
+    assert upload["with"]["if-no-files-found"] == "error"
+
+
+def test_v4_v3_workflow_pins_every_action_as_the_data_workflow_does():
+    data_text = DATA_WORKFLOW.read_text(encoding="utf-8")
+    known = dict(re.findall(r"uses: ([\w./-]+)@([0-9a-f]{40})", data_text))
+    used = [
+        str(step["uses"])
+        for job in v3_workflow()["jobs"].values()
+        for step in job["steps"]
+        if "uses" in step
+    ]
+    assert used
+    for uses in used:
+        match = PINNED.match(uses)
+        assert match is not None, uses
+        assert known[match["action"]] == match["sha"], uses
+
+
+def test_v4_v3_workflow_never_expands_an_expression_into_a_script():
+    for job, body in v3_workflow()["jobs"].items():
+        for step in body["steps"]:
+            assert "${{" not in str(step.get("run", "")), (job, step)
+
+
+def test_v4_v3_workflow_keeps_every_upload_one_day_and_checks_out_without_credentials():
+    for job, body in v3_workflow()["jobs"].items():
+        steps = body["steps"]
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if uses.startswith(UPLOAD):
+                assert step["with"]["retention-days"] == 1, job
+                assert step["with"]["if-no-files-found"] == "error", job
+            if uses.startswith("actions/checkout@"):
+                assert step["with"] == {"persist-credentials": False}, job
