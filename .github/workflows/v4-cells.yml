@@ -1,0 +1,318 @@
+name: v4-cells
+run-name: v4-cells ${{ inputs.data_run }}
+
+# The V4 diagnostic run's cells on GitHub's machines, over the packs of a v4-data run, so that no
+# heavy work runs on the owner's PC (owner rule 2026-10-19). It never trades, holds no credentials,
+# can only read the repository and the artifacts of its runs, and commits nothing: its results are
+# artifacts. It makes no market-data request: the packs come from the artifact of the data run.
+# (It does run checkout, pip installs and artifact downloads, as every workflow here does.)
+#
+# Inputs (all text; scripts/v4_cells_plan.py validates them, and each reaches a script only
+# through an environment variable, never as text in it):
+# - data_run: the id of the v4-data run whose v4-data artifact holds the packs, digits only. It
+#   must have been made from the same commit as this run (dispatch both from the same branch with
+#   nothing pushed in between, or dispatch this one on a tag at the data run's commit). That
+#   artifact is kept one day, so this run must start within 24 hours of the data run finishing:
+#   after that the download fails and the data run must be repeated. Once plan has checked it,
+#   plan uploads that data as this run's own v4-data artifact, kept one day from then, and the
+#   cell and diagnose jobs download that copy: the data run's artifact may expire while the cells
+#   run (Codex P2 on #294).
+# - arms: comma-separated arm names of the engine (arms.ARMS), all eight by default.
+# - capitals: comma-separated, from 1000 and 10000; 10000 by default.
+# - costs: comma-separated cost multiples, from 1 and 2; 1 by default.
+# One cell is one arm at one capital and one cost multiple: up to 8 x 2 x 2 = 32 of them.
+#
+# The reserved window (owner decision v4-d03): no market data from 2025-01 onward is executed
+# before the registered run. scripts/v4_cells_guard.py refuses a data run whose data.json
+# end_month is after 2024-12. It runs in plan, in every cell job before its cell, and in diagnose
+# before the diagnosis reads the packs. The diagnostic data run is the v4-data workflow's full
+# stage with its pre-2025 config. Before anything is downloaded, plan asks the GitHub API for the
+# data run and refuses it unless it is exactly that: a run of .github/workflows/v4-data.yml named
+# "v4-data full config/v4_data_pre2025.json" whose conclusion is success and whose commit is this
+# run's (v4_cells_guard.py --data-run --commit), so the packs of a full-config run, which reach
+# 2026-09, are never downloaded here, nor packs made by other data code.
+# Every guard of the downloaded data also requires its data.json's config_sha256 to be the SHA-256
+# of the checked-in config/v4_data_pre2025.json (--config), so a run of another version of that
+# file under the same name is refused (Codex P2 on #294). The guard prints the data run's end
+# month and config_sha256 for the dispatcher to check.
+#
+# Jobs:
+# - plan: validates the inputs, writes the matrix of cells, checks the data run through the API,
+#   downloads the data run's artifact, runs the guard and uploads the checked data as this run's
+#   own v4-data artifact. No cell starts unless plan succeeded.
+# - cell, one job per cell of the matrix (fail-fast off, so one failed cell leaves the others
+#   running; 340 minutes each, since this run is where the real cell time is learned and a hosted
+#   job may run up to 360): the guard, then scripts/v4_cell.py under GNU time (/usr/bin/time -v),
+#   whose wall time and peak memory go to out/<cell id>/timing.json with the size of
+#   records.jsonl. The cell's own line (its outcome and its summary's digest) goes to /dev/null,
+#   not to the public log: an outcome is a result. The cell's folder is its artifact,
+#   v4-cell-<cell id>: records.jsonl,
+#   receipt.json, summary.json, report.html and timing.json. A cell whose replay fails uploads
+#   nothing. A cell that replayed but whose timing could not be parsed still uploads its files,
+#   without timing.json, and its job still fails.
+# - diagnose: runs after every cell job that ended, failed or timed out included (not after a
+#   cancelled run or a failed plan), over the artifacts of the cells that uploaded one. It
+#   downloads each v4-cell-* artifact into its own folder, cells/v4-cell-<cell id>/, runs the
+#   guard, and runs scripts/v4_diagnose.py under GNU time, whose wall time and peak memory go to
+#   diagnosis/diagnose-timing.json (the proxy for the registered run's verdict step and its 2 GB
+#   memory limit). Its --planned is the plan's cell_ids, the cells this dispatch asked for, so a
+#   planned cell with no diagnosis is listed as missing and no other is. A cell the diagnosis
+#   refuses is listed in it as missing, the others are diagnosed, and the step still fails; the
+#   timing and the upload then run all the same. Its artifact is v4-diagnosis.
+#
+# Every artifact is kept one day, and the logs are public: each script prints counts, ids, sizes
+# and times only, never a price, an equity, a return or a cell's outcome. The results stay on the
+# owner's PC: download them, then offer deletion.
+on:
+  workflow_dispatch:
+    inputs:
+      data_run:
+        description: "id of the v4-data run (full stage, pre-2025 config) of this same commit that finished less than 24 hours ago"
+        required: true
+        type: string
+      arms:
+        description: "arms, comma-separated (default: all eight)"
+        required: true
+        default: v4_main,v4_long_only,v4_vol25,v4_vol60,v4_faster,v4_slower,hold_universe,hold_btc
+        type: string
+      capitals:
+        description: "starting capitals, comma-separated, from 1000 and 10000"
+        required: true
+        default: "10000"
+        type: string
+      costs:
+        description: "cost multiples, comma-separated, from 1 and 2"
+        required: true
+        default: "1"
+        type: string
+
+# actions: read lets plan download the artifact of another run (the data run); nothing is written
+# outside this run's own artifacts.
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATA_RUN: ${{ inputs.data_run }}
+      ARMS: ${{ inputs.arms }}
+      CAPITALS: ${{ inputs.capitals }}
+      COSTS: ${{ inputs.costs }}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      cells: ${{ steps.plan.outputs.cells }}
+      cell_ids: ${{ steps.plan.outputs.cell_ids }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.lock
+      - run: python -m pip install -e . --no-deps
+
+      # Before anything is downloaded: the run's id is digits, and every arm, capital and cost is
+      # the run's. The outputs below are the validated values, the only ones the later steps and
+      # jobs use. They count only if this job, the guard included, succeeds.
+      - id: plan
+        name: Validate the inputs and plan the cells
+        run: python scripts/v4_cells_plan.py --data-run "$DATA_RUN" --arms "$ARMS" --capitals "$CAPITALS" --costs "$COSTS" --github-output "$GITHUB_OUTPUT"
+
+      # Before the download: the data run must be a successful run of the v4-data workflow's full
+      # stage with the pre-2025 config (its path, its run name and its conclusion, read from the
+      # GitHub API), made from this run's own commit (its head_sha is github.sha: the same data
+      # code, workflow and locked libraries; Codex P2 on #294), so no other run's packs are ever
+      # downloaded. The API's answer goes straight to the check, never to the log; the check
+      # prints the run's id and its verdict only.
+      - name: Refuse a data run that is not the pre-2025 full data run of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ steps.plan.outputs.data_run }}
+          COMMIT: ${{ github.sha }}
+        run: gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" | python scripts/v4_cells_guard.py --data-run "$RUN_ID" --commit "$COMMIT"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v4-data
+          run-id: ${{ steps.plan.outputs.data_run }}
+          github-token: ${{ github.token }}
+          path: v4data
+
+      - name: Refuse a data run that reaches 2025
+        run: python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json
+
+      # The checked data, as this run's own artifact, kept one day from now: the cell and
+      # diagnose jobs download this copy, so the data run's own artifact may expire while the
+      # cells run (Codex P2 on #294). Only data the guard accepted is uploaded; overwrite lets a
+      # re-run of plan replace its own earlier copy, as a re-run cell replaces its artifact.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v4-data
+          path: v4data/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  cell:
+    name: cell ${{ matrix.cell }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CELL: ${{ matrix.cell }}
+      ARM: ${{ matrix.arm }}
+      CAPITAL: ${{ matrix.capital }}
+      COSTS: ${{ matrix.costs }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.lock
+      - run: python -m pip install -e . --no-deps
+
+      # This run's own copy of the data, which plan checked and uploaded.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v4-data
+          path: v4data
+
+      # Again, in this job: the cell never starts on data that reaches 2025.
+      - name: Refuse a data run that reaches 2025
+        run: python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json
+
+      - name: Check that GNU time is installed
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            echo "::error::/usr/bin/time (GNU time) is missing, so the cell's peak memory cannot be measured." >&2
+            exit 1
+          fi
+
+      # The cell writes out/<cell id>/ (records.jsonl, receipt.json, summary.json, report.html);
+      # time writes out/<cell id>.time beside that folder. The cell's standard output, one line
+      # with its outcome, goes to /dev/null: an outcome is a result, and the log is public (Codex
+      # P2 on #294). A failure is still one line on standard error, the exception's type only.
+      - name: Replay the cell
+        run: |
+          mkdir -p out
+          /usr/bin/time -v -o "out/$CELL.time" \
+            python scripts/v4_cell.py run --data v4data --arm "$ARM" --capital "$CAPITAL" --costs "$COSTS" --out out > /dev/null
+
+      - id: timing
+        name: Keep the cell's wall time and peak memory
+        run: python scripts/v4_cells_timing.py --time-file "out/$CELL.time" --cell-dir "out/$CELL"
+
+      # The cell's folder is the artifact's root, so the diagnosis finds the cell's files in
+      # cells/v4-cell-<cell id>/. A timing step that failed must not discard a replay that
+      # succeeded (the job still fails): the upload runs after a failed timing step, and after
+      # nothing else that failed, so a failed replay uploads nothing.
+      - if: ${{ success() || steps.timing.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v4-cell-${{ matrix.cell }}
+          path: out/${{ matrix.cell }}/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  diagnose:
+    needs: [plan, cell]
+    # A failed or timed-out cell still lets the diagnosis of the others run: GitHub may report a
+    # job that hit its timeout as cancelled, so the cell's own result is not tested. A cancelled
+    # run does not run it (!cancelled(), as GitHub recommends rather than always()), and nor does
+    # a failed plan, which skips every cell.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PLANNED: ${{ needs.plan.outputs.cells }}
+      PLANNED_CELLS: ${{ needs.plan.outputs.cell_ids }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.lock
+      - run: python -m pip install -e . --no-deps
+
+      # The diagnosis reads the packs (the market regime per month), so the data is downloaded
+      # (this run's own copy, which plan checked and uploaded) and guarded here too.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v4-data
+          path: v4data
+
+      - name: Refuse a data run that reaches 2025
+        run: python scripts/v4_cells_guard.py --data v4data --config config/v4_data_pre2025.json
+
+      # One folder per artifact: cells/v4-cell-<cell id>/ holds that cell's files.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: v4-cell-*
+          merge-multiple: false
+          path: cells
+
+      - name: Count the cells that produced an artifact
+        run: |
+          mkdir -p cells
+          found=$(find cells -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "$found of $PLANNED planned cells have an artifact"
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no cell produced an artifact, so there is nothing to diagnose." >&2
+            exit 1
+          fi
+
+      - name: Check that GNU time is installed
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            echo "::error::/usr/bin/time (GNU time) is missing, so the diagnosis's peak memory cannot be measured." >&2
+            exit 1
+          fi
+
+      # The diagnosis is timed as the cells are: its wall time and peak memory are the proxy for
+      # the registered run's verdict step and its 2 GB memory limit. It exits 1 when it refused a
+      # cell, after writing the diagnosis of the others, so the timing and the upload run after a
+      # failed diagnosis too (the upload's if-no-files-found fails a run that wrote nothing). Its
+      # --planned is the plan's validated cell ids, so the missing cells it lists are those this
+      # dispatch asked for.
+      - id: diagnose
+        name: Diagnose the cells
+        run: /usr/bin/time -v -o diagnose.time python scripts/v4_diagnose.py --data v4data --cells cells --planned "$PLANNED_CELLS" --out diagnosis
+
+      - if: ${{ !cancelled() && (steps.diagnose.outcome == 'success' || steps.diagnose.outcome == 'failure') }}
+        name: Keep the diagnosis's wall time and peak memory
+        run: python scripts/v4_cells_timing.py --time-file diagnose.time --diagnosis-dir diagnosis
+
+      - if: ${{ !cancelled() && (steps.diagnose.outcome == 'success' || steps.diagnose.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v4-diagnosis
+          path: diagnosis/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true

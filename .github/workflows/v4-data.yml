@@ -1,5 +1,5 @@
 name: v4-data
-run-name: v4-data ${{ inputs.stage }}
+run-name: v4-data ${{ inputs.stage }} ${{ inputs.config }}
 
 # V4.0's data step (scripts/v4_data.py) on GitHub's machines, so that no heavy work runs on
 # the owner's PC (owner rule 2026-10-19). It never trades, holds no credentials, can only read
@@ -38,8 +38,15 @@ run-name: v4-data ${{ inputs.stage }}
 # Nothing is cached between runs: every run lists, fetches and verifies afresh (setup-python's
 # pip cache holds only pip's own wheels).
 #
-# No month after end_month (config/v4_data.json) is ever requested or read: the CLI refuses one
-# before any request or read. "Refuse any file named for a month after end_month"
+# The config input picks the data config of the whole run: the full one, or the pre-2025 one,
+# whose end_month is 2024-12, for the diagnostic run on 2018-2024 data. The choice reaches every
+# call of the CLI (--config, before the stage) and of the month guard through the CONFIG
+# environment variable, which the workflow sets once from the input. The run's name shows it.
+#
+# No month after the chosen config's end_month is ever requested or read: the CLI refuses one
+# before any request or read. With the pre-2025 config nothing from 2025-01 on is requested or
+# read (owner decision v4-d03: 2025+ data is opened only for data preparation and for the
+# registered run). "Refuse any file named for a month after end_month"
 # (scripts/v4_data_month_guard.py), in every job after its last CLI step and before its upload,
 # is a second, independent check of the names of everything under v4/, which holds all the job
 # fetched, downloaded or made.
@@ -58,9 +65,21 @@ on:
         options:
           - discover
           - full
+      config:
+        description: "data config: the full one, or the pre-2025 one (end_month 2024-12, the diagnostic run)"
+        required: true
+        default: config/v4_data.json
+        type: choice
+        options:
+          - config/v4_data.json
+          - config/v4_data_pre2025.json
 
 permissions:
   contents: read
+
+# The chosen data config, for every call below ("$CONFIG": never expanded into the script text).
+env:
+  CONFIG: ${{ inputs.config }}
 
 concurrency:
   group: v4-data
@@ -88,10 +107,10 @@ jobs:
       - run: python -m pip install -e . --no-deps
 
       - name: Discover the symbols and their archives
-        run: python scripts/v4_data.py discover --out v4/discover
+        run: python scripts/v4_data.py --config "$CONFIG" discover --out v4/discover
 
       - name: Refuse any file named for a month after end_month
-        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
+        run: python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -133,13 +152,13 @@ jobs:
 
       - name: Fetch and verify the daily archives
         run: |
-          python scripts/v4_data.py fetch --kind spot_1d \
+          python scripts/v4_data.py --config "$CONFIG" fetch --kind spot_1d \
             --discovery v4/discover/symbols.json \
             --shard "$SHARD/$SHARDS" \
             --cache v4/fetched/cache --out v4/fetched/manifests
 
       - name: Refuse any file named for a month after end_month
-        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
+        run: python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4
 
       # v4/fetched holds cache/ and manifests/: the artifact's root is that folder.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -181,13 +200,13 @@ jobs:
 
       - name: Select the candidates
         run: |
-          python scripts/v4_data.py select --stage candidates \
+          python scripts/v4_data.py --config "$CONFIG" select --stage candidates \
             --discovery v4/discover/symbols.json \
             --daily-manifests v4/fetched/manifests/manifest-spot_1d-*.json \
             --cache v4/fetched/cache --out v4/candidates
 
       - name: Refuse any file named for a month after end_month
-        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
+        run: python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -236,14 +255,14 @@ jobs:
       # Every listed month of each candidate, its whole history.
       - name: Fetch and verify the hourly archives
         run: |
-          python scripts/v4_data.py fetch --kind "$KIND" \
+          python scripts/v4_data.py --config "$CONFIG" fetch --kind "$KIND" \
             --discovery v4/discover/symbols.json \
             --symbols-file v4/candidates/candidates.txt \
             --shard "$SHARD/$SHARDS" \
             --cache v4/fetched/cache --out v4/fetched/manifests
 
       - name: Refuse any file named for a month after end_month
-        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
+        run: python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -290,14 +309,14 @@ jobs:
 
       - name: Select the final universes
         run: |
-          python scripts/v4_data.py select --stage final \
+          python scripts/v4_data.py --config "$CONFIG" select --stage final \
             --discovery v4/discover/symbols.json \
             --daily-manifests v4/fetched/manifests/manifest-spot_1d-*.json \
             --hourly-manifests v4/fetched/manifests/manifest-spot_1h-*.json \
             --cache v4/fetched/cache --out v4/final
 
       - name: Refuse any file named for a month after end_month
-        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
+        run: python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -349,7 +368,7 @@ jobs:
       # select-final's, or if any pack's canonical JSON exceeds 1.5 GiB (ruling P23).
       - name: Build the packs
         run: |
-          python scripts/v4_data.py pack \
+          python scripts/v4_data.py --config "$CONFIG" pack \
             --discovery v4/discover/symbols.json \
             --manifests v4/fetched/manifests/manifest-*.json \
             --universe v4/final/universe.json \
@@ -359,7 +378,7 @@ jobs:
         run: cat v4/data/data.json
 
       - name: Refuse any file named for a month after end_month
-        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
+        run: python scripts/v4_data_month_guard.py --config "$CONFIG" --root v4
 
       # The daily pack, the hourly index, every coin pack and data.json; the artifact's root is
       # v4/data, the folder that holds them all.
