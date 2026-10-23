@@ -516,8 +516,9 @@ def flagged(**flags: object) -> Callable[[pytest.MonkeyPatch], None]:
 
         def replay(*args: Any, **kwargs: Any) -> BaselineEvidence:
             evidence = real(*args, **kwargs)
-            assert evidence.status is None and evidence.accounting_explained is True
-            assert evidence.wallet_quantity_exact is True  # the synthetic run reconciles
+            assert evidence.status in (None, "liquidation")
+            assert evidence.accounting_explained is True  # the synthetic runs reconcile
+            assert evidence.wallet_quantity_exact is True
             return replace(evidence, **flags)
 
         monkeypatch.setattr(v3_as_built, "replay_v3_baseline", replay)
@@ -588,6 +589,98 @@ def test_an_unexplained_v3_accounting_result_is_an_engine_error_not_complete(
     )
     with pytest.raises(ValueError, match="hour"):
         summary_of(tmp_path / "other_hour", forged)
+
+
+@pytest.mark.parametrize(
+    ("flags", "failed"),
+    [
+        ({"accounting_explained": False}, "accounting_explained"),
+        ({"wallet_quantity_exact": False}, "wallet_quantity_exact"),
+        ({"accounting_explained": False, "wallet_quantity_exact": None}, "accounting_explained"),
+    ],
+    ids=["explained false", "wallet false", "both failed"],
+)
+def test_a_liquidation_with_unexplained_accounting_is_an_engine_error_not_liquidated(
+    flags, failed, tmp_path, monkeypatch
+):
+    """Controller ruling: V3's accounting flags bind a liquidation too. A liquidated V3 run (R1's
+    shorts and the 100-fold spike at 06:00 on day two) whose ``accounting_explained`` or
+    ``wallet_quantity_exact`` is not true is an ``engine_error`` of type ``V3Accounting``, its
+    message the first failed flag, its hour the liquidation's, with no terminal event and the
+    short failure summary. A forgery naming another hour, no liquidation or another flag is
+    refused."""
+    spike = START + 30 * HOUR
+    w = world(tmp_path, monkeypatch, rule="R1", hourly=spiked(spike, 100))
+    flagged(**flags)(monkeypatch)
+    folder, receipt = run_cell(w)
+    found = rows(folder, receipt)
+
+    (outcome,) = of_kind(found, "outcome")
+    assert {key: outcome[key] for key in ("outcome", "type", "message", "reason", "stop_ms")} == {
+        "outcome": "engine_error",
+        "type": "V3Accounting",
+        "message": failed,
+        "reason": f"V3Accounting: {failed}",
+        "stop_ms": None,
+    }
+    assert (outcome["liquidations"], outcome["hour_ms"]) == (1, spike)
+    assert len(of_kind(found, "hourly")) == 31 and of_kind(found, "event") == []
+    summary = summary_of(folder, receipt)
+    verify_v3_summary(summary, folder / RECORDS, receipt)
+    assert summary == {
+        "format": V3_SUMMARY_FORMAT,
+        "cell": cell_json(),
+        "window": {"start_ms": START, "end_ms": END - HOUR},
+        "data": pins(w),
+        "outcome": "engine_error",
+        "type": "V3Accounting",
+        "message": failed,
+        "hour_ms": spike,
+    }
+    other = next(flag for flag in ACCOUNTING_FLAGS if flag != failed)
+    forgeries: dict[str, tuple[dict[str, object], str]] = {
+        "another hour": ({"hour_ms": spike - HOUR}, "liquidation"),
+        "no liquidation": ({"liquidations": 0}, "liquidations"),
+        "another flag": ({"message": other, "reason": f"V3Accounting: {other}"}, "flag"),
+    }
+    for name, (change, match) in forgeries.items():
+        target = tmp_path / "forged" / name.replace(" ", "_")
+        forged = rewrite(folder, receipt, target, lambda record, c=change: record.update(c))
+        with pytest.raises(ValueError, match=match):
+            summary_of(target, forged)
+
+
+def test_a_full_v3_summary_needs_v3s_accounting_flags_and_no_engine_error_keys(
+    tmp_path, monkeypatch
+):
+    """Review finding: a full summary binds V3's accounting flags. The records of a complete and
+    of a liquidated cell, re-chained with ``accounting_explained`` or ``wallet_quantity_exact``
+    not true, or with an engine error's ``type``, ``message`` or ``hour_ms`` added to the outcome
+    record, are refused by ``build_v3_summary``, and the true summary does not verify against
+    them."""
+    complete = world(tmp_path / "complete", monkeypatch)
+    spike = START + 30 * HOUR
+    liquidated = world(tmp_path / "liquidated", monkeypatch, rule="R1", hourly=spiked(spike, 100))
+    changes: dict[str, tuple[dict[str, object], str]] = {
+        "explained false": ({"accounting_explained": False}, "accounting_explained"),
+        "wallet false": ({"wallet_quantity_exact": False}, "wallet_quantity_exact"),
+        "wallet null": ({"wallet_quantity_exact": None}, "wallet_quantity_exact"),
+        "a type": ({"type": "V3Accounting"}, "has no type"),
+        "a message": ({"message": "accounting_explained"}, "has no message"),
+        "an hour": ({"hour_ms": END}, "has no hour_ms"),
+    }
+    for label, w in (("complete", complete), ("liquidated", liquidated)):
+        folder, receipt = run_cell(w)
+        summary = summary_of(folder, receipt)
+        assert summary["outcome"] == label
+        verify_v3_summary(summary, folder / RECORDS, receipt)
+        for name, (change, match) in changes.items():
+            target = tmp_path / "forged" / label / name.replace(" ", "_")
+            forged = rewrite(folder, receipt, target, lambda record, c=change: record.update(c))
+            with pytest.raises(ValueError, match=match):
+                build_v3_summary(CellSpec(ARM, 10000, 1), target / RECORDS, forged)
+            with pytest.raises(ValueError):
+                verify_v3_summary(summary, target / RECORDS, forged)
 
 
 def test_a_complete_v3_cell_reads_its_final_equity_from_its_one_terminal_event(
