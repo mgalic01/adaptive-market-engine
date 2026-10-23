@@ -1,11 +1,18 @@
-"""V4 workflows: the data workflow's ``config`` input, and every call that carries it.
+"""V4 workflows: the data workflow's ``config`` input, and the cells workflow's guard and jobs.
 
 ``.github/workflows/v4-data.yml`` runs V4's data step on GitHub's machines. Its ``config`` input
 picks the data config: the full one, or the pre-2025 one that the diagnostic run (2018-2024)
 takes, whose ``end_month`` is 2024-12. The CLI and the month guard refuse any month after the
 ``end_month`` of the config they are given, so the reserved window (owner decision v4-d03: no
 2025+ market data before the registered run) holds only if every call is given the chosen
-config. The tests parse the YAML and never call GitHub.
+config.
+
+``.github/workflows/v4-cells.yml`` runs the diagnostic run's cells over a ``v4-data`` run's packs.
+Its tests pin the guard that refuses a data run reaching 2025 in every job that reads the packs,
+the one-day retention of every upload, the pinned actions, the way each input reaches the shell
+(through the environment, never expanded into a script) and the shape of the jobs.
+
+The tests parse the YAML and never call GitHub.
 """
 
 from __future__ import annotations
@@ -20,8 +27,13 @@ from typing import Any
 import pytest
 import yaml
 
+from crypto_grid_bot.v4.engine.arms import ARMS
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import v4_cell  # noqa: E402
+import v4_cells_guard  # noqa: E402
+import v4_cells_plan  # noqa: E402
 import v4_data  # noqa: E402
 import v4_data_month_guard  # noqa: E402
 
@@ -177,3 +189,284 @@ def test_the_month_guard_follows_the_chosen_config(tmp_path, capsys):
     (root / f"{archive}2025-01.zip").unlink()
     code, output = guard(PRE2025, root)
     assert code == 0 and "end_month 2024-12" in output
+
+
+# ---- the v4-cells workflow ----
+
+CELLS_WORKFLOW = ROOT / ".github" / "workflows" / "v4-cells.yml"
+GUARD = "python scripts/v4_cells_guard.py --data v4data"
+PINNED = re.compile(r"^(?P<action>[\w.-]+/[\w.-]+)@(?P<sha>[0-9a-f]{40})$")
+UPLOAD = "actions/upload-artifact@"
+DOWNLOAD = "actions/download-artifact@"
+
+
+def cells() -> dict[str, Any]:
+    document = yaml.safe_load(CELLS_WORKFLOW.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+def cell_steps(job: str) -> list[dict[str, Any]]:
+    steps = cells()["jobs"][job]["steps"]
+    assert isinstance(steps, list)
+    return steps
+
+
+def run_text(step: dict[str, Any]) -> str:
+    """A step's script on one line: continuations joined, whitespace collapsed."""
+    return " ".join(str(step.get("run", "")).replace("\\\n", " ").split())
+
+
+def index_of_run(job: str, needle: str) -> int:
+    """The position of the one step of ``job`` whose script holds ``needle``."""
+    found = [i for i, step in enumerate(cell_steps(job)) if needle in run_text(step)]
+    assert len(found) == 1, (job, needle, found)
+    return found[0]
+
+
+def downloads(job: str) -> list[dict[str, Any]]:
+    return [
+        step["with"] for step in cell_steps(job) if str(step.get("uses", "")).startswith(DOWNLOAD)
+    ]
+
+
+def uploads(job: str) -> list[dict[str, Any]]:
+    return [
+        step["with"] for step in cell_steps(job) if str(step.get("uses", "")).startswith(UPLOAD)
+    ]
+
+
+def test_cells_workflow_guards_before_every_cell():
+    jobs = cells()["jobs"]
+    assert list(jobs) == ["plan", "cell", "diagnose"]
+
+    # The guard runs in plan, after the data run's artifact is downloaded; in every cell job
+    # before the cell; and in diagnose before the diagnosis reads the packs.
+    for job, after in (("plan", None), ("cell", "scripts/v4_cell.py"), ("diagnose", "v4_diagnose")):
+        guard = index_of_run(job, GUARD)
+        named = [s.get("with", {}).get("name") for s in cell_steps(job)]
+        assert named.count("v4-data") == 1 and named.index("v4-data") < guard, job
+        if after is not None:
+            assert guard < index_of_run(job, after), job
+
+    # No cell starts unless plan, guard included, succeeded: no `if` overrides the default.
+    assert jobs["cell"]["needs"] == "plan"
+    assert "if" not in jobs["cell"]
+    assert "if" not in jobs["plan"] and "needs" not in jobs["plan"]
+
+    # Every upload is kept one day, and an empty one is an error.
+    assert [step["name"] for step in uploads("cell")] == ["v4-cell-${{ matrix.cell }}"]
+    assert [step["name"] for step in uploads("diagnose")] == ["v4-diagnosis"]
+    assert uploads("plan") == []
+    for job in jobs:
+        for step in uploads(job):
+            assert step["retention-days"] == 1, job
+            assert step["if-no-files-found"] == "error", job
+
+
+def test_cells_workflow_is_dispatch_only_and_read_only():
+    document = cells()
+    assert list(document[True]) == ["workflow_dispatch"]
+    # actions: read lets the jobs download the artifact of another run (the data run).
+    assert document["permissions"] == {"contents": "read", "actions": "read"}
+    for name, job in document["jobs"].items():
+        assert "permissions" not in job, name
+        assert job["runs-on"] == "ubuntu-latest", name
+        checkouts = [
+            s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
+        ]
+        assert len(checkouts) == 1 and checkouts[0]["with"] == {"persist-credentials": False}, name
+
+
+def test_cells_workflow_inputs():
+    inputs = cells()[True]["workflow_dispatch"]["inputs"]
+    assert list(inputs) == ["data_run", "arms", "capitals", "costs"]
+    for spec in inputs.values():
+        assert spec["type"] == "string" and spec["required"] is True
+    assert "default" not in inputs["data_run"]
+    # All eight arms of the engine by default, in the run's order.
+    assert inputs["arms"]["default"] == ",".join(ARMS)
+    assert inputs["capitals"]["default"] == "10000"
+    assert inputs["costs"]["default"] == "1"
+    # The defaults are a plan the plan script accepts.
+    planned = v4_cells_plan.build_cells(
+        inputs["arms"]["default"], inputs["capitals"]["default"], inputs["costs"]["default"]
+    )
+    assert len(planned) == 8
+
+
+def test_cells_workflow_pins_every_action_as_the_data_workflow_does():
+    data_text = DATA_WORKFLOW.read_text(encoding="utf-8")
+    known = dict(re.findall(r"uses: ([\w./-]+)@([0-9a-f]{40})", data_text))
+    assert {"actions/checkout", "actions/setup-python", UPLOAD[:-1], DOWNLOAD[:-1]} <= set(known)
+    used = [
+        str(step["uses"])
+        for job in cells()["jobs"].values()
+        for step in job["steps"]
+        if "uses" in step
+    ]
+    assert used
+    for uses in used:
+        match = PINNED.match(uses)
+        assert match is not None, uses
+        assert known[match["action"]] == match["sha"], uses
+
+
+def test_cells_workflow_never_expands_an_expression_into_a_script():
+    # Inputs and matrix values reach a script as environment variables ("$ARM"), never as text
+    # in it, so a value cannot become shell code.
+    for job, body in cells()["jobs"].items():
+        for step in body["steps"]:
+            assert "${{" not in str(step.get("run", "")), (job, step)
+
+
+def test_cells_workflow_takes_the_data_run_id_only_after_the_plan_validated_it():
+    plan = cells()["jobs"]["plan"]
+    assert plan["outputs"] == {
+        "data_run": "${{ steps.plan.outputs.data_run }}",
+        "matrix": "${{ steps.plan.outputs.matrix }}",
+        "cells": "${{ steps.plan.outputs.cells }}",
+    }
+    # The raw input is read twice: the run's name, and the plan step's environment.
+    text = CELLS_WORKFLOW.read_text(encoding="utf-8")
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert code.count("inputs.data_run") == 2
+    assert plan["env"]["DATA_RUN"] == "${{ inputs.data_run }}"
+    assert plan["steps"][index_of_run("plan", "v4_cells_plan.py")]["id"] == "plan"
+    # Every download of the data names the run by the validated output, and the validation
+    # comes first in plan.
+    assert index_of_run("plan", "v4_cells_plan.py") < [
+        s.get("with", {}).get("name") for s in plan["steps"]
+    ].index("v4-data")
+    for job in ("plan", "cell", "diagnose"):
+        (data,) = [d for d in downloads(job) if d.get("name") == "v4-data"]
+        wanted = (
+            "${{ steps.plan.outputs.data_run }}"
+            if job == "plan"
+            else ("${{ needs.plan.outputs.data_run }}")
+        )
+        assert data == {
+            "name": "v4-data",
+            "run-id": wanted,
+            "github-token": "${{ github.token }}",
+            "path": "v4data",
+        }, job
+
+
+def test_cells_workflow_plan_step_matches_the_plan_scripts_parser():
+    plan = cells()["jobs"]["plan"]
+    assert plan["env"] == {
+        "DATA_RUN": "${{ inputs.data_run }}",
+        "ARMS": "${{ inputs.arms }}",
+        "CAPITALS": "${{ inputs.capitals }}",
+        "COSTS": "${{ inputs.costs }}",
+    }
+    run = run_text(plan["steps"][index_of_run("plan", "v4_cells_plan.py")])
+    prefix = "python scripts/v4_cells_plan.py "
+    assert run.startswith(prefix)
+    values = {
+        "$DATA_RUN": "1234567890",
+        "$ARMS": "v4_main,hold_btc",
+        "$CAPITALS": "10000",
+        "$COSTS": "1",
+        "$GITHUB_OUTPUT": "out.txt",
+    }
+    words = shlex.split(run.removeprefix(prefix))
+    args = v4_cells_plan.build_parser().parse_args([values.get(word, word) for word in words])
+    assert (args.data_run, args.arms, args.capitals, args.costs) == (
+        "1234567890",
+        "v4_main,hold_btc",
+        "10000",
+        "1",
+    )
+    assert args.github_output == Path("out.txt")
+
+
+def test_cells_workflow_guard_steps_match_the_guards_parser():
+    for job in ("plan", "cell", "diagnose"):
+        run = run_text(cell_steps(job)[index_of_run(job, GUARD)])
+        assert run == GUARD, job
+        args = v4_cells_guard.build_parser().parse_args(shlex.split(run.split("guard.py ")[1]))
+        assert args.data == Path("v4data") and args.latest_month == "2024-12"
+
+
+def test_cells_workflow_cell_job_runs_one_matrix_entry_under_gnu_time():
+    job = cells()["jobs"]["cell"]
+    assert job["timeout-minutes"] == 90
+    assert job["strategy"] == {
+        "fail-fast": False,
+        "matrix": "${{ fromJSON(needs.plan.outputs.matrix) }}",
+    }  # no max-parallel
+    assert job["env"] == {
+        "CELL": "${{ matrix.cell }}",
+        "ARM": "${{ matrix.arm }}",
+        "CAPITAL": "${{ matrix.capital }}",
+        "COSTS": "${{ matrix.costs }}",
+    }
+    steps = job["steps"]
+
+    # GNU time is checked first, then the cell runs under it, then the helper reads its file.
+    check = index_of_run("cell", "-x /usr/bin/time")
+    replay = index_of_run("cell", "scripts/v4_cell.py")
+    timing = index_of_run("cell", "scripts/v4_cells_timing.py")
+    assert check < replay < timing
+    assert "::error::" in run_text(steps[check]) and "exit 1" in run_text(steps[check])
+    run = run_text(steps[replay])
+    assert run.count('/usr/bin/time -v -o "out/$CELL.time" ') == 1
+    command = run.split('"out/$CELL.time" ', 1)[1]
+    assert command.startswith("python scripts/v4_cell.py run ")
+    values = {"$ARM": "v4_faster", "$CAPITAL": "1000", "$COSTS": "2"}
+    words = [values.get(word, word) for word in shlex.split(command)[2:]]
+    args = v4_cell.build_parser().parse_args(words)
+    assert (args.command, args.arm, args.capital, args.costs) == ("run", "v4_faster", 1000, 2)
+    assert (args.data, args.out) == (Path("v4data"), Path("out"))
+    assert run_text(steps[timing]) == (
+        'python scripts/v4_cells_timing.py --time-file "out/$CELL.time" --cell-dir "out/$CELL"'
+    )
+
+    # The cell's own folder, timing.json included, is the artifact, named for the cell.
+    (upload,) = uploads("cell")
+    assert upload["name"] == "v4-cell-${{ matrix.cell }}"
+    assert upload["path"] == "out/${{ matrix.cell }}/"
+
+
+def test_cells_workflow_diagnose_runs_after_every_cell_that_finished():
+    job = cells()["jobs"]["diagnose"]
+    assert job["needs"] == ["plan", "cell"]
+    # A failed cell still lets the diagnosis of the others run, a cancelled run does not, and a
+    # failed plan (which skips every cell) never does.
+    assert job["if"] == (
+        "${{ always() && needs.plan.result == 'success' && needs.cell.result != 'cancelled' }}"
+    )
+    (cell_download,) = [d for d in downloads("diagnose") if "pattern" in d]
+    assert cell_download == {"pattern": "v4-cell-*", "merge-multiple": False, "path": "cells"}
+    diagnose = index_of_run("diagnose", "scripts/v4_diagnose.py")
+    assert run_text(job["steps"][diagnose]) == (
+        "python scripts/v4_diagnose.py --data v4data --cells cells --out diagnosis"
+    )
+    (upload,) = uploads("diagnose")
+    assert upload["name"] == "v4-diagnosis" and upload["path"] == "diagnosis/"
+    # The cells are counted before the diagnosis; none at all stops the job with an error.
+    counted = index_of_run("diagnose", "planned cells")
+    assert counted < diagnose
+    assert "::error::" in run_text(job["steps"][counted])
+    assert "exit 1" in run_text(job["steps"][counted])
+
+
+def test_cells_workflow_logs_counts_only():
+    # No step prints or searches a result file: the logs are public.
+    shown = re.compile(r"\b(cat|head|tail|less|more|jq|grep|sed|awk)\b")
+    for job, body in cells()["jobs"].items():
+        for step in body["steps"]:
+            text = run_text(step)
+            assert shown.search(text) is None, (job, text)
+            for name in ("records.jsonl", "summary.json", "receipt.json", "report.html"):
+                assert name not in text, (job, name)
+
+
+def test_cells_workflow_header_says_what_the_run_depends_on():
+    header = CELLS_WORKFLOW.read_text(encoding="utf-8").split("\non:\n")[0]
+    # The data artifact is kept one day, so a cells run must start within a day of its data run.
+    assert "24 hours" in header
+    # The reserved window.
+    assert "v4-d03" in header and "2024-12" in header and "2025-01" in header
