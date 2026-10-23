@@ -2292,6 +2292,39 @@ def test_the_headline_compares_a_stopped_cell_over_its_own_span(diagnosis):
     assert "Stopped cells" not in diagnosis.markdown
 
 
+def test_a_stop_at_new_year_before_its_mark_names_the_year_that_ended_at_the_stop(tmp_path):
+    """Codex P2 on #294: a cell liquidated at 00:00 on 2024-01-01 before that hour's open mark
+    has an all-null 2024 row, and its 2023 ends at the stop: the headline's stopped line is the
+    2023 one, never the empty 2024. The rows come from ``cell_figures`` of such a cell."""
+    first = month_start("2024-01") - 4 * HOUR
+    receipt = fake_cell(tmp_path / "cell", first, ["10000", "9000", "8000", "7000", None], "6500")
+    figures = v4_diagnose.cell_figures(tmp_path / "cell" / run.RECORDS_FILE, receipt)
+    years = figures["years"]
+    assert [row["year"] for row in years] == [2023, 2024]
+    assert years[1]["start_ms"] is None and years[1]["return"] is None
+    assert (years[0]["end_ms"], years[0]["end_equity"]) == (month_start("2024-01"), "6500")
+    for row in years:
+        row.update({"btc_return": "0.01", "universe_median_return": "0.02"})
+    document = {
+        "market_years": [],
+        "arms": [],
+        "cells": [
+            {
+                "cell": {"id": "v4_main-10000-1x"},
+                "outcome": "liquidated",
+                "stop_ms": month_start("2024-01"),
+                "years": years,
+            }
+        ],
+    }
+    headline = "\n".join(v4_diagnose._headline(document))
+    assert (
+        "- v4_main-10000-1x stopped at 2024-01-01 00:00 UTC: 2023 to the stop -35.00%; "
+        "BTC +1.00%, median coin +2.00%." in headline
+    )
+    assert "2024 to the stop" not in headline
+
+
 # ---- Codex P2 on #294: the missing cells are the planned cells ----------------------------------
 
 

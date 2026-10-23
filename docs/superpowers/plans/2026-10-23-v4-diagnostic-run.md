@@ -96,6 +96,7 @@ Every artifact is kept 1 day, and public logs carry counts only.
     - every guard of the downloaded data passes `--config config/v4_data_pre2025.json`, so `data.json`'s `config_sha256` must be that checked-in file's SHA-256;
     - `plan` uploads the data its guard accepted as this run's own `v4-data` (retention 1 day), and the `cell` and `diagnose` jobs download that copy, so the data run's artifact may expire while the cells run;
     - the cell's own standard output (its outcome, a result) goes to `/dev/null`, and the diagnosis's per-cell line carries no outcome.
+  - Amended after Codex's review of #294 at 2f07573: the data-run check passes `--commit "$COMMIT"` (`github.sha`), so the data run's `head_sha` must be the cells run's own commit, and the packs come from the same data code, workflow and locked libraries. Dispatch the data run and the cells run from the same commit; after this PR merges, the data run is repeated from `main` (run 39885846429 was made from a592227). A stopped cell's headline line now uses its last year that has a period.
 
 - [ ] **Step 1: Write the failing tests.**
   - `test_guard_refuses_a_data_run_reaching_2025`: a synthetic `data.json` with end month `2025-01`, and another with `2026-09`, each exit 1 with no file written.

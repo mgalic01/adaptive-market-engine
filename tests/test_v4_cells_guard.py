@@ -211,6 +211,8 @@ def test_the_default_latest_month_is_2024_12():
 # ---- the data run itself, checked before its artifact is downloaded ----
 
 RUN_ID = "18734501234"
+# The commit the cells run checked out (github.sha), which the data run's head_sha must be.
+HEAD = "7653d7d" + "0" * 33
 
 
 def run_json(**fields: object) -> dict[str, object]:
@@ -226,7 +228,7 @@ def run_json(**fields: object) -> dict[str, object]:
         "status": "completed",
         "conclusion": "success",
         "head_branch": "main",
-        "head_sha": "7653d7d" + "0" * 33,
+        "head_sha": HEAD,
         "run_attempt": 1,
         "html_url": f"https://github.com/owner/repo/actions/runs/{RUN_ID}",
     }
@@ -234,16 +236,18 @@ def run_json(**fields: object) -> dict[str, object]:
     return document
 
 
-def check_run(capsys, monkeypatch, raw: bytes, run_id: str = RUN_ID) -> tuple[int, str, str]:
+def check_run(
+    capsys, monkeypatch, raw: bytes, run_id: str = RUN_ID, head: str = HEAD
+) -> tuple[int, str, str]:
     """``--data-run`` with ``raw`` on standard input, as ``gh api`` pipes it there."""
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
-    code = v4_cells_guard.main(["--data-run", run_id])
+    code = v4_cells_guard.main(["--data-run", run_id, "--commit", head])
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 
 
 def test_the_data_run_check_accepts_the_pre2025_full_data_run():
-    v4_cells_guard.check_data_run(run_json(), RUN_ID)
+    v4_cells_guard.check_data_run(run_json(), RUN_ID, HEAD)
     assert v4_cells_guard.DATA_WORKFLOW_PATH == ".github/workflows/v4-data.yml"
     assert v4_cells_guard.DATA_RUN_TITLE == "v4-data full config/v4_data_pre2025.json"
 
@@ -279,25 +283,29 @@ REFUSED_RUNS = {
     "another_run": run_json(id=int(RUN_ID) + 1),
     "id_as_text": run_json(id=RUN_ID),
     "id_as_bool": run_json(id=True),
+    # Codex P2 on #294: a run made from another commit, so by other data code, is refused.
+    "another_commit": run_json(head_sha="a" * 40),
+    "no_head_sha": {k: v for k, v in run_json().items() if k != "head_sha"},
+    "short_head_sha": run_json(head_sha=HEAD[:7]),
 }
 
 
 @pytest.mark.parametrize("case", REFUSED_RUNS)
 def test_the_data_run_check_refuses_any_other_run(case):
     with pytest.raises(ValueError):
-        v4_cells_guard.check_data_run(REFUSED_RUNS[case], RUN_ID)
+        v4_cells_guard.check_data_run(REFUSED_RUNS[case], RUN_ID, HEAD)
 
 
 @pytest.mark.parametrize("value", [None, [], "run", 18734501234])
 def test_the_data_run_check_refuses_an_answer_that_is_not_an_object(value):
     with pytest.raises(ValueError, match="not a JSON object"):
-        v4_cells_guard.check_data_run(value, RUN_ID)
+        v4_cells_guard.check_data_run(value, RUN_ID, HEAD)
 
 
 @pytest.mark.parametrize("run_id", ["", "0", "012", "12a", "1" * 21, "-5", " 5"])
 def test_the_data_run_check_refuses_a_malformed_run_id(run_id):
     with pytest.raises(ValueError, match="run id"):
-        v4_cells_guard.check_data_run(run_json(), run_id)
+        v4_cells_guard.check_data_run(run_json(), run_id, HEAD)
 
 
 def test_data_run_prints_only_the_run_id_and_the_verdict(capsys, monkeypatch):
@@ -305,7 +313,7 @@ def test_data_run_prints_only_the_run_id_and_the_verdict(capsys, monkeypatch):
     assert (code, err) == (0, "")
     assert out == (
         f"v4_cells_guard: data run {RUN_ID}: a successful "
-        "'v4-data full config/v4_data_pre2025.json' run: accepted\n"
+        "'v4-data full config/v4_data_pre2025.json' run of this commit: accepted\n"
     )
     assert "7653d7d" not in out and "github.com" not in out
 
@@ -359,6 +367,7 @@ def test_data_run_and_data_are_one_or_the_other():
     parser = v4_cells_guard.build_parser()
     assert parser.parse_args(["--data-run", RUN_ID]).data_run == RUN_ID
     assert parser.parse_args(["--data-run", RUN_ID]).data is None
+    assert parser.parse_args(["--data-run", RUN_ID, "--commit", HEAD]).commit == HEAD
     for argv in ([], ["--data", "v4data", "--data-run", RUN_ID]):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)
@@ -431,3 +440,40 @@ def test_config_goes_with_data_not_with_data_run(capsys, monkeypatch):
     captured = capsys.readouterr()
     assert (code, captured.out) == (1, "")
     assert "--config goes with --data, not with --data-run: refused" in captured.err
+
+
+# ---- Codex P2 on #294: the data run is pinned to this run's commit ----
+
+
+def test_data_run_needs_the_commit_this_run_checked_out(capsys, monkeypatch):
+    raw = json.dumps(run_json()).encode("ascii")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
+    code = v4_cells_guard.main(["--data-run", RUN_ID])
+    captured = capsys.readouterr()
+    assert (code, captured.out) == (1, "")
+    assert "--data-run needs --commit, the commit this run checked out: refused" in captured.err
+
+
+@pytest.mark.parametrize("head", ["", HEAD[:7], HEAD.upper(), HEAD + "0", "::error::injected"])
+def test_data_run_refuses_a_malformed_expected_commit(capsys, monkeypatch, head):
+    raw = json.dumps(run_json()).encode("ascii")
+    code, out, err = check_run(capsys, monkeypatch, raw, head=head)
+    assert (code, out) == (1, "")
+    assert "the expected commit is not 40 lowercase hex digits" in err and "injected" not in err
+
+
+def test_data_run_of_another_commit_is_refused_and_neither_commit_is_shown(capsys, monkeypatch):
+    raw = json.dumps(run_json(head_sha="b" * 40)).encode("ascii")
+    code, out, err = check_run(capsys, monkeypatch, raw)
+    assert (code, out) == (1, "")
+    assert err == (
+        f"::error::v4_cells_guard: data run {RUN_ID}: it was not made from this run's commit: "
+        "refused\n"
+    )
+
+
+def test_commit_goes_with_data_run_not_with_data(tmp_path, capsys):
+    folder = write(tmp_path / "v4data", data_json())
+    code, out, err = guard(folder, capsys, "--commit", HEAD)
+    assert (code, out) == (1, "")
+    assert "--commit goes with --data-run, not with --data: refused" in err

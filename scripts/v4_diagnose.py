@@ -1753,14 +1753,19 @@ def _headline(document: Mapping[str, Any]) -> list[str]:
             )
         body.append(line)
     lines += _table(head, body)
-    stopped = [cell for cell in cells if cell["stop_ms"] is not None and cell["years"]]
+    # A stopped cell's last year with a period: a stop at 00:00 on 1 January before that hour's
+    # open mark leaves the new year's row all null, and the year before ends at the stop.
+    stopped: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+    for cell in cells:
+        periods = [row for row in cell["years"] or () if row["start_ms"] is not None]
+        if cell["stop_ms"] is not None and periods:
+            stopped.append((cell, periods[-1]))
     if stopped:
         lines += [
             "Stopped cells: the last year to the stop, and the market over the same span:",
             "",
         ]
-        for cell in stopped:
-            last = cell["years"][-1]
+        for cell, last in stopped:
             lines.append(
                 f"- {cell['cell']['id']} stopped at {_when(cell['stop_ms'])}: {last['year']} to "
                 f"the stop {_pct(last['return'])}; BTC {_pct(last['btc_return'])}, median coin "

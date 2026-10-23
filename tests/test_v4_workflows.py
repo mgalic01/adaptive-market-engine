@@ -218,7 +218,7 @@ DIAGNOSE = (
 )
 DATA_RUN_CHECK = (
     'gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" '
-    '| python scripts/v4_cells_guard.py --data-run "$RUN_ID"'
+    '| python scripts/v4_cells_guard.py --data-run "$RUN_ID" --commit "$COMMIT"'
 )
 
 
@@ -301,8 +301,10 @@ def test_cells_workflow_checks_the_data_run_before_downloading_it():
     """M2 of the final review: before plan downloads the data run's artifact, it asks the GitHub
     API for that run and refuses it unless it is a successful run of the v4-data workflow's full
     stage with the pre-2025 config (``v4_cells_guard.check_data_run``, tested on JSON in
-    ``tests/test_v4_cells_guard.py``). The run's JSON goes from ``gh api`` straight into the
-    check, through environment variables only, and the id is the plan step's validated one."""
+    ``tests/test_v4_cells_guard.py``), made from this run's own commit (Codex P2 on #294:
+    ``github.sha``, so the same data code made the packs). The run's JSON goes from ``gh api``
+    straight into the check, through environment variables only, and the id is the plan step's
+    validated one."""
     steps = cell_steps("plan")
     check = index_of_run("plan", "v4_cells_guard.py --data-run")
     assert run_text(steps[check]) == DATA_RUN_CHECK
@@ -310,6 +312,7 @@ def test_cells_workflow_checks_the_data_run_before_downloading_it():
         "GH_TOKEN": "${{ github.token }}",
         "REPOSITORY": "${{ github.repository }}",
         "RUN_ID": "${{ steps.plan.outputs.data_run }}",
+        "COMMIT": "${{ github.sha }}",
     }
     assert "if" not in steps[check]
     names = [step.get("with", {}).get("name") for step in steps]
@@ -319,9 +322,10 @@ def test_cells_workflow_checks_the_data_run_before_downloading_it():
         assert not any("guard.py --data-run" in run_text(step) for step in cell_steps(job)), job
     # The command line is one the guard's own parser reads as the data-run check.
     command = run_text(steps[check]).split("| python scripts/v4_cells_guard.py ", 1)[1]
-    words = [{"$RUN_ID": "18734501234"}.get(w, w) for w in shlex.split(command)]
+    values = {"$RUN_ID": "18734501234", "$COMMIT": "c" * 40}
+    words = [values.get(w, w) for w in shlex.split(command)]
     args = v4_cells_guard.build_parser().parse_args(words)
-    assert (args.data_run, args.data) == ("18734501234", None)
+    assert (args.data_run, args.commit, args.data) == ("18734501234", "c" * 40, None)
     # The data workflow's run name is the one the check requires of the data run.
     assert workflow()["run-name"] == "v4-data ${{ inputs.stage }} ${{ inputs.config }}"
     assert v4_cells_guard.DATA_RUN_TITLE.split(" ") == ["v4-data", "full", PRE2025]
@@ -606,8 +610,10 @@ def test_cells_workflow_logs_counts_only():
 
 def test_cells_workflow_header_says_what_the_run_depends_on():
     header = CELLS_WORKFLOW.read_text(encoding="utf-8").split("\non:\n")[0]
-    # The data artifact is kept one day, so a cells run must start within a day of its data run.
+    # The data artifact is kept one day, so a cells run must start within a day of its data run,
+    # and the data run must be of the cells run's own commit.
     assert "24 hours" in header
+    assert "same commit as this run" in header
     # The reserved window.
     assert "v4-d03" in header and "2024-12" in header and "2025-01" in header
     # No market-data request, which is not "no network request": checkout, pip and the artifact
