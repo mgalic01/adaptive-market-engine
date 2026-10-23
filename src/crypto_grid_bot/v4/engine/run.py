@@ -375,8 +375,8 @@ class CellResult:
 
 def run_v4_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     """Replay one V4 cell over ``market`` into ``out_dir`` (module docstring) and return its
-    result. A hold arm, or an ``out_dir`` that already holds a cell's files, is a ValueError and
-    nothing is written."""
+    result. A hold arm, an arm whose rule the loop does not read yet, or an ``out_dir`` that
+    already holds a cell's files, is a ValueError and nothing is written."""
     if not isinstance(market, Market):
         raise ValueError(f"a Market is required, got {market!r:.60}")
     if not isinstance(cell, CellSpec):
@@ -384,6 +384,10 @@ def run_v4_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     arm = ARMS[cell.arm]
     if arm.family != "v4" or arm.vol_target is None or arm.lookbacks is None:
         raise ValueError(f"{cell.arm} is not a V4 arm; the hold arms have their own loop")
+    # v4-d22's two rules are registered before the loop reads them (Tasks 2 and 3 of the arms
+    # plan): run as the main arm they would be a mislabelled cell, so they are refused.
+    if arm.short_filter is not None or arm.confirm_readings is not None:
+        raise ValueError(f"{cell.arm} is not run yet: the engine does not read its rule")
     return _run(_V4Cell(market, cell, arm, arm.vol_target, arm.lookbacks), Path(out_dir))
 
 

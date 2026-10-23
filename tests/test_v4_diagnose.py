@@ -68,7 +68,7 @@ from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.combined.artifacts import _canonical
 from crypto_grid_bot.trend.metrics import maximum_drawdown
 from crypto_grid_bot.v4.engine import hold, run
-from crypto_grid_bot.v4.engine.arms import ARMS, CellSpec
+from crypto_grid_bot.v4.engine.arms import ARMS, DIAGNOSTIC_ARMS, CellSpec
 from crypto_grid_bot.v4.engine.ledger import Audit
 from crypto_grid_bot.v4.engine.market import Market
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal
@@ -207,8 +207,8 @@ def run_main(module: Any, argv: Sequence[str]) -> tuple[int, str, str]:
 
 
 # What a dispatch with the default arms plans at the module's capital and cost (the plan job's
-# cell_ids): every arm of ARMS, of which the module's world runs two.
-PLANNED_ALL = ",".join(CellSpec(arm, CAPITAL, COSTS).cell_id for arm in ARMS)
+# cell_ids): every diagnostic arm, of which the module's world runs two.
+PLANNED_ALL = ",".join(CellSpec(arm, CAPITAL, COSTS).cell_id for arm in DIAGNOSTIC_ARMS)
 
 
 def diagnose_argv(data: Path, cells: Path, out: Path, planned: str = PLANNED_ALL) -> list[str]:
@@ -1696,7 +1696,7 @@ def test_diagnosis_json_holds_exact_strings_and_the_timing(diagnosis, world_dir,
         )
         assert entry["receipt_sha256"] == summary["receipt_sha256"]
     # The stray folder has no summary.json; the six other arms have no cell at 10000 and 1x.
-    others = [arm for arm in ARMS if arm not in ARMS_RUN]
+    others = [arm for arm in DIAGNOSTIC_ARMS if arm not in ARMS_RUN]
     assert document["missing"] == {
         "folders_without_summary": ["stray"],
         "refused": [],
@@ -1762,7 +1762,7 @@ def test_markdown_has_the_regime_then_each_cell_years_months_and_breakdowns(diag
     assert "or a futures funding month is incomplete" not in penalty
     missing = text[order[3] : order[4]]
     assert "- `stray`" in missing
-    for arm in ARMS:
+    for arm in DIAGNOSTIC_ARMS:
         cell = CellSpec(arm, CAPITAL, COSTS).cell_id
         assert (f"- {cell}\n" in missing) == (arm not in ARMS_RUN), cell
     assert "| BTC volatility (30 days, annualised) |" in text
@@ -2152,14 +2152,21 @@ def test_the_headline_names_the_losing_years(diagnosis):
 
 def test_each_arm_is_described_from_its_own_figures():
     """Every arm's line comes from ``arms.ARMS``: its volatility target, its sides and its trend
-    windows (shorter or longer than the main ones), or what a hold arm holds; a changed figure
-    changes the line."""
+    windows (shorter or longer than the main ones), its extra rule, or what a hold arm or V3's
+    arm holds; a changed figure changes the line."""
     for name, spec in ARMS.items():
         line = v4_diagnose.describe_arm(spec, 10)
-        if spec.family == "hold":
+        if spec.family == "v3":
+            assert "V3's walk-forward selector, unchanged, on its own coins" in line
+            continue
+        if spec.family == "hold" and name != "hold_btc_trend":
             assert "no signal, spot only: 99% of the account" in line
             assert ("BTCUSDT" in line) == (name == "hold_btc")
             assert ("at most 10" in line) == (name == "hold_universe")
+            continue
+        if spec.family == "hold":
+            assert "BTCUSDT while its daily close is above its 200-day average, else cash" in line
+            assert "spot only" in line
             continue
         assert spec.vol_target is not None and spec.lookbacks is not None
         with localcontext(CONTEXT):
@@ -2171,11 +2178,27 @@ def test_each_arm_is_described_from_its_own_figures():
         assert ("long only" in line) == spec.long_only
         assert ("shorter trend windows" in line) == (name == "v4_faster")
         assert ("longer trend windows" in line) == (name == "v4_slower")
+        assert ("short only while BTC is below its 200-day average" in line) == (
+            name == "v4_btc200_shorts"
+        )
+        assert ("acts on a new direction only after 3 days in a row" in line) == (
+            name == "v4_confirm3"
+        )
     assert "40% volatility target" in v4_diagnose.describe_arm(ARMS["v4_main"], 10)
     assert "25% volatility" in v4_diagnose.describe_arm(ARMS["v4_vol25"], 10)
     assert "60% volatility" in v4_diagnose.describe_arm(ARMS["v4_vol60"], 10)
     changed = dataclasses.replace(ARMS["v4_main"], vol_target=D("0.33"))
     assert "33% volatility target" in v4_diagnose.describe_arm(changed, 10)
+    # The two extra rules read their figures from the arm: the filter's average is its slow
+    # lookback, and the confirmation is its count of readings.
+    slower = dataclasses.replace(ARMS["v4_btc200_shorts"], lookbacks=ARMS["v4_slower"].lookbacks)
+    assert "short only while BTC is below its 250-day average" in v4_diagnose.describe_arm(
+        slower, 10
+    )
+    five = dataclasses.replace(ARMS["v4_confirm3"], confirm_readings=5)
+    assert "acts on a new direction only after 5 days in a row" in v4_diagnose.describe_arm(
+        five, 10
+    )
 
 
 def test_the_month_and_year_tables_show_btc_beside_the_bot(diagnosis):
@@ -2380,7 +2403,7 @@ def test_a_cell_the_dispatch_did_not_plan_is_refused_alone(
 
 @pytest.mark.parametrize(
     "planned",
-    ["", "v4_main-10000-1x,", "v4_main-10000-1x,v4_main-10000-1x", "hold_btc_trend-10000-1x"],
+    ["", "v4_main-10000-1x,", "v4_main-10000-1x,v4_main-10000-1x", "v4_unknown-10000-1x"],
     ids=["empty", "empty-item", "repeated", "unknown"],
 )
 def test_a_planned_list_that_is_not_cell_ids_is_refused(world_dir, cells_dir, tmp_path, planned):

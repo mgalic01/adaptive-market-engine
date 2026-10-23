@@ -1,8 +1,8 @@
-"""V4 engine task 1: the eight arms, the 32 cells, the cost profile and the exact number helpers."""
+"""V4 engine task 1: the 12 arms, the 48 cells, the cost profile and the exact number helpers."""
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from decimal import ROUND_HALF_EVEN, Decimal
 from fractions import Fraction
 from typing import Any
@@ -11,7 +11,14 @@ import pytest
 
 from crypto_grid_bot.combined.decisions import Costs
 from crypto_grid_bot.v4.engine import arms
-from crypto_grid_bot.v4.engine.arms import ARMS, ArmSpec, CellSpec, Lookbacks, all_cells
+from crypto_grid_bot.v4.engine.arms import (
+    ARMS,
+    DIAGNOSTIC_ARMS,
+    ArmSpec,
+    CellSpec,
+    Lookbacks,
+    all_cells,
+)
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
 
 ARM_NAMES = (
@@ -21,8 +28,12 @@ ARM_NAMES = (
     "v4_vol60",
     "v4_faster",
     "v4_slower",
+    "v4_btc200_shorts",
+    "v4_confirm3",
     "hold_universe",
     "hold_btc",
+    "hold_btc_trend",
+    "v3_as_built",
 )
 
 
@@ -41,10 +52,53 @@ def _tuple(lookbacks: Lookbacks | None) -> tuple[int, ...]:
     )
 
 
-def test_the_arms_are_the_eight_of_the_spec_in_order() -> None:
-    assert tuple(ARMS) == ARM_NAMES
+def test_arms_are_the_twelve_of_the_run_in_order() -> None:
+    assert list(ARMS) == list(ARM_NAMES)
+    assert len(ARMS) == 12 and len(all_cells()) == 48
     assert all(spec.name == name for name, spec in ARMS.items())
-    assert [spec.family for spec in ARMS.values()] == ["v4"] * 6 + ["hold"] * 2
+    assert [spec.family for spec in ARMS.values()] == ["v4"] * 8 + ["hold"] * 3 + ["v3"]
+
+
+def test_the_diagnostic_arms_are_the_eight_of_step_3_in_the_runs_order() -> None:
+    assert DIAGNOSTIC_ARMS == (
+        "v4_main",
+        "v4_long_only",
+        "v4_vol25",
+        "v4_vol60",
+        "v4_faster",
+        "v4_slower",
+        "hold_universe",
+        "hold_btc",
+    )
+    assert [name for name in ARMS if name in DIAGNOSTIC_ARMS] == list(DIAGNOSTIC_ARMS)
+
+
+def test_the_new_trend_arms_are_the_main_arm_plus_one_rule() -> None:
+    main = ARMS["v4_main"]
+    assert (main.short_filter, main.confirm_readings) == (None, None)
+    shorts, confirm = ARMS["v4_btc200_shorts"], ARMS["v4_confirm3"]
+    assert shorts == replace(main, name="v4_btc200_shorts", short_filter="btc_sma200")
+    assert confirm == replace(main, name="v4_confirm3", confirm_readings=3)
+    assert (shorts.short_filter, shorts.confirm_readings) == ("btc_sma200", None)
+    assert (confirm.short_filter, confirm.confirm_readings) == (None, 3)
+    # No other arm carries either rule.
+    for name, spec in ARMS.items():
+        if name not in ("v4_btc200_shorts", "v4_confirm3"):
+            assert (spec.short_filter, spec.confirm_readings) == (None, None), name
+
+
+def test_hold_btc_trend_is_a_hold_arm() -> None:
+    spec = ARMS["hold_btc_trend"]
+    assert spec.family == "hold"
+    assert spec.vol_target is None and spec.lookbacks is None
+    assert (spec.long_only, spec.short_filter, spec.confirm_readings) == (False, None, None)
+
+
+def test_v3_as_built_is_the_v3_family() -> None:
+    spec = ARMS["v3_as_built"]
+    assert spec.family == "v3"
+    assert spec.vol_target is None and spec.lookbacks is None
+    assert (spec.long_only, spec.short_filter, spec.confirm_readings) == (False, None, None)
 
 
 def test_main_lookbacks_are_the_specs() -> None:
@@ -100,12 +154,12 @@ def test_cells_are_two_capitals_by_two_cost_levels() -> None:
         for capital in (1000, 10000)
         for multiple in (1, 2)
     ]
-    assert len(expected) == 32
+    assert len(expected) == 48
     assert [cell.cell_id for cell in cells] == expected
-    assert len(set(expected)) == 32
+    assert len(set(expected)) == 48
     assert cells[0].cell_id == "v4_main-1000-1x"
     assert cells[3].cell_id == "v4_main-10000-2x"
-    assert cells[-1].cell_id == "hold_btc-10000-2x"
+    assert cells[-1].cell_id == "v3_as_built-10000-2x"
     assert CellSpec("v4_main", 10000, 1).cell_id == "v4_main-10000-1x"
     assert CellSpec("hold_universe", 1000, 2) in cells
 
@@ -119,7 +173,7 @@ def test_cell_spec_is_frozen() -> None:
 @pytest.mark.parametrize(
     ("arm", "capital", "multiple"),
     [
-        ("v3_as_built", 10000, 1),  # out of scope for the engine
+        ("v5_main", 10000, 1),  # not an arm of the run
         ("", 10000, 1),
         ("V4_MAIN", 10000, 1),
         ("v4_main", 5000, 1),

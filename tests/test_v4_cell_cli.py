@@ -80,7 +80,7 @@ from v4_synthetic import (
 from crypto_grid_bot.combined.execution import VenueRules
 from crypto_grid_bot.v4.data.pack import coin_pack_file
 from crypto_grid_bot.v4.engine import hold, run
-from crypto_grid_bot.v4.engine.arms import ARMS, CellSpec
+from crypto_grid_bot.v4.engine.arms import ARMS, DIAGNOSTIC_ARMS, CellSpec
 from crypto_grid_bot.v4.engine.market import Market
 from crypto_grid_bot.v4.engine.records import Receipt, read_receipt, read_records
 from crypto_grid_bot.v4.engine.safety import ceiling_factor, penalised_price
@@ -254,15 +254,15 @@ def market(world_dir) -> Market:
 
 @pytest.fixture(scope="module")
 def cells(world_dir, tmp_path_factory) -> dict[str, CellRun]:
-    """Every arm of the world at one capital and cost level, each through the CLI into one
-    shared ``out`` folder, run once for the tests that read them."""
+    """Every diagnostic arm of the world at one capital and cost level, each through the CLI into
+    one shared ``out`` folder, run once for the tests that read them."""
     out = tmp_path_factory.mktemp("cli-cells") / "out"
     runs: dict[str, CellRun] = {}
     with pytest.MonkeyPatch.context() as patch:
         # The autouse block is per test; this module-wide run blocks the network itself.
         for owner, name in _SOCKET_CALLS:
             patch.setattr(owner, name, _refuse)
-        for arm in ARMS:
+        for arm in DIAGNOSTIC_ARMS:
             code, stdout, stderr = run_cli(cell_argv(world_dir, out, arm))
             folder = out / CellSpec(arm, CAPITAL, COSTS).cell_id
             runs[arm] = read_cell(code, stdout, stderr, folder)
@@ -342,7 +342,7 @@ def test_cli_runs_every_arm_on_the_synthetic_world(world_dir, cells):
         "index_sha256": pins["hourly_index"]["sha256"],
     }
     window = list(range(WINDOW_START, LAST_HOUR + HOUR, HOUR))
-    assert set(cells) == set(ARMS) and len(cells) == 8
+    assert set(cells) == set(DIAGNOSTIC_ARMS) and len(cells) == 8
     for arm, cell in cells.items():
         spec = CellSpec(arm, CAPITAL, COSTS)
         assert (cell.code, cell.stderr) == (0, ""), arm
@@ -504,8 +504,8 @@ def test_the_world_keeps_trading_when_a_universe_coin_dies(cells):
     book; every V4 arm keeps sizing instead, and BTCUSDT's short and ETHUSDT's long keep their
     targets to the month's end."""
     late = range(JAN + 26 * DAY, FEB, DAY)  # the decisions of January 27 to 31
-    for arm, spec in ARMS.items():
-        if spec.family != "v4":
+    for arm in DIAGNOSTIC_ARMS:
+        if ARMS[arm].family != "v4":
             continue
         rows = cells[arm].rows
         luna = {r["decision_ms"]: r for r in of_kind(rows, "daily_coin") if r["coin"] == "LUNAUSDT"}
@@ -762,7 +762,7 @@ def test_cli_refuses_a_cell_directory_that_already_holds_outputs(existing, tmp_p
 
 @pytest.mark.parametrize(
     ("change", "value"),
-    [("--capital", "5000"), ("--costs", "3"), ("--arm", "v3_as_built"), ("--capital", "1e4")],
+    [("--capital", "5000"), ("--costs", "3"), ("--arm", "v5_main"), ("--capital", "1e4")],
 )
 def test_cli_refuses_bad_arguments_with_argparse_exit_code(change, value, tmp_path):
     """A capital, cost multiple or arm outside the run's is argparse's error: exit code 2, and
@@ -773,6 +773,32 @@ def test_cli_refuses_bad_arguments_with_argparse_exit_code(change, value, tmp_pa
         v4_cell.main(argv)
     assert stopped.value.code == 2
     assert not (tmp_path / "out").exists()
+
+
+def test_cli_refuses_v3_as_built_on_v4_packs(tmp_path):
+    """V3's arm is a run arm but not an engine one: it runs through its own CLI, on its own pack.
+    Here it is refused with exit code 1 and one fixed line, before the data directory is read
+    (the one given does not exist), and nothing is written."""
+    code, stdout, stderr = run_cli(cell_argv(tmp_path / "missing", tmp_path / "out", "v3_as_built"))
+
+    assert (code, stdout) == (1, "")
+    assert stderr == "v4_cell run: the v3_as_built arm runs through scripts/v4_v3_cell.py\n"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("arm", ["v4_btc200_shorts", "v4_confirm3", "hold_btc_trend"])
+def test_cli_refuses_the_new_arms_until_the_engine_runs_them(arm, tmp_path):
+    """The registry lists the three new engine arms before the engine can run them (Tasks 2 to 4
+    of the arms plan): their runners refuse with a ValueError before they write anything, and
+    the CLI reports it as a failure outside the replay's loop, with exit code 1 and no files."""
+    data = write_world(tmp_path / "world", tiny_world())
+
+    code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out", arm))
+
+    assert (code, stdout) == (1, "")
+    cell_id = CellSpec(arm, CAPITAL, COSTS).cell_id
+    assert stderr == f"v4_cell run: {cell_id}: the replay failed outside its loop: ValueError\n"
+    assert not (tmp_path / "out" / cell_id).exists()
 
 
 @pytest.mark.parametrize(

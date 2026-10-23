@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 import yaml
 
-from crypto_grid_bot.v4.engine.arms import ARMS
+from crypto_grid_bot.v4.engine.arms import DIAGNOSTIC_ARMS
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -352,8 +352,9 @@ def test_cells_workflow_inputs():
     for spec in inputs.values():
         assert spec["type"] == "string" and spec["required"] is True
     assert "default" not in inputs["data_run"]
-    # All eight arms of the engine by default, in the run's order.
-    assert inputs["arms"]["default"] == ",".join(ARMS)
+    # The eight diagnostic arms by default, in the run's order: the arms only the registered run
+    # adds (v4-d22) are not dispatched here.
+    assert inputs["arms"]["default"] == ",".join(DIAGNOSTIC_ARMS)
     assert inputs["capitals"]["default"] == "10000"
     assert inputs["costs"]["default"] == "1"
     # The defaults are a plan the plan script accepts.

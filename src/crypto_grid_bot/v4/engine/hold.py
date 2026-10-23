@@ -117,14 +117,18 @@ _TRUNCATE = Context(prec=CONTEXT.prec, rounding=ROUND_DOWN)
 
 def run_hold_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     """Replay one hold cell over ``market`` into ``out_dir`` (module docstring) and return its
-    result, as ``run_v4_cell`` does for a V4 cell. A V4 arm, or an ``out_dir`` that already holds
-    a cell's files, is a ValueError and nothing is written."""
+    result, as ``run_v4_cell`` does for a V4 cell. A V4 arm, ``hold_btc_trend`` (not run yet), or
+    an ``out_dir`` that already holds a cell's files, is a ValueError and nothing is written."""
     if not isinstance(market, Market):
         raise ValueError(f"a Market is required, got {market!r:.60}")
     if not isinstance(cell, CellSpec):
         raise ValueError(f"a CellSpec is required, got {cell!r:.60}")
     if ARMS[cell.arm].family != "hold":
         raise ValueError(f"{cell.arm} is not a hold arm; the V4 arms run in run.py")
+    # Registered before its loop exists (Task 4 of the arms plan): run as hold_universe it would
+    # be a mislabelled cell, so it is refused.
+    if cell.arm == "hold_btc_trend":
+        raise ValueError(f"{cell.arm} is not run yet: the engine has no trend hold")
     only = HOLD_BTC_COIN if cell.arm == "hold_btc" else None
     return _run(_HoldCell(market, cell, only), Path(out_dir))
 
