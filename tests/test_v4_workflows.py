@@ -14,14 +14,25 @@ one-day retention of every upload, the pinned actions, the way each input reache
 (through the environment, never expanded into a script), the shape of the jobs, and the timing
 and upload of a diagnosis that refused a cell.
 
+``.github/workflows/v4-v3.yml`` runs the ``v3_as_built`` arm on GitHub: the ``pack`` job rebuilds
+V3's input pack, the ``picks`` job trains V3's selector once on it, and the ``cells`` job replays
+the four cells (capital 1000 and 10000, cost multiple 1 and 2) under GNU time. Its tests pin that
+it is dispatch-only and read-only, installs as the data workflow does, takes no input, passes
+every value to a script through the environment, pairs the pack's pin (a constant, the one of
+V3.1's manifest) with the picks' pin (the picks job's output, computed from the file it wrote),
+keeps a refused pin from ever uploading, and keeps what it makes for one day.
+
 The tests parse the YAML and never call GitHub.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shlex
+import shutil
+import subprocess  # nosec B404: the tests run the workflow's own steps in bash
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +41,8 @@ from typing import Any
 import pytest
 import yaml
 
-from crypto_grid_bot.v4.engine.arms import ARMS
+from crypto_grid_bot.v4.engine.arms import CAPITALS, COST_MULTIPLES, DIAGNOSTIC_ARMS, CellSpec
+from crypto_grid_bot.v4.engine.v3_as_built import PICKS_FILE, V3_ARM
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -40,6 +52,8 @@ import v4_cells_plan  # noqa: E402
 import v4_cells_timing  # noqa: E402
 import v4_data  # noqa: E402
 import v4_data_month_guard  # noqa: E402
+import v4_v3_cell  # noqa: E402
+import v4_v3_pack  # noqa: E402
 
 DATA_WORKFLOW = ROOT / ".github" / "workflows" / "v4-data.yml"
 FULL = "config/v4_data.json"
@@ -352,8 +366,9 @@ def test_cells_workflow_inputs():
     for spec in inputs.values():
         assert spec["type"] == "string" and spec["required"] is True
     assert "default" not in inputs["data_run"]
-    # All eight arms of the engine by default, in the run's order.
-    assert inputs["arms"]["default"] == ",".join(ARMS)
+    # The eight diagnostic arms by default, in the run's order: the arms only the registered run
+    # adds (v4-d22) are not dispatched here.
+    assert inputs["arms"]["default"] == ",".join(DIAGNOSTIC_ARMS)
     assert inputs["capitals"]["default"] == "10000"
     assert inputs["costs"]["default"] == "1"
     # The defaults are a plan the plan script accepts.
@@ -620,3 +635,409 @@ def test_cells_workflow_header_says_what_the_run_depends_on():
     # downloads are network requests.
     assert "no market-data request" in header
     assert "no network request" not in header
+
+
+# ---- the v4-v3 workflow ----
+
+V3_WORKFLOW = ROOT / ".github" / "workflows" / "v4-v3.yml"
+# The steps every job of the data workflow starts with: checkout, setup-python, three installs.
+SETUP_STEPS = 5
+
+
+def v3_workflow() -> dict[str, Any]:
+    document = yaml.safe_load(V3_WORKFLOW.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+def test_v4_v3_workflow_pack_job():
+    document = v3_workflow()
+    # Dispatch only, and no input: the pack is one fixed thing, so nothing reaches a script.
+    assert list(document[True]) == ["workflow_dispatch"]
+    assert not (document[True]["workflow_dispatch"] or {}).get("inputs")
+    assert document["permissions"] == {"contents": "read"}
+
+    job = document["jobs"]["pack"]
+    assert "permissions" not in job and job["runs-on"] == "ubuntu-latest"
+    steps = job["steps"]
+
+    # It checks out without keeping the token, sets up Python 3.12 and installs exactly as the
+    # data workflow's jobs do (the same SHA-pinned actions, the same pip cache, the same locks).
+    checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkouts) == 1 and checkouts[0]["with"] == {"persist-credentials": False}
+    data_steps = yaml.safe_load(DATA_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["discover"][
+        "steps"
+    ]
+    assert steps[:SETUP_STEPS] == data_steps[:SETUP_STEPS]
+    assert steps[1]["with"]["python-version"] == "3.12"
+
+    # It runs the pack script on the two folders, and only that.
+    scripts = [run_text(s) for s in steps if "scripts/" in str(s.get("run", ""))]
+    assert scripts == ["python scripts/v4_v3_pack.py --work work --out out"]
+
+    # It uploads out/ as v4-v3-pack, kept one day, and fails when there is nothing to upload.
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith(UPLOAD)]
+    assert steps.index(upload) > max(
+        i for i, s in enumerate(steps) if "scripts/" in str(s.get("run", ""))
+    )
+    assert upload["with"]["name"] == "v4-v3-pack"
+    assert upload["with"]["path"] == "out/"
+    assert upload["with"]["retention-days"] == 1
+    assert upload["with"]["if-no-files-found"] == "error"
+
+
+def test_v4_v3_workflow_pins_every_action_as_the_data_workflow_does():
+    data_text = DATA_WORKFLOW.read_text(encoding="utf-8")
+    known = dict(re.findall(r"uses: ([\w./-]+)@([0-9a-f]{40})", data_text))
+    used = [
+        str(step["uses"])
+        for job in v3_workflow()["jobs"].values()
+        for step in job["steps"]
+        if "uses" in step
+    ]
+    assert used
+    for uses in used:
+        match = PINNED.match(uses)
+        assert match is not None, uses
+        assert known[match["action"]] == match["sha"], uses
+
+
+def test_v4_v3_workflow_never_expands_an_expression_into_a_script():
+    for job, body in v3_workflow()["jobs"].items():
+        for step in body["steps"]:
+            assert "${{" not in str(step.get("run", "")), (job, step)
+
+
+def test_v4_v3_workflow_keeps_every_upload_one_day_and_checks_out_without_credentials():
+    for job, body in v3_workflow()["jobs"].items():
+        steps = body["steps"]
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if uses.startswith(UPLOAD):
+                assert step["with"]["retention-days"] == 1, job
+                assert step["with"]["if-no-files-found"] == "error", job
+            if uses.startswith("actions/checkout@"):
+                assert step["with"] == {"persist-credentials": False}, job
+
+
+# ---- the v4-v3 workflow's picks and cells jobs ----
+
+# V3.1's registered pack pin, in the workflow's environment (see the pin test below).
+PACK_PIN = v4_v3_pack.EXPECTED_PACK_SHA256
+PACK_PATH = f"v3pack/{v4_v3_pack.PACK_FILE}"
+PICKS_PATH = f"picks/{PICKS_FILE}"
+V3_PICKS = (
+    f'python scripts/v4_v3_cell.py picks --pack {PACK_PATH} --pack-sha256 "$V3_PACK_SHA256" '
+    "--out picks"
+)
+V3_TIMED = '/usr/bin/time -v -o "out/$CELL.time" '
+V3_CELL_RUN = (
+    f'python scripts/v4_v3_cell.py run --pack {PACK_PATH} --pack-sha256 "$V3_PACK_SHA256" '
+    f'--picks {PICKS_PATH} --picks-sha256 "$PICKS_SHA256" '
+    '--capital "$CAPITAL" --costs "$COSTS" --out out > /dev/null'
+)
+# The cells job's upload runs after a failed timing step, as in the diagnostic run's cell job.
+V3_UPLOAD_CONDITION = UPLOAD_CONDITION
+
+
+def v3_steps(job: str) -> list[dict[str, Any]]:
+    steps = v3_workflow()["jobs"][job]["steps"]
+    assert isinstance(steps, list)
+    return steps
+
+
+def v3_index(job: str, needle: str) -> int:
+    """The position of the one step of ``job`` whose script holds ``needle``."""
+    found = [i for i, step in enumerate(v3_steps(job)) if needle in run_text(step)]
+    assert len(found) == 1, (job, needle, found)
+    return found[0]
+
+
+def v3_downloads(job: str) -> list[dict[str, Any]]:
+    return [s["with"] for s in v3_steps(job) if str(s.get("uses", "")).startswith(DOWNLOAD)]
+
+
+def v3_code() -> str:
+    """The workflow's text without its comment lines."""
+    text = V3_WORKFLOW.read_text(encoding="utf-8")
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def real_bash() -> str:
+    shell = (
+        str(Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Git/bin/bash.exe")
+        if os.name == "nt"
+        else shutil.which("bash")
+    )
+    assert shell and Path(shell).is_file(), "Git Bash (Windows) or bash is required"
+    return shell
+
+
+def run_v3_step(
+    step: dict[str, Any], cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """The step's script as GitHub runs a bash step (``-e -o pipefail``) in ``cwd``."""
+    return subprocess.run(
+        [real_bash(), "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=cwd,
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_v4_v3_workflow_job_graph_and_timeouts():
+    document = v3_workflow()
+    jobs = document["jobs"]
+    assert list(jobs) == ["pack", "picks", "cells"]
+    assert jobs["pack"]["timeout-minutes"] == 180
+    assert jobs["picks"]["needs"] == "pack" and jobs["picks"]["timeout-minutes"] == 300
+    # The cells download both artifacts: they come after the pack and the picks.
+    assert jobs["cells"]["needs"] == ["pack", "picks"] and jobs["cells"]["timeout-minutes"] == 60
+    assert document["permissions"] == {"contents": "read"}
+    data_steps = yaml.safe_load(DATA_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["discover"][
+        "steps"
+    ]
+    for name in ("picks", "cells"):
+        job = jobs[name]
+        # Read-only, like every job here; no job condition: a failed job skips the ones after it.
+        assert "permissions" not in job and "if" not in job, name
+        assert job["runs-on"] == "ubuntu-latest", name
+        assert job["steps"][:SETUP_STEPS] == data_steps[:SETUP_STEPS], name
+
+
+def test_v4_v3_workflow_pack_pin_is_v31s_registered_one():
+    # The pack's pin is a constant of the workflow, never an input and never read from the pack
+    # job's own file: it is the pin of V3.1's run manifest and of scripts/v4_v3_pack.py, so the
+    # picks and cell jobs check the downloaded pack against the registered pin.
+    manifest = yaml.safe_load((ROOT / "config" / "v3_1_run_manifest.json").read_text("utf-8"))
+    assert manifest["v3_pack_sha256"] == PACK_PIN
+    assert v3_workflow()["env"] == {"V3_PACK_SHA256": PACK_PIN}
+    assert v3_code().count(PACK_PIN) == 1
+
+
+def test_v4_v3_workflow_picks_job():
+    job = v3_workflow()["jobs"]["picks"]
+    steps = job["steps"]
+
+    # The pack job's artifact, of this run, into v3pack/.
+    assert v3_downloads("picks") == [{"name": "v4-v3-pack", "path": "v3pack"}]
+    download = next(i for i, s in enumerate(steps) if "download-artifact" in str(s.get("uses")))
+    picks = v3_index("picks", "scripts/v4_v3_cell.py")
+    pin = v3_index("picks", "GITHUB_OUTPUT")
+    (upload,) = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(UPLOAD)]
+    assert SETUP_STEPS <= download < picks < pin < upload == len(steps) - 1
+
+    # The picks command, read by the real parser: the pack and its registered pin, the folder.
+    assert run_text(steps[picks]) == V3_PICKS
+    command = run_text(steps[picks])
+    values = {"$V3_PACK_SHA256": PACK_PIN}
+    words = [values.get(word, word) for word in shlex.split(command)[2:]]
+    args = v4_v3_cell.build_parser().parse_args(words)
+    assert (args.command, args.pack, args.pack_sha256, args.out) == (
+        "picks",
+        Path(PACK_PATH),
+        PACK_PIN,
+        Path("picks"),
+    )
+
+    # The picks' pin is the job's output, computed from the file the script wrote.
+    assert steps[pin]["id"] == "pin"
+    assert job["outputs"] == {"picks_sha256": "${{ steps.pin.outputs.picks_sha256 }}"}
+    assert f"sha256sum {PICKS_PATH}" in run_text(steps[pin])
+
+    # The picks folder, which holds the picks file alone, is the artifact.
+    assert steps[upload]["with"] == {
+        "name": "v4-v3-picks",
+        "path": "picks/",
+        "if-no-files-found": "error",
+        "retention-days": 1,
+        "overwrite": True,
+    }
+
+
+def test_v4_v3_workflow_the_picks_pin_reaches_the_cells_only_through_the_picks_output():
+    code = v3_code()
+    # No dispatch input exists, so no input can name a pin.
+    assert "inputs." not in code and "workflow_dispatch" in code
+    # The output name occurs in the picks job's output, the step that writes it, and the cells'
+    # environment, which reads it from the picks job: nowhere else.
+    assert code.count("needs.picks.outputs.picks_sha256") == 1
+    cells = v3_workflow()["jobs"]["cells"]
+    assert cells["env"]["PICKS_SHA256"] == "${{ needs.picks.outputs.picks_sha256 }}"
+    # The cell's command takes both pins from the environment.
+    run = run_text(cells["steps"][v3_index("cells", "scripts/v4_v3_cell.py")])
+    assert '--pack-sha256 "$V3_PACK_SHA256"' in run and '--picks-sha256 "$PICKS_SHA256"' in run
+
+
+def test_v4_v3_workflow_picks_output_step_writes_the_files_digest(tmp_path):
+    step = v3_steps("picks")[v3_index("picks", "GITHUB_OUTPUT")]
+    (tmp_path / "picks").mkdir()
+    raw = b'{"picks":{}}'
+    (tmp_path / PICKS_PATH).write_bytes(raw)
+    output = tmp_path / "github_output"
+    done = run_v3_step(step, tmp_path, {"GITHUB_OUTPUT": output.as_posix()})
+    assert done.returncode == 0, done.stderr
+    assert output.read_text(encoding="utf-8") == f"picks_sha256={hashlib.sha256(raw).hexdigest()}\n"
+    assert done.stdout == ""  # nothing to the public log from this step
+
+
+def test_v4_v3_workflow_picks_output_step_fails_without_the_file_and_writes_nothing(tmp_path):
+    step = v3_steps("picks")[v3_index("picks", "GITHUB_OUTPUT")]
+    output = tmp_path / "github_output"
+    done = run_v3_step(step, tmp_path, {"GITHUB_OUTPUT": output.as_posix()})
+    assert done.returncode != 0
+    assert not output.exists() or output.read_text(encoding="utf-8") == ""
+
+
+def test_v4_v3_workflow_cells_job_matrix_and_environment():
+    job = v3_workflow()["jobs"]["cells"]
+    assert job["name"] == "cell ${{ matrix.cell }}"
+    # The four cells of the arm, one job each, one failed cell leaving the others running.
+    expected = [
+        {"cell": CellSpec(V3_ARM, capital, costs).cell_id, "capital": capital, "costs": costs}
+        for capital in CAPITALS
+        for costs in COST_MULTIPLES
+    ]
+    assert len(expected) == 4
+    assert job["strategy"] == {"fail-fast": False, "matrix": {"include": expected}}
+    assert job["env"] == {
+        "CELL": "${{ matrix.cell }}",
+        "CAPITAL": "${{ matrix.capital }}",
+        "COSTS": "${{ matrix.costs }}",
+        "PICKS_SHA256": "${{ needs.picks.outputs.picks_sha256 }}",
+    }
+
+
+def test_v4_v3_workflow_cells_job_runs_one_cell_under_gnu_time():
+    steps = v3_steps("cells")
+    assert v3_downloads("cells") == [
+        {"name": "v4-v3-pack", "path": "v3pack"},
+        {"name": "v4-v3-picks", "path": "picks"},
+    ]
+    downloads_at = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(DOWNLOAD)]
+    verify = v3_index("cells", "sha256sum")
+    check = v3_index("cells", "-x /usr/bin/time")
+    replay = v3_index("cells", "scripts/v4_v3_cell.py")
+    timing = v3_index("cells", "scripts/v4_cells_timing.py")
+    (upload,) = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(UPLOAD)]
+    # Both artifacts, then the picks' pin check, then GNU time's check, the cell under it, the
+    # helper that reads time's file, and the upload last.
+    assert min(downloads_at) >= SETUP_STEPS and max(downloads_at) < verify < check < replay
+    assert replay < timing < upload == len(steps) - 1
+    assert "::error::" in run_text(steps[check]) and "exit 1" in run_text(steps[check])
+
+    run = run_text(steps[replay])
+    assert run.count(V3_TIMED) == 1 and run == f"mkdir -p out {V3_TIMED}{V3_CELL_RUN}"
+    command = run.split(V3_TIMED, 1)[1]
+    # The cell's own line holds its outcome, a result, so its standard output goes to /dev/null.
+    assert command.endswith(" > /dev/null") and command.count(">") == 1
+    command = command.removesuffix(" > /dev/null")
+    picks_pin = "ab" * 32
+    values = {
+        "$V3_PACK_SHA256": PACK_PIN,
+        "$PICKS_SHA256": picks_pin,
+        "$CAPITAL": "1000",
+        "$COSTS": "2",
+    }
+    words = [values.get(word, word) for word in shlex.split(command)[2:]]
+    args = v4_v3_cell.build_parser().parse_args(words)
+    assert (args.command, args.pack, args.pack_sha256) == ("run", Path(PACK_PATH), PACK_PIN)
+    assert (args.picks, args.picks_sha256) == (Path(PICKS_PATH), picks_pin)
+    assert (args.capital, args.costs, args.out) == (1000, 2, Path("out"))
+    assert steps[timing]["id"] == "timing"
+    assert run_text(steps[timing]) == (
+        'python scripts/v4_cells_timing.py --time-file "out/$CELL.time" --cell-dir "out/$CELL"'
+    )
+    parsed = v4_cells_timing.build_parser().parse_args(shlex.split(run_text(steps[timing]))[2:])
+    assert (parsed.time_file, parsed.cell_dir) == (Path("out/$CELL.time"), Path("out/$CELL"))
+
+    # The cell's folder is the artifact: kept after a failed timing step, not after a failed
+    # replay, which leaves the timing step skipped.
+    assert steps[upload]["if"] == V3_UPLOAD_CONDITION
+    assert steps[upload]["with"] == {
+        "name": "v4-cell-${{ matrix.cell }}",
+        "path": "out/${{ matrix.cell }}/",
+        "if-no-files-found": "error",
+        "retention-days": 1,
+        "overwrite": True,
+    }
+
+
+def test_v4_v3_workflow_cells_check_the_picks_file_against_the_picks_jobs_pin(tmp_path):
+    step = v3_steps("cells")[v3_index("cells", "sha256sum")]
+    text = run_text(step)
+    assert PICKS_PATH in text and '"$PICKS_SHA256"' in text
+    assert "::error::" in text and "exit 1" in text
+    (tmp_path / "picks").mkdir()
+    raw = b'{"picks":{}}'
+    (tmp_path / PICKS_PATH).write_bytes(raw)
+    right = hashlib.sha256(raw).hexdigest()
+
+    done = run_v3_step(step, tmp_path, {"PICKS_SHA256": right})
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "" and right not in done.stderr
+
+    for wrong in ("0" * 64, "", right.upper()):  # another digest, none (the output was empty)
+        done = run_v3_step(step, tmp_path, {"PICKS_SHA256": wrong})
+        assert done.returncode != 0 and "::error::" in done.stderr, wrong
+    (tmp_path / PICKS_PATH).unlink()  # no picks file at all
+    assert run_v3_step(step, tmp_path, {"PICKS_SHA256": right}).returncode != 0
+
+
+def test_v4_v3_workflow_a_refused_pin_never_uploads():
+    # Task 5's review: no step lets a failure through, and no upload carries a condition that
+    # would run it after a failed step, so a pack, picks or cell that failed uploads nothing.
+    code = v3_code()
+    assert "continue-on-error" not in code
+    for job, script in (("pack", "scripts/v4_v3_pack.py"), ("picks", "scripts/v4_v3_cell.py")):
+        steps = v3_steps(job)
+        (at,) = [i for i, s in enumerate(steps) if script in str(s.get("run", ""))]
+        assert "continue-on-error" not in steps[at] and "if" not in steps[at], job
+        (upload,) = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(UPLOAD)]
+        assert upload > at and "continue-on-error" not in steps[upload], job
+        assert steps[upload].get("if") in (None, "${{ success() }}"), job
+        for between in steps[at + 1 : upload]:  # nothing between them may be skipped over
+            assert "continue-on-error" not in between and "if" not in between, job
+    # The only step condition of the whole workflow is the cells' upload.
+    conditions = [
+        (job, str(step.get("uses", step.get("run"))).split("@")[0], step["if"])
+        for job, body in v3_workflow()["jobs"].items()
+        for step in body["steps"]
+        if "if" in step
+    ]
+    assert conditions == [("cells", "actions/upload-artifact", V3_UPLOAD_CONDITION)]
+
+
+def test_v4_v3_workflow_logs_counts_only():
+    # No step prints or searches a result file: the logs are public.
+    shown = re.compile(r"\b(cat|head|tail|less|more|jq|grep|sed|awk)\b")
+    for job, body in v3_workflow()["jobs"].items():
+        for step in body["steps"]:
+            text = run_text(step)
+            assert shown.search(text) is None, (job, text)
+            for name in ("records.jsonl", "summary.json", "receipt.json", "report.html"):
+                assert name not in text, (job, name)
+    # A cell's standard output, which holds its outcome, is the only redirect to /dev/null.
+    redirected = [
+        run_text(step)
+        for body in v3_workflow()["jobs"].values()
+        for step in body["steps"]
+        if "/dev/null" in run_text(step)
+    ]
+    assert len(redirected) == 1 and redirected[0].endswith(V3_CELL_RUN)
+
+
+def test_v4_v3_workflow_header_says_what_the_jobs_do():
+    header = V3_WORKFLOW.read_text(encoding="utf-8").split("\non:\n")[0]
+    for text in (
+        "- pack:",
+        "- picks (",
+        "- cells (",
+        "v4-v3-picks",
+        "picks_sha256",
+        "/dev/null",
+        "R4",
+    ):
+        assert text in header, text

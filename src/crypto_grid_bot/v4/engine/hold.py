@@ -1,12 +1,13 @@
-"""The two hold comparisons, ``hold_universe`` and ``hold_btc``: spot-only accounts that replay one
-cell over the same packs and window as the V4 arms, into the same records and ``CellResult``.
+"""The hold arms, ``hold_universe`` and ``hold_btc`` (the comparisons) and ``hold_btc_trend``
+(reported only, v4-d20): spot-only accounts that replay one cell over the same packs and window as
+the V4 arms, into the same records and ``CellResult``.
 
 Implements the spec's "Versions in the run" (the paragraph on the hold comparisons and its
-bullets), with the rules it names from the rest of the spec: "Account and execution" ("Timing",
-the cash clip's spot rule, "Exchange filters", "Reductions are never refused for size" and its
-dust rule, "Window end"), "Safety" ("Delisting or a dead market", accounting) and "Records". A
-hold arm has no signal and no futures, so it has no funding, no margin cushion, no 3x ceiling and
-no liquidation check.
+bullets, and "``hold_btc_trend``"), with the rules it names from the rest of the spec: "Account
+and execution" ("Timing", the cash clip's spot rule, "Exchange filters", "Reductions are never
+refused for size" and its dust rule, "Window end"), "Safety" ("Delisting or a dead market",
+accounting) and "Records". A hold arm has no futures, so it has no funding, no margin cushion, no
+3x ceiling and no liquidation check.
 
 **The account is run.py's ``_CellState``:** the ledger, the lifecycles, the pending book, the
 records, the synthetic closes, the open mark, the booking of a batch, the window-end close, the
@@ -20,14 +21,14 @@ hour follows the spec's order of events:
    futures maintenance, so on a cash and spot account it never stops the cell;
 2. the open mark, kept in ``open_marks`` (``_CellState._open_mark``), complete only when every
    leg held at it and every leg step 1 closed has its bar at the hour;
-3. at a month's first 00:00, the ``monthly`` record and the decision (below); then, every hour,
-   the cancels of a dead market without a close (``_CellState._dead_market_cancels``, Codex
-   review of PR #293): a coin whose order still waits, flat, while its spot market dies (a bar
-   once, none in the 168 hours before the hour) loses the order, recorded as ``order_cancelled``
-   with the reason ``dead market``, so the order never fills when the data comes back and the
-   coin comes back only through a later month's decision. The month's selection leaves out a
-   coin with no daily bar in the 7 days before it, so this is a coin that dies after the
-   decision;
+3. at a month's first 00:00, the ``monthly`` record; at that 00:00 (at every 00:00 for
+   hold_btc_trend), the decision (below); then, every hour, the cancels of a dead market without
+   a close (``_CellState._dead_market_cancels``, Codex review of PR #293): a coin whose order
+   still waits, flat, while its spot market dies (a bar once, none in the 168 hours before the
+   hour) loses the order, recorded as ``order_cancelled`` with the reason ``dead market``, so the
+   order never fills when the data comes back and the coin comes back only through a later
+   decision. The month's selection leaves out a coin with no daily bar in the 7 days before it,
+   so this is a coin that dies after the decision;
 4. the fills due this hour (below).
 
 Then each held leg's hour goes to ``DeadMarkets``. The last hour ends with the window-end close:
@@ -43,6 +44,18 @@ market without BTCUSDT is a ValueError, so that cell ends as ``engine_error``. T
 ``PendingBook.decide``, which supersedes a coin's older order still deferred (recorded as
 ``order_superseded``). A weight ``0.99 / n``, and a notional below, that has no finite decimal
 (n = 7) is cut toward zero at 60 digits, so it is never above the exact share.
+
+``hold_btc_trend`` decides at every 00:00 (ruling R2 of step 4a), after the ``monthly`` record of
+a month's first day. Its state, invested or in cash, starts as cash. The test reads BTCUSDT's
+daily bars that open at or before the day before, never a later one (``_BtcVote``), through V4's
+own signal state under the main lookbacks, and the account is invested iff the latest reading's
+slow vote is +1: the close above its SMA(200). No vote, whether the SMA is still warming up or
+the close ties it exactly, is cash. A day without a BTC bar adds no reading, so the vote and the
+state stay as they were. Only a change of state makes an order, BTCUSDT 0.99 (n = 1) when the
+account becomes invested and 0 when it becomes cash, which supersedes an order still deferred.
+An order that never fills (a buy the filters refuse, or one a dead market cancels) is not made
+again: the state stays what the vote made it until the vote changes. A market without BTCUSDT is
+a ValueError at the first decision, as for hold_btc.
 
 **The fills.** From the decision's next hour, a coin's order waits for its own first hour with a
 spot bar when the coin holds spot or its target is above 0 (V4's deferral rule; a flat coin with
@@ -67,17 +80,23 @@ coin's fills form one lifecycle batch with the reason ``universe exit``. A rebal
 resizes a holding never ends a lifecycle; the one that empties a holding applies the hold's
 universe rule: a coin that left, an empty month, or a share smaller than one step. So a hold
 arm's lifecycles end as ``universe exit``, ``delisting``, ``window end`` or ``window end (dust)``.
+hold_btc_trend's orders come from a signal, so its orders' source, its fills' reason (a buy and a
+sale alike) and its lifecycle batches' reason are all ``signal``, as V4's are, and its lifecycles
+end as ``signal``, ``delisting``, ``window end`` or ``window end (dust)``. A sale refused for
+size leaves the whole holding as dust, which keeps the lifecycle open to the window end.
 
 **Records,** in the V4 arms' shapes (run.py's module docstring): ``hourly``, ``monthly``,
 ``fill``, ``event`` and ``lifecycle``, and the ``outcome`` last. There is no ``daily_coin`` (a
-hold arm has no signal) and no ``funding`` (no futures). A coin's ``order`` event at its fill hour
-has the ``source`` ``rebalance``, its order's ``decision_ms`` and weight as ``target``,
+hold arm records no signal, hold_btc_trend's vote included: its orders show it) and no ``funding``
+(no futures). A coin's ``order`` event at its fill hour has the ``source`` ``rebalance`` (``signal``
+for hold_btc_trend), its order's ``decision_ms`` and weight as ``target``,
 ``eligible`` false, no band (``current`` and ``band`` null) and no exits. Its ``split`` holds on
 spot the target notional net of the coin's dust, as V4's split of a spot-only coin does.
 
 A hold arm's hour costs O(legs held and orders waiting): the open mark, the dead-market checks,
-the audit and the ``hourly`` record. It decides only at a month's first midnight and plans only
-in an hour with an order due.
+the audit and the ``hourly`` record. It decides only at a month's first midnight (hold_btc_trend
+at every midnight, feeding BTC's new daily bars to its signal state once) and plans only in an
+hour with an order due.
 """
 
 from __future__ import annotations
@@ -88,7 +107,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from crypto_grid_bot.v4.engine.allocation import LegTargets, to_venue_quantity
-from crypto_grid_bot.v4.engine.arms import ARMS, HOLD_INVESTED, CellSpec
+from crypto_grid_bot.v4.engine.arms import ARMS, HOLD_INVESTED, MAIN_LOOKBACKS, CellSpec
 from crypto_grid_bot.v4.engine.market import Market
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
 from crypto_grid_bot.v4.engine.orders import plan_leg
@@ -96,6 +115,7 @@ from crypto_grid_bot.v4.engine.pending import Pending
 from crypto_grid_bot.v4.engine.run import (
     DAY_MS,
     DELISTING,
+    SIGNAL,
     UNIVERSE_EXIT,
     CellResult,
     _CellState,
@@ -105,7 +125,10 @@ from crypto_grid_bot.v4.engine.run import (
     _order_record,
     _run,
 )
+from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading
 
+HOLD_BTC = "hold_btc"
+HOLD_BTC_TREND = "hold_btc_trend"
 HOLD_BTC_COIN = "BTCUSDT"
 # The reason of a hold order's fills with a target above 0, and the source of its order event.
 REBALANCE = "rebalance"
@@ -117,26 +140,59 @@ _TRUNCATE = Context(prec=CONTEXT.prec, rounding=ROUND_DOWN)
 
 def run_hold_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     """Replay one hold cell over ``market`` into ``out_dir`` (module docstring) and return its
-    result, as ``run_v4_cell`` does for a V4 cell. A V4 arm, or an ``out_dir`` that already holds
-    a cell's files, is a ValueError and nothing is written."""
+    result, as ``run_v4_cell`` does for a V4 cell. A V4 arm, or an ``out_dir`` that already holds a
+    cell's files, is a ValueError and nothing is written."""
     if not isinstance(market, Market):
         raise ValueError(f"a Market is required, got {market!r:.60}")
     if not isinstance(cell, CellSpec):
         raise ValueError(f"a CellSpec is required, got {cell!r:.60}")
     if ARMS[cell.arm].family != "hold":
         raise ValueError(f"{cell.arm} is not a hold arm; the V4 arms run in run.py")
-    only = HOLD_BTC_COIN if cell.arm == "hold_btc" else None
+    only = HOLD_BTC_COIN if cell.arm in (HOLD_BTC, HOLD_BTC_TREND) else None
     return _run(_HoldCell(market, cell, only), Path(out_dir))
 
 
+class _BtcVote:
+    """BTCUSDT's slow vote for hold_btc_trend: V4's own signal state under the main lookbacks,
+    fed from the market's BTC daily bars as ``_V4Cell._feed_btc`` feeds its filter's."""
+
+    def __init__(self, market: Market) -> None:
+        self._bars = market.daily(HOLD_BTC_COIN)
+        self._fed = 0
+        self._signals = CoinSignals(MAIN_LOOKBACKS)
+        self._reading: SignalReading | None = None
+
+    def above_sma(self, day: int) -> bool:
+        """Feed every daily bar that opens at or before ``day`` and has not been seen, never a
+        later one, and say whether the latest reading's slow vote is +1. No reading yet, a
+        warming SMA and an exact tie are all False, and a day without a bar adds no reading, so
+        the latest one stays."""
+        bars, index = self._bars, self._fed
+        while index < len(bars) and bars[index].open_ms <= day:
+            self._reading = self._signals.update(bars[index])
+            index += 1
+        self._fed = index
+        return self._reading is not None and self._reading.slow == 1
+
+
 class _HoldCell(_CellState):
-    """A hold arm's cell: the monthly (or single) decision and the fill phase, on the shared
-    account of ``_CellState``. ``only`` is hold_btc's one coin, None for hold_universe."""
+    """A hold arm's cell: the monthly (or single, or daily) decision and the fill phase, on the
+    shared account of ``_CellState``. ``only`` is the one coin of hold_btc and hold_btc_trend,
+    None for hold_universe."""
 
     def __init__(self, market: Market, cell: CellSpec, only: str | None) -> None:
         super().__init__(market, cell)
         self._only = only
         self._universe: tuple[str, ...] = ()
+        # hold_btc_trend: the vote (built at its first decision, so a market without BTCUSDT ends
+        # the cell in its loop) and the state, in cash at the start. Its orders come from a
+        # signal, so they and their fills carry ``signal``; the other arms' carry ``rebalance``,
+        # and ``universe exit`` for a target of 0.
+        self._trend = cell.arm == HOLD_BTC_TREND
+        self._vote: _BtcVote | None = None
+        self._invested = False
+        self._source = SIGNAL if self._trend else REBALANCE
+        self._exit_reason = SIGNAL if self._trend else UNIVERSE_EXIT
         # A coin's pending order always holds its latest weight: the decision that gave the
         # weight made the order. Each decision's n sizes its orders at their fill hours.
         self._targets: dict[str, Decimal] = {}
@@ -157,19 +213,30 @@ class _HoldCell(_CellState):
                 return
 
     def _decide(self, h: int) -> None:
-        """Step 3, at a month's first 00:00 only: the ``monthly`` record of the market's
-        universe, then the hold's targets (module docstring) to ``PendingBook.decide``."""
-        if h % DAY_MS or _month_of(h) == _month_of(h - DAY_MS):
+        """Step 3, at 00:00 only: on a month's first day the ``monthly`` record of the market's
+        universe, then the hold's targets (module docstring) to ``PendingBook.decide``: at that
+        00:00 for hold_universe and hold_btc, at every 00:00 for hold_btc_trend."""
+        if h % DAY_MS:
             return
         month = _month_of(h)
-        previous, self._universe = self._universe, self.market.universe(month)
-        self._record("monthly", self._monthly_record(h, month, self._universe, previous))
+        new_month = month != _month_of(h - DAY_MS)
+        previous = self._universe
+        if new_month:
+            self._universe = self.market.universe(month)
+            self._record("monthly", self._monthly_record(h, month, self._universe, previous))
+        if self._trend:
+            self._decide_trend(h)
+        elif new_month:
+            self._decide_monthly(h, previous)
+
+    def _decide_monthly(self, h: int, previous: Sequence[str]) -> None:
+        """hold_universe's and hold_btc's decision at a month's first 00:00; ``previous`` is
+        the last month's universe."""
         coins: tuple[str, ...]
         if self._only is not None:
             if h != self.market.window_start_ms:
                 return  # hold_btc decides once
-            if self._only not in self.market.symbols:
-                raise ValueError(f"hold_btc holds {self._only}, which the market does not have")
+            self._require_btc()
             n, coins = 1, (self._only,)
         else:
             n, coins = len(self._universe), self._universe
@@ -177,6 +244,31 @@ class _HoldCell(_CellState):
         if self._only is None:
             left = (self._held_coins() | frozenset(previous)) - frozenset(coins)
             targets.update(dict.fromkeys(sorted(left), _ZERO))
+        self._place(h, targets, n)
+
+    def _decide_trend(self, h: int) -> None:
+        """hold_btc_trend's decision at 00:00 (module docstring): the account is invested iff
+        BTC's last completed daily bar at or before ``h - 1 day`` closes above its SMA(200), and
+        only a change of state makes an order."""
+        if self._vote is None:
+            self._require_btc()
+            self._vote = _BtcVote(self.market)
+        invested = self._vote.above_sma(h - DAY_MS)
+        if invested == self._invested:
+            return
+        self._invested = invested
+        weight = _share(HOLD_INVESTED, 1) if invested else _ZERO
+        self._place(h, {HOLD_BTC_COIN: weight}, 1)
+
+    def _require_btc(self) -> None:
+        if HOLD_BTC_COIN not in self.market.symbols:
+            raise ValueError(
+                f"{self.cell.arm} holds {HOLD_BTC_COIN}, which the market does not have"
+            )
+
+    def _place(self, h: int, targets: Mapping[str, Decimal], n: int) -> None:
+        """Make the decision's orders, sized from ``n`` coins at their fill hours: the targets go
+        to ``PendingBook.decide``, which supersedes an older order still deferred."""
         self._sizes[h] = n
         self._record_superseded(h, self._book.decide(h, targets))
         self._targets.update(targets)
@@ -216,7 +308,7 @@ class _HoldCell(_CellState):
                 price = self._fill_open(key)
                 target = to_venue_quantity(notional, price)
                 plan = plan_leg("spot", holding.spot, target, price, self._rules[key])
-                reason = REBALANCE if order.target > 0 else UNIVERSE_EXIT
+                reason = self._source if order.target > 0 else self._exit_reason
                 planned.append(_Leg(coin, key, price, holding.spot, target, plan, reason))
             net = to_fraction(notional) - to_fraction(holding.dust_notional)
             self._record(
@@ -228,7 +320,7 @@ class _HoldCell(_CellState):
                     order,
                     order.decision_ms,
                     None,
-                    (order.target, False, REBALANCE),
+                    (order.target, False, self._source),
                     {},
                     holding.state(coin, notional, False, False),
                     holding,
@@ -239,7 +331,7 @@ class _HoldCell(_CellState):
             legs.extend(planned)
         batches = self._book_legs(h, legs)
         for coin in sorted(batches):
-            self._close_batch(h, coin, batches[coin], UNIVERSE_EXIT)
+            self._close_batch(h, coin, batches[coin], self._exit_reason)
 
     def _notional(self, order: Pending, equity: Decimal) -> Decimal:
         """The order's target notional, ``0.99 x equity / n`` with the n of its decision (cut

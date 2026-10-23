@@ -7,11 +7,12 @@ this script through environment variables, never as text in a script:
 
 * the data run's id must be digits only (1 to 20 of them, no leading zero), since it names the
   run whose ``v4-data`` artifact the jobs download;
-* every arm must be one of the engine's ``ARMS`` (``hold_btc_trend`` and ``v3_as_built`` are
-  built in a later step, so they are refused), every capital one of ``CAPITALS`` (1000 and
-  10000) and every cost multiple one of ``COST_MULTIPLES`` (1 and 2). Each is plain digits or a
-  name, exactly as the cell CLI takes it; spaces around a comma are ignored, and an empty item or
-  a repeat is refused (two jobs would upload the same artifact).
+* every arm must be one of ``DIAGNOSTIC_ARMS``, the eight arms of step 3 (``v4_btc200_shorts``,
+  ``v4_confirm3``, ``hold_btc_trend`` and ``v3_as_built`` are arms of the run but are first run in
+  the registered run, v4-d22, so they are refused here), every capital one of ``CAPITALS`` (1000
+  and 10000) and every cost multiple one of ``COST_MULTIPLES`` (1 and 2). Each is plain digits or
+  a name, exactly as the cell CLI takes it; spaces around a comma are ignored, and an empty item
+  or a repeat is refused (two jobs would upload the same artifact).
 
 The cells are the arms, capitals and costs asked for, in the order of ``arms.all_cells()``: arms
 in ``ARMS`` order, then capital, then cost multiple. At most 8 x 2 x 2 = 32 of them.
@@ -35,7 +36,13 @@ import sys
 from collections.abc import Collection, Sequence
 from pathlib import Path
 
-from crypto_grid_bot.v4.engine.arms import ARMS, CAPITALS, COST_MULTIPLES, CellSpec
+from crypto_grid_bot.v4.engine.arms import (
+    ARMS,
+    CAPITALS,
+    COST_MULTIPLES,
+    DIAGNOSTIC_ARMS,
+    CellSpec,
+)
 
 # The text of each value the cell CLI takes, exactly: never ``int(text)``, which also accepts
 # "+1000", " 1000", "1_000" and full-width digits.
@@ -69,7 +76,7 @@ def _pick(text: str, what: str, choices: Collection[str]) -> set[str]:
 
 def build_cells(arms: str, capitals: str, costs: str) -> tuple[CellSpec, ...]:
     """The cells of the arms, capitals and cost multiples given, in ``all_cells()`` order."""
-    chosen_arms = _pick(arms, "arm", tuple(ARMS))
+    chosen_arms = _pick(arms, "arm", DIAGNOSTIC_ARMS)
     chosen_capitals = _pick(capitals, "capital", CAPITAL_CHOICES)
     chosen_costs = _pick(costs, "cost multiple", COST_CHOICES)
     return tuple(
@@ -100,7 +107,9 @@ def matrix_json(cells: Sequence[CellSpec]) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="v4_cells_plan.py", description=__doc__)
     parser.add_argument("--data-run", required=True, help="the id of the v4-data run")
-    parser.add_argument("--arms", required=True, help="comma-separated arm names")
+    parser.add_argument(
+        "--arms", required=True, help="comma-separated arm names, from the diagnostic arms"
+    )
     parser.add_argument("--capitals", required=True, help="comma-separated, from 1000 and 10000")
     parser.add_argument("--costs", required=True, help="comma-separated cost multiples, 1 and 2")
     parser.add_argument(

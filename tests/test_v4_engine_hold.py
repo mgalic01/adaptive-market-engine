@@ -1,18 +1,23 @@
-"""V4 engine task 13: the hold comparisons, ``hold_universe`` and ``hold_btc``.
+"""V4 engine task 13: the hold comparisons, ``hold_universe`` and ``hold_btc``, and step 4a's
+``hold_btc_trend``.
 
 Each test replays a small synthetic world from ``tests/v4_synthetic.py`` through
 ``hold.run_hold_cell`` and checks the records against the spec's hold rules ("Versions in the
 run", the hold comparisons), recomputed here from the bars and from the fill records: a target of
 ``0.99 x equity / n`` at the open mark of the coin's own fill hour, sells before buys, a buy cut to
 the cash it can pay for with its fee, the filters and dust, deferrals and a newer month's order,
-the dead-market close and the window end. Expected quantities are exact Fractions floored to the
-spot step. The network is blocked for every test (the autouse fixture) and no real pack is read.
+the dead-market close and the window end. ``hold_btc_trend`` is tested the same way, with the
+SMA(200) vote recomputed here from the market's daily bars. Expected quantities are exact Fractions
+floored to the spot step. The network is blocked for every test (the autouse fixture) and no real
+pack is read.
 """
 
 from __future__ import annotations
 
 import ast
 import dataclasses
+import hashlib
+import json
 import socket
 from collections.abc import Iterable, Sequence
 from decimal import ROUND_DOWN, Context, Decimal
@@ -29,6 +34,7 @@ from v4_synthetic import (
     PerpetualSpec,
     Series,
     World,
+    day_hours,
     every_month,
     hours_in,
     month_start,
@@ -41,6 +47,7 @@ from crypto_grid_bot.v4.engine import hold, run
 from crypto_grid_bot.v4.engine.arms import CellSpec
 from crypto_grid_bot.v4.engine.market import Market
 from crypto_grid_bot.v4.engine.records import read_receipt, read_records
+from crypto_grid_bot.v4.engine.summary import build_summary
 
 D = Decimal
 F = Fraction
@@ -760,6 +767,331 @@ def test_hold_btc_without_btcusdt_is_an_engine_error(tmp_path):
     assert [name for name, _ in rows].count("outcome") == 1 and rows[-1][0] == "outcome"
 
 
+# ---- hold_btc_trend -----------------------------------------------------------------------
+
+TREND = CellSpec("hold_btc_trend", CAPITAL, 1)
+BTC_START = month_start("2024-05")
+BTC_UP = T0 + 9 * DAY  # 2025-01-10: BTCUSDT's first daily close above its SMA(200)
+BTC_DOWN = T0 + 19 * DAY  # 2025-01-20: its first daily close back below it
+CROSSING = ((BTC_START, "100"), (BTC_UP, "120"), (BTC_DOWN, "90"))
+
+
+def stepped(start: int, end: int, levels: Sequence[tuple[int, str]]) -> tuple[Decimal, ...]:
+    """Hourly closes from ``start`` to ``end``: each hour closes at the price of the latest of
+    ``levels`` (open, price) at or before its open. A bar opens at the previous close, so the
+    hour of a step opens at the old price and every hour after it at the new one."""
+    return tuple(
+        D([price for at, price in levels if at <= open_ms][-1])
+        for open_ms in range(start, end, HOUR)
+    )
+
+
+def btc_crossing(
+    levels: Sequence[tuple[int, str]] = CROSSING, masked: Iterable[int] = ()
+) -> CoinSpec:
+    """BTCUSDT on spot only, from 2024-05 to the window's end. Flat at 100 its close ties its
+    SMA(200), so it has no slow vote; it closes at 120 from BTC_UP (above the average) and at 90
+    from BTC_DOWN (below it) unless ``levels`` say otherwise."""
+    return coin("BTCUSDT", stepped(BTC_START, MAR, levels), start=BTC_START, masked=masked)
+
+
+def crossing_world(btc: CoinSpec) -> World:
+    """January and February with ETHUSDT (flat, spot only) as the only coin ever selected:
+    ``btc`` is in the packs and never in a universe, which hold_btc_trend ignores."""
+    eth = coin("ETHUSDT", flat("3000", "2025-01", "2025-02"))
+    return World("2025-02", (btc, eth), every_month("2025-01", "2025-02", ("ETHUSDT",)))
+
+
+def trend_changes(market: Market) -> list[tuple[int, bool]]:
+    """Every 00:00 of the window at which hold_btc_trend should change state, and the state it
+    changes to, from an SMA(200) recomputed here (spec: invested while BTC's last completed daily
+    close is above the mean of its last 200 closes, cash otherwise and while fewer than 200 daily
+    bars exist). The decision at ``h`` reads only the daily bars that open at or before ``h - 1
+    day``; a day without a bar adds none."""
+    bars = market.daily("BTCUSDT")
+    state, changes = False, []
+    for h in range(T0, MAR, DAY):
+        seen = [bar for bar in bars if bar.open_ms <= h - DAY]
+        mean = sum((F(bar.close) for bar in seen[-200:]), F(0)) / 200
+        invested = len(seen) >= 200 and F(seen[-1].close) > mean
+        if invested != state:
+            state = invested
+            changes.append((h, invested))
+    return changes
+
+
+def test_hold_btc_trend_buys_when_btc_closes_above_its_sma200_and_sells_when_it_closes_below(
+    tmp_path,
+):
+    """Spec "hold_btc_trend", ruling R2: BTCUSDT ties its SMA(200) until BTC_UP, closes above it
+    on BTC_UP and below it on BTC_DOWN. The decision at 00:00 the day after BTC_UP buys
+    ``0.99 x equity`` of BTCUSDT at the next 01:00, from the equity of that open mark; the one
+    after BTC_DOWN sells all of it at its 01:00. No other order is made, though ETHUSDT is the
+    month's universe, and the one lifecycle ends with the reason ``signal``, as do the fills and
+    the orders' source. Nothing is held at the window end, so nothing is sold there."""
+    market = load(tmp_path, crossing_world(btc_crossing()))
+    buy_h, sell_h = BTC_UP + DAY + HOUR, BTC_DOWN + DAY + HOUR
+    assert trend_changes(market) == [(BTC_UP + DAY, True), (BTC_DOWN + DAY, False)]
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    buy, sale = of_kind(rows, "fill")  # these two fills and no other
+    assert (buy["hour_ms"], buy["coin"], buy["reason"]) == (buy_h, "BTCUSDT", "signal")
+    assert open_equity(result, buy_h) == CAPITAL
+    quantity = floor_step(INVESTED * CAPITAL / 120)
+    check_fill(buy, 1, quantity, D(120), SPOT)
+    assert (sale["hour_ms"], sale["coin"], sale["reason"]) == (sell_h, "BTCUSDT", "signal")
+    check_fill(sale, -1, quantity, D(90), SPOT)
+    for hour in (buy_h + HOUR, BTC_UP + 5 * DAY, sell_h - HOUR):
+        equity = open_equity(result, hour)
+        assert equity == mark_at(market, rows, hour)
+        assert equity == cash_after(rows, hour - 1) + quantity * F(
+            spot_open(market, "BTCUSDT", hour)
+        )
+    assert open_equity(result, sell_h + HOUR) == cash_after(rows, sell_h)
+    assert holdings(rows, MAR) == {}
+    assert F(result.final_after_close) == cash_after(rows, MAR)
+    first, second = events(rows, "order")  # and no other order event
+    assert [e["type"] for e in of_kind(rows, "event")] == ["order", "order"]
+    assert (first["hour_ms"], first["coin"]) == (buy_h, "BTCUSDT")
+    assert first["decision_ms"] == BTC_UP + DAY and first["source"] == "signal"
+    assert F(D(first["target"])) == INVESTED and F(D(first["equity"])) == CAPITAL
+    assert not first["eligible"] and first["band"] is None
+    assert (second["hour_ms"], second["decision_ms"]) == (sell_h, BTC_DOWN + DAY)
+    assert second["source"] == "signal" and D(second["target"]) == 0
+    assert F(D(second["equity"])) == open_equity(result, sell_h)
+    (lifecycle,) = of_kind(rows, "lifecycle")
+    assert (lifecycle["coin"], lifecycle["side"], lifecycle["exit_reason"]) == (
+        "BTCUSDT",
+        "long",
+        "signal",
+    )
+    assert (lifecycle["entry_ms"], lifecycle["exit_ms"], lifecycle["censored"]) == (
+        buy_h,
+        sell_h,
+        False,
+    )
+    monthly = of_kind(rows, "monthly")
+    assert [(m["month"], m["open_ms"], m["universe"]) for m in monthly] == [
+        ("2025-01", T0, ["ETHUSDT"]),
+        ("2025-02", FEB, ["ETHUSDT"]),
+    ]
+    assert of_kind(rows, "funding") == [] and of_kind(rows, "daily_coin") == []
+    assert {name for name, _ in rows} == HOLD_KINDS
+
+
+@pytest.mark.parametrize(
+    ("btc_start", "buys_at"),
+    [(T0 - 170 * DAY, T0 + 30 * DAY), (T0 + 5 * DAY, None)],
+    ids=["warms inside the window", "never warms inside the window"],
+)
+def test_hold_btc_trend_starts_in_cash_and_counts_a_warming_sma_as_cash(
+    btc_start, buys_at, tmp_path
+):
+    """Ruling R2: the account starts in cash and a warming SMA is cash. BTCUSDT rises about 0.7% a
+    day, so its close is above its own average from its first bar, yet the account holds nothing
+    until a decision reads 200 daily bars (the 200th is the first with an SMA(200)): at 00:00 on
+    January 31 for a first bar 170 days before the window, and never in the window for a first bar
+    on January 6."""
+    closes = path("50000", ((MAR - btc_start) // HOUR, "0.0003"), noise="0.003", seed=61)
+    market = load(tmp_path, crossing_world(CoinSpec("BTCUSDT", Series(btc_start, closes))))
+    warm = btc_start + 200 * DAY  # the first decision that reads 200 daily bars
+    bars = market.daily("BTCUSDT")
+    if buys_at is None:
+        assert len(bars) < 200  # BTC never has 200 daily bars by the window's end
+    else:
+        assert sum(bar.open_ms <= warm - DAY for bar in bars) == 200
+        assert sum(bar.open_ms <= warm - 2 * DAY for bar in bars) == 199
+    assert trend_changes(market) == ([] if buys_at is None else [(warm, True)])
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    fills = of_kind(rows, "fill")
+    if buys_at is None:
+        assert fills == [] and events(rows, "order") == []
+    else:
+        assert warm == buys_at
+        first, last = fills  # the buy, and the window end's sale
+        assert (first["hour_ms"], first["side"], first["reason"]) == (warm + HOUR, 1, "signal")
+        assert last["reason"] == "window end"
+    # Cash until then: every open mark up to the buy's hour is the capital.
+    assert all(F(equity) == CAPITAL for stamp, equity, _ in result.open_marks if stamp <= warm)
+
+
+def test_hold_btc_trend_buys_at_the_first_fill_when_btc_is_above_its_sma200_before_the_window(
+    tmp_path,
+):
+    """Final review (M1): BTCUSDT has 245 daily bars before the window, from 2024-05-01, and the
+    last of them, the day before the window, closes above its SMA(200): the price is 100 and then
+    120 from 30 days before the window, so the average is 103 and the close 120. The window's
+    first 00:00 decision reads that bar and invests, so ``0.99 x equity`` is bought at the first
+    01:00 fill, from the capital at that open, and the decision hour is the window's own first,
+    not a day later. The state never changes again, so no other order is made, and the window
+    end sells the holding."""
+    levels = ((BTC_START, "100"), (T0 - 30 * DAY, "120"))
+    market = load(tmp_path, crossing_world(btc_crossing(levels)))
+    before = [bar for bar in market.daily("BTCUSDT") if bar.open_ms <= T0 - DAY]
+    assert len(before) == 245  # more than the 200 the SMA needs, all before the window
+    mean = sum((F(bar.close) for bar in before[-200:]), F(0)) / 200
+    assert mean == 103 and F(before[-1].close) == 120
+    assert market.window_start_ms == T0
+    assert trend_changes(market) == [(T0, True)]  # invested at the window's first decision
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    first_fill = T0 + HOUR
+    buy, sale = of_kind(rows, "fill")
+    assert (buy["hour_ms"], buy["coin"], buy["reason"]) == (first_fill, "BTCUSDT", "signal")
+    assert open_equity(result, first_fill) == CAPITAL
+    check_fill(buy, 1, floor_step(INVESTED * CAPITAL / 120), D(120), SPOT)
+    (order,) = events(rows, "order")  # the window's only order
+    assert (order["decision_ms"], order["hour_ms"]) == (T0, first_fill)
+    assert order["source"] == "signal" and F(D(order["target"])) == INVESTED
+    assert F(D(order["equity"])) == CAPITAL
+    assert sale["reason"] == "window end" and sale["hour_ms"] == MAR - HOUR
+    (lifecycle,) = lifecycles_of(rows, "BTCUSDT")
+    assert (lifecycle["entry_ms"], lifecycle["exit_reason"]) == (first_fill, "window end")
+
+
+@pytest.mark.parametrize(
+    ("masked_day", "buys_at", "sells_at"),
+    [
+        (BTC_UP, BTC_UP + 2 * DAY, BTC_DOWN + DAY),
+        (BTC_DOWN, BTC_UP + DAY, BTC_DOWN + 2 * DAY),
+    ],
+    ids=["a day in cash", "a day invested"],
+)
+def test_hold_btc_trend_keeps_its_state_on_a_day_without_a_btc_bar(
+    masked_day, buys_at, sells_at, tmp_path
+):
+    """Review Focus 1: BTCUSDT's hours 00:00 to 05:59 of one day are masked, so that day has no
+    daily bar (less than 20 of 24 hours). The decision closing it reads the bar before it and
+    keeps the state: a day in cash (BTC_UP) delays the buy by a day, and a day invested (BTC_DOWN)
+    delays the sale by one, though the masked day's own closes would have voted the other way. No
+    order is made on the day without a bar, and no later bar is read."""
+    masked = day_hours(masked_day, range(6))
+    market = load(tmp_path, crossing_world(btc_crossing(masked=masked)))
+    days = {bar.open_ms for bar in market.daily("BTCUSDT")}
+    assert masked_day not in days and masked_day - DAY in days and masked_day + DAY in days
+    assert trend_changes(market) == [(buys_at, True), (sells_at, False)]
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    buy, sale = of_kind(rows, "fill")
+    quantity = floor_step(INVESTED * CAPITAL / 120)
+    check_fill(buy, 1, quantity, D(120), SPOT)
+    check_fill(sale, -1, quantity, D(90), SPOT)
+    assert (buy["hour_ms"], sale["hour_ms"]) == (buys_at + HOUR, sells_at + HOUR)
+    assert [e["decision_ms"] for e in events(rows, "order")] == [buys_at, sells_at]
+    (lifecycle,) = of_kind(rows, "lifecycle")
+    assert (lifecycle["entry_ms"], lifecycle["exit_ms"]) == (buys_at + HOUR, sells_at + HOUR)
+    assert lifecycle["exit_reason"] == "signal"
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+def test_hold_btc_trend_defers_a_fill_to_the_next_unmasked_hour(side, tmp_path):
+    """Masked fill hours defer the order, as for the other hold arms. BTCUSDT's spot is masked at
+    01:00 and 02:00 after the buy's decision (or the sale's), so the order waits for 03:00, sized
+    and filled at that open, which differs from the one at 01:00: BTC moves from 120 to 126 in
+    the 02:00 hour for the buy, and from 90 to 81 for the sale. Two masked hours leave that day
+    22 usable ones, so it keeps its daily bar."""
+    deciding = BTC_UP + DAY if side == "buy" else BTC_DOWN + DAY
+    levels = sorted([*CROSSING, (deciding + 2 * HOUR, "126" if side == "buy" else "81")])
+    masked = (deciding + HOUR, deciding + 2 * HOUR)
+    market = load(tmp_path, crossing_world(btc_crossing(levels, masked)))
+    buy_h = BTC_UP + DAY + (3 if side == "buy" else 1) * HOUR
+    sell_h = BTC_DOWN + DAY + (3 if side == "sell" else 1) * HOUR
+    assert trend_changes(market) == [(BTC_UP + DAY, True), (BTC_DOWN + DAY, False)]
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    assert fills_at(rows, deciding + HOUR) == [] and fills_at(rows, deciding + 2 * HOUR) == []
+    buy, sale = of_kind(rows, "fill")
+    assert (buy["hour_ms"], sale["hour_ms"]) == (buy_h, sell_h)
+    price, sale_price = (D(126), D(90)) if side == "buy" else (D(120), D(81))
+    bought = floor_step(INVESTED * open_equity(result, buy_h) / F(price))
+    check_fill(buy, 1, bought, price, SPOT)
+    check_fill(sale, -1, bought, sale_price, SPOT)
+    first, second = events(rows, "order")  # one order event each, at its own fill hour
+    assert [(e["decision_ms"], e["hour_ms"]) for e in (first, second)] == [
+        (BTC_UP + DAY, buy_h),
+        (BTC_DOWN + DAY, sell_h),
+    ]
+    assert F(D(first["equity"])) == open_equity(result, buy_h) == mark_at(market, rows, buy_h)
+    assert F(D(second["equity"])) == open_equity(result, sell_h) == mark_at(market, rows, sell_h)
+    assert [r["entry_ms"] for r in of_kind(rows, "lifecycle")] == [buy_h]
+
+
+def test_hold_btc_trend_follows_the_hold_cash_rule_and_fees(tmp_path):
+    """Spec "hold_btc_trend": the hold comparisons' cash rule, fees, filters and dust, at 1,000
+    USDT and doubled costs. BTC steps from 100 to 123.456 and the buy is 0.99 x 1,000 at that
+    open, floored to the step (the exact share is not a whole number of steps), with the slipped
+    price and the fee on it. A spot buy of 0.99 of the equity always fits the cash (``0.99 x (1 +
+    s)(1 + f)`` is below 1), so the account is never cut to its cash and the 1% reserve is what
+    is left. BTC then crashes to 0.05: the holding is worth under the minimum notional, so the
+    sale is refused and the whole holding stays as dust, valued at its mark, to the window end,
+    where it is censored as ``window end (dust)`` without a sale."""
+    levels = ((BTC_START, "100"), (BTC_UP, "123.456"), (BTC_DOWN, "0.05"))
+    market = load(tmp_path, crossing_world(btc_crossing(levels)))
+    cell = CellSpec("hold_btc_trend", 1000, 2)
+    costs = cell.costs("spot")
+    capital, price, low = F(1000), D("123.456"), D("0.05")
+    buy_h, sell_h = BTC_UP + DAY + HOUR, BTC_DOWN + DAY + HOUR
+
+    result, rows = cell_run(market, tmp_path, cell)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    (buy,) = of_kind(rows, "fill")  # the sale is refused, and the window end sells no dust
+    share = INVESTED * capital / F(price)
+    assert share % STEP != 0
+    quantity = floor_step(share)
+    check_fill(buy, 1, quantity, price, costs)
+    need = (1 + F(costs.slippage_rate)) * (1 + F(costs.fee_rate))
+    assert INVESTED * need < 1
+    assert quantity * F(price) * need <= capital  # the cash pays the whole buy
+    cash = cash_after(rows, buy_h, capital)
+    assert 0 < cash < capital * (1 - INVESTED)
+    assert events(rows, "increase_cut") == []
+    first, second = events(rows, "order")
+    assert [e["hour_ms"] for e in (first, second)] == [buy_h, sell_h]
+    assert D(second["target"]) == 0 and second["source"] == "signal"
+    assert second["legs"][0]["orders"] == []  # nothing can be sold
+    assert quantity * F(low) < 5  # below the minimum notional
+    assert F(D(second["legs"][0]["dust"])) == F(D(second["state"]["dust"])) == quantity
+    for hour in (sell_h, sell_h + 10 * HOUR, FEB + DAY):
+        assert open_equity(result, hour) == cash_after(rows, hour, capital) + quantity * F(low)
+    assert fills_at(rows, MAR - HOUR) == []
+    (lifecycle,) = lifecycles_of(rows, "BTCUSDT")
+    assert (lifecycle["entry_ms"], lifecycle["exit_reason"], lifecycle["censored"]) == (
+        buy_h,
+        "window end (dust)",
+        True,
+    )
+    assert F(result.final_after_close) == cash_after(rows, MAR, capital) + quantity * F(low)
+
+
+def test_hold_btc_trend_without_btcusdt_is_an_engine_error(tmp_path):
+    """A market without BTCUSDT cannot run hold_btc_trend: a ValueError inside the loop, at its
+    first decision, so the cell ends as ``engine_error`` with its records closed, as hold_btc's
+    does."""
+    eth = coin("ETHUSDT", flat("3000"))
+    market = load(tmp_path, World("2025-01", (eth,), {"2025-01": ("ETHUSDT",)}))
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "engine_error"
+    assert result.reason is not None and result.reason.startswith("ValueError: ")
+    assert "BTCUSDT" in result.reason
+    assert of_kind(rows, "fill") == [] and result.final_after_close is None
+    assert [name for name, _ in rows].count("outcome") == 1 and rows[-1][0] == "outcome"
+    assert rows[-1][1]["hour_ms"] == T0
+
+
 # ---- both arms ----------------------------------------------------------------------------
 
 
@@ -792,12 +1124,14 @@ def test_hold_arms_write_the_same_record_shapes(tmp_path):
     lifecycle and outcome records in the same shapes (and no daily_coin, having no signals), and
     return the same ``CellResult``."""
     market = load(tmp_path, trend_world())
+    crossing = load(tmp_path, crossing_world(btc_crossing()), "crossing")
     v4_out = tmp_path / "out" / "v4"
     v4 = run.run_v4_cell(market, CellSpec("v4_main", CAPITAL, 1), v4_out)
     v4_shapes = shapes(list(read_records(v4_out / run.RECORDS_FILE, v4.receipt)))
 
-    for cell in (UNIVERSE, BTC_ONLY):
-        result, rows = cell_run(market, tmp_path, cell, cell.arm)
+    # hold_btc_trend trades only in the world where BTC crosses its SMA(200).
+    for cell, world in ((UNIVERSE, market), (BTC_ONLY, market), (TREND, crossing)):
+        result, rows = cell_run(world, tmp_path, cell, cell.arm)
 
         assert type(result) is run.CellResult and result.outcome == "complete"
         assert [f.name for f in dataclasses.fields(result)] == [
@@ -809,6 +1143,89 @@ def test_hold_arms_write_the_same_record_shapes(tmp_path):
         for name, keys in found.items():
             assert name in v4_shapes, name
             assert keys == v4_shapes[name], name
+
+
+UNCHANGED_WORLDS = {
+    "universe": universe_world,
+    "cut": cut_world,
+    "btc": btc_world,
+    "btc masked": lambda: btc_world(btc_masked=(T0 + HOUR, T0 + 2 * HOUR)),
+    "trend": trend_world,
+}
+
+# Each hold arm's output on the step-3 worlds above at 1883d2a, the commit before hold_btc_trend
+# (controller ruling F1): the SHA-256 of the records file, and of the canonical JSON of the
+# summary without its receipt_sha256 (which follows from the records). Captured at that commit,
+# before any change to hold.py, by the procedure this test follows.
+BASE_PINS = (
+    (
+        ("universe", "hold_universe", 10000, 1),
+        "7eb8fcd29a6d27f80ba6c98cb35b21dfefd1961714cd63b92c92c71c4b28063f",
+        "8afb765703957d7a817ed81239caf5eb07360e9716cb5b039a8141153c20b6e2",
+    ),
+    (
+        ("universe", "hold_universe", 1000, 2),
+        "375f00a0b3d9f0e6a41ea9bea1403fc098fc9b60c2ef744915c54808dea2bc4d",
+        "c6f1222583ef1e6d16079766ce84e0c714b67fe31d6f5d4f51840f5bc16145fb",
+    ),
+    (
+        ("cut", "hold_universe", 10000, 1),
+        "17a1d3d000b642341a59fe0ad742100de655e91deacd25c6e115a8aa17dce43b",
+        "1433196f3f87883d6a1174bc95203fb2ed9e62fc7f7cb84b89a20e5e2a71a175",
+    ),
+    (
+        ("btc", "hold_btc", 10000, 1),
+        "441f2fe5506f0fef459df3c832d36256a3e190cf5b1e58256e8abc698a88fa81",
+        "9adf8868371d6e19b919d8bae6e7faf3b6299e6156c402db74b99a971dd0da23",
+    ),
+    (
+        ("btc", "hold_btc", 1000, 2),
+        "0597e3c3c0803766607e03dc4670ca685e80699f5a52bd638f83e0cf9a254ae6",
+        "a39c1c59ef672457bf378bdf9001e96df0cf0281b28693a20f699a9c2ab22570",
+    ),
+    (
+        ("btc", "hold_universe", 10000, 1),
+        "b581a261fd66d062a0d6c094afe295def5c6d15a1d4101098396e7cb78f404b9",
+        "db67bc85eaf2d9df270df6c0b5c771fd62ed18da0edf852328b452f69b075ce6",
+    ),
+    (
+        ("btc masked", "hold_btc", 10000, 1),
+        "7119769406418ca201ad2320557cbd9c398734fddba0d1b12a5ab250f16746ce",
+        "aaf87da7801e5c4726ac6a6953d436f6f9dfcbdefbaf9e46aaa6f3365b11fd23",
+    ),
+    (
+        ("trend", "hold_universe", 10000, 1),
+        "03a70c5044c4e02b870a3e56b9beede0e5db8395647c8a89ff76c9b57c20a0fb",
+        "79631dff313bf37e80eeaeda28bbeb89dddf3e4df5603098952aa7bd769fb684",
+    ),
+    (
+        ("trend", "hold_btc", 10000, 1),
+        "978b5ca22fc443a4c664628f7436ab93343ff5527eea8791cd5c4b892ce6e818",
+        "4712dfafca5e2b8ccd44a3818eb62a5ff2382e2438dc651ccd069bd229517bc3",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("which", "records_sha256", "summary_sha256"),
+    BASE_PINS,
+    ids=[f"{w}-{arm}-{capital}-{multiple}x" for (w, arm, capital, multiple), _, _ in BASE_PINS],
+)
+def test_hold_btc_and_hold_universe_are_unchanged(which, records_sha256, summary_sha256, tmp_path):
+    """Controller ruling F1: adding hold_btc_trend changes nothing for the two older hold arms.
+    On each world, their records are byte-identical to what 1883d2a wrote (no record key was
+    added for them), and their summary, without ``receipt_sha256``, is the same document."""
+    world, arm, capital, multiple = which
+    market = load(tmp_path, UNCHANGED_WORLDS[world]())
+    cell = CellSpec(arm, capital, multiple)
+
+    result, _ = cell_run(market, tmp_path, cell)
+
+    assert result.receipt.records_sha256 == records_sha256
+    summary = build_summary(cell, result, tmp_path / "out" / "cell" / run.RECORDS_FILE)
+    del summary["receipt_sha256"]
+    document = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(document.encode()).hexdigest() == summary_sha256
 
 
 def test_v4_arms_are_not_run_here(tmp_path):

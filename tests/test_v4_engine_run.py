@@ -1,7 +1,8 @@
 """V4 engine task 12: the hour loop of the V4 arms (part 12a: the loop, the open marks, the
 records, the 00:00 decisions, the audit and the error paths; part 12b: the fill phase and the
 window-end close; part 12c: the synthetic closes, the post-fill and funding checks and cuts,
-funding, the adverse-extreme liquidation and the stops).
+funding, the adverse-extreme liquidation and the stops). Step 4a adds the short filter of
+``v4_btc200_shorts`` and the confirmation of ``v4_confirm3`` (ruling R1).
 
 Each test replays a small synthetic world from ``tests/v4_synthetic.py`` through
 ``run_v4_cell``. ``seed`` books fills into the cell's ledger and opens their lifecycles before
@@ -65,7 +66,7 @@ from crypto_grid_bot.v4.engine.numbers import to_decimal
 from crypto_grid_bot.v4.engine.pending import PendingBook
 from crypto_grid_bot.v4.engine.records import read_receipt, read_records
 from crypto_grid_bot.v4.engine.safety import DeadMarkets, ceiling_factor, cushion_factor
-from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading
+from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading, long_fraction
 from crypto_grid_bot.v4.engine.sizing import SizingResult, daily_returns, size_book
 
 D = Decimal
@@ -2983,13 +2984,9 @@ def check_conservation(rows: list[tuple[str, dict[str, Any]]], final: Decimal) -
     assert sum((F(D(r["funding"])) for r in lives), F(0)) == paid
 
 
-def test_a_coin_that_leaves_and_reenters_catches_up_its_signals_on_every_bar(monkeypatch, tmp_path):
-    """Spec "Signals" and "Universe": ETHUSDT is in January's universe, not February's, and
-    back in March's. Its February 1 decision is a universe exit (target 0, its spot sells at
-    01:00), and once it is flat and outside the universe it is not decided again until March 1.
-    That decision feeds its signal state every daily bar of February at once (``_feed``'s
-    catch-up): each one, once and in order, so its reading and the book's weights are those of
-    one plain pass over the market's daily bars, and it is bought again at 01:00."""
+def reentry_world() -> World:
+    """BTCUSDT (with its perpetual, funding 0) and ETHUSDT rising from 2024-10 to 2025-03;
+    ETHUSDT is in January's universe, not February's, and back in March's."""
     start, hours = month_start("2024-10"), hours_in("2024-10", "2025-03")
     btc = CoinSpec(
         "BTCUSDT",
@@ -3001,7 +2998,18 @@ def test_a_coin_that_leaves_and_reenters_catches_up_its_signals_on_every_bar(mon
     )
     both = ("BTCUSDT", "ETHUSDT")
     universes = {"2025-01": both, "2025-02": ("BTCUSDT",), "2025-03": both}
-    market = load(tmp_path, World("2025-03", (btc, eth), universes))
+    return World("2025-03", (btc, eth), universes)
+
+
+def test_a_coin_that_leaves_and_reenters_catches_up_its_signals_on_every_bar(monkeypatch, tmp_path):
+    """Spec "Signals" and "Universe": ETHUSDT is in January's universe, not February's, and
+    back in March's. Its February 1 decision is a universe exit (target 0, its spot sells at
+    01:00), and once it is flat and outside the universe it is not decided again until March 1.
+    That decision feeds its signal state every daily bar of February at once (``_feed``'s
+    catch-up): each one, once and in order, so its reading and the book's weights are those of
+    one plain pass over the market's daily bars, and it is bought again at 01:00."""
+    both = ("BTCUSDT", "ETHUSDT")
+    market = load(tmp_path, reentry_world())
     made: list[Any] = []
 
     class SpySignals(CoinSignals):
@@ -3057,6 +3065,16 @@ def test_a_coin_that_leaves_and_reenters_catches_up_its_signals_on_every_bar(mon
     check_conservation(rows, result.final_equity)
 
 
+def flip_world() -> World:
+    """BTCUSDT (with its perpetual, funding 0) rising for ten months from 2024-03 and falling
+    from 2025-01-01, selected in January and February."""
+    start = month_start("2024-03")
+    up, down = (T0 - start) // HOUR, hours_in("2025-01", "2025-02")
+    closes = path("50000", (up, "0.0002"), (down, "-0.0006"), noise="0.002", seed=21)
+    btc = CoinSpec("BTCUSDT", Series(start, closes), perpetual=PerpetualSpec(funding_rate="0"))
+    return World("2025-02", (btc,), {"2025-01": ("BTCUSDT",), "2025-02": ("BTCUSDT",)})
+
+
 def test_a_long_on_spot_flips_to_a_short_on_futures_in_one_batch(tmp_path):
     """Spec "Longs on spot first", "Shorts on futures" and "Records": BTCUSDT rises for ten
     months, so its slow speed stays up, and falls from 2025-01-01. It is long on spot (L > 0)
@@ -3065,12 +3083,7 @@ def test_a_long_on_spot_flips_to_a_short_on_futures_in_one_batch(tmp_path):
     the short on the perpetual (an increase, after it). The long's lifecycle ends there with
     reason ``signal``, holding the spot fills only, and the short's begins there with the
     futures fill; money is conserved over the two."""
-    start = month_start("2024-03")
-    up, down = (T0 - start) // HOUR, hours_in("2025-01", "2025-02")
-    closes = path("50000", (up, "0.0002"), (down, "-0.0006"), noise="0.002", seed=21)
-    btc = CoinSpec("BTCUSDT", Series(start, closes), perpetual=PerpetualSpec(funding_rate="0"))
-    both = {"2025-01": ("BTCUSDT",), "2025-02": ("BTCUSDT",)}
-    market = load(tmp_path, World("2025-02", (btc,), both))
+    market = load(tmp_path, flip_world())
 
     result, rows = cell_run(market, tmp_path)
 
@@ -3121,6 +3134,500 @@ def test_a_long_on_spot_flips_to_a_short_on_futures_in_one_batch(tmp_path):
     assert F(D(short["venues"]["futures"]["sold_quantity"])) >= quantity
     assert D(short["venues"]["spot"]["bought_quantity"]) == 0
     check_conservation(rows, result.final_equity)
+
+
+# ---- step 4a: v4_btc200_shorts, shorts only while BTC is below its SMA(200) ----------------
+
+BTC200 = CellSpec("v4_btc200_shorts", CAPITAL, 1)
+BTC_DOWN = T0 + 9 * DAY  # 2025-01-10: BTCUSDT's first daily close below its SMA(200)
+BTC_UP = T0 + 19 * DAY  # 2025-01-20: its first daily close back above it
+
+
+def falling_alt() -> CoinSpec:
+    """ALTUSDT falling from 2024-10 with its perpetual (funding 0): a confirmed downtrend every
+    day of January, which v4_main shorts at the 0.30 coin cap."""
+    return one_coin("ALTUSDT", "2000", "-0.0003", 51, perpetual=PerpetualSpec(funding_rate="0"))
+
+
+def btc_crossing(masked: Sequence[int] = ()) -> CoinSpec:
+    """BTCUSDT on spot only, from 2024-05: flat at 100 (its close ties its SMA(200), so no slow
+    vote), at 90 from BTC_DOWN (below its SMA(200)) and at 120 from BTC_UP (above it)."""
+    start = month_start("2024-05")
+    closes = (
+        ("100",) * ((BTC_DOWN - start) // HOUR)
+        + ("90",) * ((BTC_UP - BTC_DOWN) // HOUR)
+        + ("120",) * ((month_start("2025-02") - BTC_UP) // HOUR)
+    )
+    return CoinSpec("BTCUSDT", Series(start, closes, masked=masked))
+
+
+def alt_only(btc: CoinSpec | None) -> World:
+    """ALTUSDT alone in January's universe, with ``btc`` in the packs but never selected."""
+    coins = (falling_alt(),) if btc is None else (btc, falling_alt())
+    return World("2025-01", coins, {"2025-01": ("ALTUSDT",)})
+
+
+def shorts(rows: Iterable[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """The futures sells and the short lifecycles of a run."""
+    sells = [f for f in of_kind(rows, "fill") if f["venue"] == "futures" and f["side"] == -1]
+    return sells + [r for r in of_kind(rows, "lifecycle") if r["side"] == "short"]
+
+
+def test_btc200_shorts_blocks_every_short_while_btc_is_above_its_sma200(tmp_path):
+    """Ruling R1: BTCUSDT rises for 260 days, so from its 200th close on its slow vote is +1 and
+    shorts are never allowed. v4_main shorts the falling ALTUSDT; v4_btc200_shorts clamps every
+    coin's signal to max(signal, 0), so it never targets below 0 and never sells futures. BTCUSDT
+    is decided too, and its own trading reading is the plain one: the filter's BTC state is
+    separate from it."""
+    start = T0 - 229 * DAY
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, path("50000", (260 * 24, "0.0003"), noise="0.003", seed=52)),
+        perpetual=PerpetualSpec(funding_rate="0"),
+    )
+    market = load(
+        tmp_path, World("2025-01", (btc, falling_alt()), {"2025-01": ("BTCUSDT", "ALTUSDT")})
+    )
+
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+
+    assert result.outcome == "complete"
+    assert shorts(main_rows) and all(
+        D(r["target"]) < 0 for r in of_kind(main_rows, "daily_coin") if r["coin"] == "ALTUSDT"
+    )
+    assert all(r["short_filter"] is None for r in of_kind(main_rows, "daily_coin"))
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_main"])
+    assert len([day for day in btc_readings if day < T0]) == 229  # warm before January
+    daily = of_kind(rows, "daily_coin")
+    assert {r["decision_ms"] for r in daily} == set(range(T0, month_start("2025-02"), DAY))
+    for record in daily:
+        btc_reading = latest(btc_readings, record["day_ms"])
+        assert btc_reading is not None and btc_reading.slow == 1
+        assert record["short_filter"] == {"btc_slow_vote": 1, "allowed": False}
+        assert D(record["signal"]) == max(D(record["s"]), D(0))
+        assert record["target"] is not None and D(record["target"]) >= 0
+        if record["coin"] == "BTCUSDT":
+            check_reading(record, btc_reading)
+    assert all(D(r["s"]) < 0 for r in daily if r["coin"] == "ALTUSDT")  # the clamp acted
+    assert shorts(rows) == []
+
+
+def test_btc200_shorts_allows_shorts_once_btc_closes_below_and_closes_them_when_it_recovers(
+    tmp_path,
+):
+    """Ruling R1: BTCUSDT (never selected) ties its SMA(200) until BTC_DOWN, closes below it
+    from BTC_DOWN and above it from BTC_UP. ALTUSDT's short target appears at the decision after
+    BTC_DOWN and equals v4_main's at every decision while shorts are allowed; the decision after
+    BTC_UP gives it 0, so the short closes at the next fill, a lifecycle ended by ``signal``."""
+    market = load(tmp_path, alt_only(btc_crossing()))
+
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+
+    assert result.outcome == "complete"
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_main"])
+    main_daily, daily = daily_by(main_rows), daily_by(rows)
+    decisions = list(range(T0, month_start("2025-02"), DAY))
+    assert sorted(daily) == sorted(main_daily) == [(h, "ALTUSDT") for h in decisions]
+    for h in decisions:
+        record, main = daily[(h, "ALTUSDT")], main_daily[(h, "ALTUSDT")]
+        allowed = BTC_DOWN < h <= BTC_UP
+        vote = None if h <= BTC_DOWN else (-1 if allowed else 1)
+        btc_reading = latest(btc_readings, h - DAY)
+        assert btc_reading is not None and btc_reading.slow == vote
+        assert record["short_filter"] == {"btc_slow_vote": vote, "allowed": allowed}
+        assert D(main["target"]) < 0  # v4_main is short all month
+        if allowed:
+            assert record["target"] == main["target"]
+        else:
+            assert D(record["target"]) == 0
+    entry, exit_ = BTC_DOWN + DAY + HOUR, BTC_UP + DAY + HOUR
+    sells, buys = (
+        [f for f in of_kind(rows, "fill") if f["side"] == side and f["venue"] == "futures"]
+        for side in (-1, 1)
+    )
+    assert sells[0]["hour_ms"] == entry and buys[-1]["hour_ms"] == exit_
+    assert holdings(rows, exit_ - 1)[("futures", "ALTUSDT")] < 0
+    assert holdings(rows, exit_) == {}  # flat after the closing fill
+    (short,) = of_kind(rows, "lifecycle")
+    assert (short["coin"], short["side"]) == ("ALTUSDT", "short")
+    assert (short["entry_ms"], short["exit_ms"], short["exit_reason"]) == (entry, exit_, "signal")
+    assert not short["censored"]
+
+
+def test_btc200_shorts_keeps_the_last_btc_reading_on_a_day_without_a_btc_bar(tmp_path):
+    """Review Focus 1: BTCUSDT's hours 00:00 to 05:59 of BTC_UP are masked, so that day has no
+    daily bar, though its closes would have voted +1. The decision closing BTC_UP keeps BTC's
+    reading of the day before, a slow vote of -1, so shorts stay allowed; the next decision
+    reads the bar of the day after and closes the short."""
+    market = load(tmp_path, alt_only(btc_crossing(masked=day_hours(BTC_UP, range(6)))))
+    btc_days = {bar.open_ms for bar in market.daily("BTCUSDT")}
+    assert BTC_UP - DAY in btc_days and BTC_UP not in btc_days and BTC_UP + DAY in btc_days
+
+    result, rows = cell_run(market, tmp_path, BTC200)
+
+    assert result.outcome == "complete"
+    daily = daily_by(rows)
+    before, kept, after = (daily[(h, "ALTUSDT")] for h in (BTC_UP, BTC_UP + DAY, BTC_UP + 2 * DAY))
+    assert before["short_filter"] == {"btc_slow_vote": -1, "allowed": True}
+    assert kept["short_filter"] == before["short_filter"]
+    assert D(kept["target"]) < 0  # still short
+    assert after["short_filter"] == {"btc_slow_vote": 1, "allowed": False}
+    assert D(after["target"]) == 0
+    (short,) = of_kind(rows, "lifecycle")
+    assert (short["exit_ms"], short["exit_reason"]) == (BTC_UP + 2 * DAY + HOUR, "signal")
+
+
+@pytest.mark.parametrize("btc_start", [month_start("2024-10"), T0 + 5 * DAY])
+def test_btc200_shorts_while_btc_warms_up_allows_no_short(btc_start, tmp_path):
+    """Ruling R1: fewer than 200 BTC closes (123 from 2024-10, and none before BTCUSDT's first
+    bar on 2025-01-06) is no slow vote, so shorts are not allowed, though BTCUSDT falls."""
+    closes = path("50000", ((month_start("2025-02") - btc_start) // HOUR, "-0.0003"), seed=53)
+    market = load(tmp_path, alt_only(CoinSpec("BTCUSDT", Series(btc_start, closes))))
+
+    result, rows = cell_run(market, tmp_path, BTC200)
+
+    assert result.outcome == "complete"
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_main"])
+    assert len(btc_readings) < 200
+    daily = of_kind(rows, "daily_coin")
+    assert len(daily) == 31
+    for record in daily:
+        btc_reading = latest(btc_readings, record["day_ms"])
+        assert btc_reading is None or btc_reading.sma_slow is None
+        assert record["short_filter"] == {"btc_slow_vote": None, "allowed": False}
+        assert D(record["s"]) < 0 and D(record["signal"]) == D(record["target"]) == 0
+    assert of_kind(rows, "fill") == []
+
+
+def test_btc200_shorts_without_btcusdt_is_an_engine_error(tmp_path):
+    """The filter reads BTCUSDT's own bars, so a market without BTCUSDT ends the cell as
+    ``engine_error`` at its first decision, as hold_btc does. v4_main never reads BTCUSDT for the
+    filter and runs on the same market."""
+    market = load(tmp_path, alt_only(None))
+
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+    main, _ = cell_run(market, tmp_path, MAIN, name="main")
+
+    assert main.outcome == "complete"
+    assert result.outcome == "engine_error"
+    assert result.reason == "ValueError: 'BTCUSDT' is not a coin of the packs"
+    kind, outcome = rows[-1]
+    assert kind == "outcome" and outcome["type"] == "ValueError" and outcome["hour_ms"] == T0
+    assert of_kind(rows, "daily_coin") == [] and of_kind(rows, "fill") == []
+
+
+# ---- step 4a: v4_confirm3, a new direction only after 3 readings in a row -----------------
+
+CONFIRM3 = CellSpec("v4_confirm3", CAPITAL, 1)
+NEEDED = 3  # v4_confirm3's confirm_readings (v4-d22)
+# The engine's own long fractions L, for hand-built readings.
+THIRD = long_fraction(1, None, None)
+TWO_THIRDS = long_fraction(1, 1, None)
+WHOLE = long_fraction(1, 1, 1)
+CATCH_JUMP = T0 - 10 * DAY  # 2024-12-22: CATCHUSDT's step up, ten days before its first decision
+MASK_JUMP = T0 + 4 * DAY  # 2025-01-05: MASKUSDT's step up; the day after it has no daily bar
+
+
+def sign(value: Decimal) -> int:
+    return (value > 0) - (value < 0)
+
+
+def confirm_states(values: Sequence[Decimal | str]) -> list[tuple[int, int, Decimal]]:
+    """``_Confirm`` from a coin's first state (no reading yet: e = 0, run 0), fed one hand-built
+    reading's raw ``s`` after another; its (direction, run, effective) after each."""
+    assert ARMS["v4_confirm3"].confirm_readings == NEEDED
+    state = run._Confirm(D(0), 0, 0)
+    after = []
+    for s in values:
+        state.read(D(s), NEEDED)
+        after.append((state.direction, state.run, state.effective))
+    return after
+
+
+def plain_confirm(readings: dict[int, SignalReading]) -> dict[int, tuple[int, int, Decimal]]:
+    """R1's rule the plain way, after each reading day: the reading's direction, how many
+    readings in a row up to it share that direction, and e (0 before the first reading)."""
+    days = sorted(readings)
+    directions = [sign(readings[day].s) for day in days]
+    plain, effective = {}, D(0)
+    for i, day in enumerate(days):
+        streak = 1
+        while streak <= i and directions[i - streak] == directions[i]:
+            streak += 1
+        if directions[i] == sign(effective) or streak >= NEEDED:
+            effective = readings[day].s
+        plain[day] = (directions[i], streak, effective)
+    return plain
+
+
+def expected_confirm(plain: dict[int, tuple[int, int, Decimal]], day: int) -> dict[str, Any]:
+    """The ``confirm`` of the decision closing ``day``: the state after the latest reading at or
+    before it, or the first state before any."""
+    days = [stamp for stamp in plain if stamp <= day]
+    direction, streak, effective = plain[max(days)] if days else (0, 0, D(0))
+    return {"direction": direction, "run": streak, "effective": text(effective)}
+
+
+def stepped(symbol: str, jump_ms: int, masked: Sequence[int] = ()) -> CoinSpec:
+    """A spot coin at a flat 100 for the 300 days before 2025 (every speed a tie: s = 0), then
+    at 120 from ``jump_ms`` to February: all three speeds up from that day's reading (s = 1)
+    until the fast SMA catches up, 19 readings later."""
+    start, end = T0 - 300 * DAY, month_start("2025-02")
+    closes = ("100",) * ((jump_ms - start) // HOUR) + ("120",) * ((end - jump_ms) // HOUR)
+    return CoinSpec(symbol, Series(start, closes, masked=masked))
+
+
+def test_a_new_direction_takes_effect_on_its_third_reading_in_a_row(tmp_path):
+    """Ruling R1: from e = 0 before any reading, long readings, then short readings from day F.
+    A new direction's first two readings keep e (the run is 1, then 2), and its third sets e to
+    that reading's own s. On ``flip_world`` F is 2025-01-17 (s = -0.5): v4_confirm3 stays long
+    at the decisions closing F and F + 1 day, where v4_main is short, and takes the short at the
+    decision closing F + 2 days, so its long ends two days after v4_main's. Every record's
+    ``confirm`` is the plain pass's and its signal is e; its targets are v4_main's at every other
+    decision."""
+    states = confirm_states([TWO_THIRDS] * 4 + ["-0.5", "-0.5", "-0.25", "-0.25"])
+    assert states == [
+        (1, 1, 0),
+        (1, 2, 0),
+        (1, 3, TWO_THIRDS),
+        (1, 4, TWO_THIRDS),
+        (-1, 1, TWO_THIRDS),
+        (-1, 2, TWO_THIRDS),
+        (-1, 3, D("-0.25")),
+        (-1, 4, D("-0.25")),
+    ]
+
+    market = load(tmp_path, flip_world())
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, CONFIRM3, name="confirm3")
+
+    assert result.outcome == "complete"
+    readings = readings_by_day(market, "BTCUSDT", ARMS["v4_confirm3"])
+    flip = T0 + 16 * DAY  # F
+    assert min(day for day in readings if readings[day].s < 0) == flip
+    assert readings[flip - DAY].s == THIRD
+    assert [readings[flip + k * DAY].s for k in range(3)] == [D("-0.5")] * 3
+    plain = plain_confirm(readings)
+    daily, main = daily_by(rows), daily_by(main_rows)
+    decisions = range(T0, month_start("2025-03"), DAY)
+    assert sorted(daily) == sorted(main) == [(h, "BTCUSDT") for h in decisions]
+    for (h, coin), record in daily.items():
+        check_reading(record, latest(readings, h - DAY))
+        assert record["confirm"] == expected_confirm(plain, h - DAY)
+        assert record["short_filter"] is None and main[(h, coin)]["confirm"] is None
+        effective = D(record["confirm"]["effective"])
+        assert D(record["signal"]) == (effective if record["eligible"] else max(effective, D(0)))
+    held = {flip + DAY: 1, flip + 2 * DAY: 2}  # the decisions closing F and F + 1 day: their runs
+    for h, streak in held.items():
+        record = daily[(h, "BTCUSDT")]
+        assert record["confirm"] == {"direction": -1, "run": streak, "effective": text(THIRD)}
+        assert D(record["target"]) > 0 > D(main[(h, "BTCUSDT")]["target"])
+    taken = daily[(flip + 3 * DAY, "BTCUSDT")]
+    assert taken["confirm"] == {"direction": -1, "run": 3, "effective": "-0.5"}
+    differ = [
+        h for h in decisions if daily[(h, "BTCUSDT")]["target"] != main[(h, "BTCUSDT")]["target"]
+    ]
+    assert differ == list(held)
+    long, short = of_kind(rows, "lifecycle")
+    main_long, _ = of_kind(main_rows, "lifecycle")
+    assert (main_long["side"], main_long["exit_ms"]) == ("long", flip + DAY + HOUR)
+    assert (long["side"], long["exit_ms"], long["exit_reason"]) == (
+        "long",
+        flip + 3 * DAY + HOUR,
+        "signal",
+    )
+    assert (short["side"], short["entry_ms"]) == ("short", flip + 3 * DAY + HOUR)
+
+
+def test_a_direction_that_flips_back_before_three_readings_never_takes_effect():
+    """Ruling R1: long, then short, short and long again. The two shorts never reach a run of 3,
+    so e stays long throughout. The long reading after them restarts the run at 1 and, being in
+    e's own direction, sets e to its own s at once, run or no run. The shorts after it start a
+    new run of their own: only the third of them in a row takes effect."""
+    states = confirm_states([THIRD] * 3 + ["-0.5", "-0.5", TWO_THIRDS] + ["-0.5"] * 3)
+    assert states == [
+        (1, 1, 0),
+        (1, 2, 0),
+        (1, 3, THIRD),
+        (-1, 1, THIRD),
+        (-1, 2, THIRD),
+        (1, 1, TWO_THIRDS),
+        (-1, 1, TWO_THIRDS),
+        (-1, 2, TWO_THIRDS),
+        (-1, 3, D("-0.5")),
+    ]
+
+
+def test_a_size_change_within_the_effective_direction_follows_at_once(tmp_path):
+    """Ruling R1: a reading in e's own direction sets e to its s at once, whatever its run. L
+    going from 1/3 to 1 while long gives e = 1 that day, then 2/3 the next; after one flat
+    reading, a long of 1 is again e at once, though its run is 1; and a short's size changes the
+    same way once the short has taken effect. On ``flip_world`` the long's s falls from 1 to 2/3
+    on 2025-01-02 and to 1/3 on January 11, and the short's from -0.5 to -1 on January 21: each
+    decision closing those days uses the new s, and its target is v4_main's."""
+    states = confirm_states([THIRD] * 3 + [WHOLE, TWO_THIRDS, "0", WHOLE] + ["-0.25"] * 3 + ["-1"])
+    assert states == [
+        (1, 1, 0),
+        (1, 2, 0),
+        (1, 3, THIRD),
+        (1, 4, WHOLE),
+        (1, 5, TWO_THIRDS),
+        (0, 1, TWO_THIRDS),
+        (1, 1, WHOLE),
+        (-1, 1, WHOLE),
+        (-1, 2, WHOLE),
+        (-1, 3, D("-0.25")),
+        (-1, 4, D("-1")),
+    ]
+
+    market = load(tmp_path, flip_world())
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    _, rows = cell_run(market, tmp_path, CONFIRM3, name="confirm3")
+
+    readings = readings_by_day(market, "BTCUSDT", ARMS["v4_confirm3"])
+    changes = [
+        day
+        for day in sorted(readings)
+        if day >= T0
+        and readings[day].s != readings[day - DAY].s
+        and sign(readings[day].s) == sign(readings[day - DAY].s)
+    ]
+    assert changes == [T0 + DAY, T0 + 10 * DAY, T0 + 20 * DAY]
+    daily, main = daily_by(rows), daily_by(main_rows)
+    for day in changes:
+        before, record = daily[(day, "BTCUSDT")], daily[(day + DAY, "BTCUSDT")]
+        assert before["confirm"]["effective"] == text(readings[day - DAY].s)
+        assert record["confirm"]["effective"] == record["s"] == text(readings[day].s)
+        assert record["signal"] == record["s"]
+        assert record["target"] == main[(day + DAY, "BTCUSDT")]["target"]
+
+
+def test_going_flat_also_needs_three_readings():
+    """Ruling R1: s = 0 is a direction of its own. After a long, two readings of 0 keep e long
+    and the third sets it to 0; from flat, a long needs three readings again. A short goes flat
+    the same way."""
+    states = confirm_states([THIRD] * 3 + ["0"] * 4 + [THIRD] * 3 + ["-0.5"] * 3 + ["0"] * 3)
+    assert states == [
+        (1, 1, 0),
+        (1, 2, 0),
+        (1, 3, THIRD),
+        (0, 1, THIRD),
+        (0, 2, THIRD),
+        (0, 3, 0),
+        (0, 4, 0),
+        (1, 1, 0),
+        (1, 2, 0),
+        (1, 3, THIRD),
+        (-1, 1, THIRD),
+        (-1, 2, THIRD),
+        (-1, 3, D("-0.5")),
+        (0, 1, D("-0.5")),
+        (0, 2, D("-0.5")),
+        (0, 3, 0),
+    ]
+
+
+def test_a_catch_up_counts_every_bar_and_a_no_bar_day_counts_none(tmp_path):
+    """Review Focus 2 (ruling R1: a reading per daily bar, none for a day without one).
+    CATCHUSDT enters the universe on 2025-01-01 with 300 daily bars of history, all fed at that
+    first decision: 290 readings of s = 0, then ten of s = 1 from CATCH_JUMP. The catch-up ends
+    with a run of 10, so e took the long at the third of them, inside the catch-up, and the coin
+    is long at its first decision, as in v4_main. MASKUSDT steps up on MASK_JUMP and has no bar
+    the day after. The decision closing that day adds no reading, so the runs at the decisions
+    closing MASK_JUMP and the three days after it are 1, still 1, 2 and 3, and only the last is
+    long: two decisions after v4_main's first long target. Every record's ``confirm`` is the
+    plain pass's."""
+    masked = day_hours(MASK_JUMP + DAY, range(6))
+    coins = (stepped("CATCHUSDT", CATCH_JUMP), stepped("MASKUSDT", MASK_JUMP, masked))
+    market = load(tmp_path, World("2025-01", coins, {"2025-01": ("CATCHUSDT", "MASKUSDT")}))
+    assert len([bar for bar in market.daily("CATCHUSDT") if bar.open_ms < T0]) == 300
+    mask_days = {bar.open_ms for bar in market.daily("MASKUSDT")}
+    assert MASK_JUMP in mask_days and MASK_JUMP + DAY not in mask_days
+
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, CONFIRM3, name="confirm3")
+
+    assert result.outcome == "complete"
+    daily, main = daily_by(rows), daily_by(main_rows)
+    for coin in ("CATCHUSDT", "MASKUSDT"):
+        plain = plain_confirm(readings_by_day(market, coin, ARMS["v4_confirm3"]))
+        for h in range(T0, FEB, DAY):
+            assert daily[(h, coin)]["confirm"] == expected_confirm(plain, h - DAY), (coin, h)
+    catch = daily[(T0, "CATCHUSDT")]
+    assert catch["confirm"] == {"direction": 1, "run": 10, "effective": "1"}
+    assert catch["signal"] == "1" and D(catch["target"]) > 0
+    assert catch["target"] == main[(T0, "CATCHUSDT")]["target"]
+    after = [daily[(MASK_JUMP + k * DAY, "MASKUSDT")] for k in (1, 2, 3, 4)]
+    assert [record["confirm"] for record in after] == [
+        {"direction": 1, "run": 1, "effective": "0"},
+        {"direction": 1, "run": 1, "effective": "0"},  # no bar, so no reading
+        {"direction": 1, "run": 2, "effective": "0"},
+        {"direction": 1, "run": 3, "effective": "1"},
+    ]
+    assert after[1]["no_bar"] and after[1]["target"] is None
+    for record in (after[0], after[2]):
+        assert D(record["target"]) == 0 < D(main[(record["decision_ms"], "MASKUSDT")]["target"])
+    assert D(after[3]["target"]) > 0
+    assert after[3]["target"] == main[(after[3]["decision_ms"], "MASKUSDT")]["target"]
+
+
+def test_a_universe_exit_is_not_delayed_by_the_confirmation(tmp_path):
+    """Ruling R1: ETHUSDT (``reentry_world``) is long in January, leaves the universe in February
+    and is back in March. At February's first decision its e is still long, but the universe
+    exit gives it signal 0 and target 0 at once, with no readings to wait for, and its whole spot
+    leg sells at 01:00 as in v4_main. The March decision's catch-up feeds it February's bars, so
+    its state is the plain pass's again, as at every other decision."""
+    market = load(tmp_path, reentry_world())
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, CONFIRM3, name="confirm3")
+
+    assert result.outcome == "complete"
+    daily, main = daily_by(rows), daily_by(main_rows)
+    left, main_left = daily[(FEB, "ETHUSDT")], main[(FEB, "ETHUSDT")]
+    assert left["universe_exit"] and D(left["confirm"]["effective"]) > 0
+    assert D(left["signal"]) == D(left["target"]) == 0
+    assert (left["signal"], left["target"]) == (main_left["signal"], main_left["target"])
+    mar = month_start("2025-03")
+    sold = [
+        f for f in of_kind(rows, "fill") if f["coin"] == "ETHUSDT" and FEB <= f["hour_ms"] < mar
+    ]
+    assert [(f["hour_ms"], f["side"], f["reason"]) for f in sold] == [
+        (FEB + HOUR, -1, "universe exit")
+    ]
+    assert F(D(sold[0]["quantity"])) == holdings(rows, FEB)[("spot", "ETHUSDT")]  # all of it
+    plain = plain_confirm(readings_by_day(market, "ETHUSDT", ARMS["v4_confirm3"]))
+    eth_days = sorted(h for h, coin in daily if coin == "ETHUSDT")
+    assert eth_days == [*range(T0, FEB + DAY, DAY), *range(mar, month_start("2025-04"), DAY)]
+    for h in eth_days:
+        assert daily[(h, "ETHUSDT")]["confirm"] == expected_confirm(plain, h - DAY)
+
+
+def test_a_dead_market_is_not_delayed_by_the_confirmation(tmp_path):
+    """Ruling R1: LUNAUSDT (``rising_world``) is long and stops trading at 00:00 on 2025-01-08.
+    From the decision of January 15, 168 hours after its last bar, it is a dead market: it has no
+    new reading, so e is still long, but its signal is 0 at once and it gets no target, and its
+    spot leg closes as a delisting at the instant v4_main's does."""
+    market = load(tmp_path, rising_world(luna_end_ms=T0 + 7 * DAY))
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, CONFIRM3, name="confirm3")
+
+    assert result.outcome == "complete"
+    daily = daily_by(rows)
+    for h in range(T0 + 14 * DAY, FEB, DAY):
+        luna = daily[(h, "LUNAUSDT")]
+        assert luna["dead_market"] and D(luna["confirm"]["effective"]) > 0
+        assert (luna["signal"], luna["target"], luna["no_target"]) == ("0", None, "no_bar")
+    delisted = [
+        [
+            (f["timestamp_ms"], f["side"])
+            for f in of_kind(each, "fill")
+            if f["coin"] == "LUNAUSDT" and f["reason"] == "delisting"
+        ]
+        for each in (rows, main_rows)
+    ]
+    assert len(delisted[0]) == 1 and delisted[0] == delisted[1]
 
 
 # ---- outputs ------------------------------------------------------------------------------

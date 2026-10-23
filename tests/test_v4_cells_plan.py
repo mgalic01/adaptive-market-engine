@@ -13,31 +13,33 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-from crypto_grid_bot.v4.engine.arms import ARMS, CellSpec, all_cells
+from crypto_grid_bot.v4.engine.arms import ARMS, DIAGNOSTIC_ARMS, CellSpec, all_cells
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import v4_cells_plan  # noqa: E402
 import v4_diagnose  # noqa: E402
 
-ALL_ARMS = ",".join(ARMS)
+ALL_ARMS = ",".join(DIAGNOSTIC_ARMS)
+CELLS_WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "v4-cells.yml"
 
 
-def test_the_run_has_eight_arms_and_the_plan_allows_two_capitals_and_two_costs():
+def test_the_plan_allows_the_eight_diagnostic_arms_two_capitals_and_two_costs():
     # The matrix is at most 8 x 2 x 2 = 32 jobs, well inside GitHub's 256.
-    assert len(ARMS) == 8
+    assert len(DIAGNOSTIC_ARMS) == 8 and len(ARMS) == 12
     assert v4_cells_plan.CAPITAL_CHOICES == {"1000": 1000, "10000": 10000}
     assert v4_cells_plan.COST_CHOICES == {"1": 1, "2": 2}
 
 
 def test_the_default_inputs_make_the_eight_arms_at_10000_and_1x():
     cells = v4_cells_plan.build_cells(ALL_ARMS, "10000", "1")
-    assert [cell.cell_id for cell in cells] == [f"{arm}-10000-1x" for arm in ARMS]
+    assert [cell.cell_id for cell in cells] == [f"{arm}-10000-1x" for arm in DIAGNOSTIC_ARMS]
 
 
-def test_every_arm_capital_and_cost_makes_the_32_cells_of_the_run_in_its_order():
+def test_every_diagnostic_arm_capital_and_cost_makes_the_32_cells_in_the_runs_order():
     cells = v4_cells_plan.build_cells(ALL_ARMS, "1000,10000", "1,2")
-    assert cells == all_cells()
+    assert cells == tuple(cell for cell in all_cells() if cell.arm in DIAGNOSTIC_ARMS)
     assert len(cells) == 32
 
 
@@ -98,8 +100,6 @@ def test_every_matrix_entry_is_a_cell_the_cell_cli_accepts():
         "v4_main,,hold_btc",
         "v4_main,v4_main",
         "v4_main,unknown",
-        "hold_btc_trend",  # a run arm, built in a later step: not an engine arm
-        "v3_as_built",
         "v4_main; echo injected",
         "v4_main\nhold_btc",
     ],
@@ -214,6 +214,28 @@ def test_main_refuses_a_bad_input_and_writes_nothing(tmp_path, capsys, inputs):
     # A value is shown as its repr: one line, so it cannot start a workflow command.
     assert "\n::error::injected" not in err
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "arm", ["v4_btc200_shorts", "v4_confirm3", "hold_btc_trend", "v3_as_built"]
+)
+def test_the_plan_refuses_arms_outside_the_diagnostic_set(tmp_path, capsys, arm):
+    """The four arms the registered run adds are real arms, but the cells workflow runs the
+    diagnostic eight only (v4-d22: nobody sees the new arms' results before step 5)."""
+    assert arm in ARMS and arm not in DIAGNOSTIC_ARMS
+    for arms in (arm, f"v4_main,{arm}"):
+        code, out, err, output = plan(tmp_path, capsys, arms=arms)
+        assert code == 1
+        assert out == ""
+        assert f"unknown arm {arm!r}" in err and "refused" in err
+        assert not output.exists()
+    with pytest.raises(ValueError, match="arm"):
+        v4_cells_plan.build_cells(arm, "10000", "1")
+    # The workflow's default arms are exactly the diagnostic set, which the plan accepts.
+    document = yaml.safe_load(CELLS_WORKFLOW.read_text(encoding="utf-8"))
+    default = document[True]["workflow_dispatch"]["inputs"]["arms"]["default"]
+    assert default == ",".join(DIAGNOSTIC_ARMS)
+    assert len(v4_cells_plan.build_cells(default, "10000", "1")) == 8
 
 
 def test_the_workflow_dispatch_defaults_are_a_plan_main_accepts(tmp_path, capsys):

@@ -1322,11 +1322,22 @@ def _whole_percent(value: Decimal) -> str:
 def describe_arm(spec: ArmSpec, widest_universe: int) -> str:
     """One plain line on what an arm of ``arms.ARMS`` does, from its own figures."""
     invested = _whole_percent(HOLD_INVESTED)
+    if spec.family == "v3":
+        return (
+            "V3's walk-forward selector, unchanged, on its own coins and inputs (V3's data end in "
+            "2024), a comparison with V4."
+        )
     if spec.family == "hold":
         if spec.name == "hold_btc":
             return (
                 f"no signal, spot only: {invested} of the account in {BTC} from the first hour, "
                 "held to the end."
+            )
+        if spec.name == "hold_btc_trend":
+            return (
+                f"spot only, with BTC's trend as its only signal: {invested} of the account in "
+                f"{BTC} while its daily close is above its {MAIN_LOOKBACKS.slow}-day average, "
+                "else cash; it trades only when that changes."
             )
         return (
             f"no signal, spot only: {invested} of the account split equally across the month's "
@@ -1347,10 +1358,19 @@ def describe_arm(spec: ArmSpec, widest_universe: int) -> str:
         windows = "shorter trend windows than the main ones"
     else:
         windows = "longer trend windows than the main ones"
+    rules = ""
+    if spec.short_filter == "btc_sma200":
+        rules += (
+            f" It is short only while BTC is below its {lookbacks.slow}-day average (otherwise "
+            "a short is closed; longs keep their signals, though their sizes can still change "
+            "through the book's common scale and caps)."
+        )
+    if spec.confirm_readings is not None:
+        rules += f" It acts on a new direction only after {spec.confirm_readings} days in a row."
     return (
         f"the trend bot, {sides}, sized to a {_whole_percent(target)} volatility target, with "
         f"{windows}: fast {lookbacks.fast} days, medium {lookbacks.ema_fast}/{lookbacks.ema_slow} "
-        f"days, slow {lookbacks.slow} days."
+        f"days, slow {lookbacks.slow} days.{rules}"
     )
 
 

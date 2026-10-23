@@ -20,12 +20,16 @@ even if it stops early; a cell that cannot run or verify writes none) and the "E
 5. writes ``summary.json`` and ``report.html`` (``write_cell_outputs``), then reads
    ``summary.json`` back and requires its bytes to be the canonical JSON of the verified summary.
 
+The ``v3_as_built`` arm (the ``v3`` family) is refused before step 1, with nothing read or
+written: V3's arm runs through its own CLI, ``scripts/v4_v3_cell.py``, on V3's own pack.
+
 **Exit status.** 0 once the verified summary is written, whatever the cell's outcome:
 ``complete``, ``liquidated``, ``limit_unrestorable``, ``accounting_failure`` or ``engine_error``
 (the last two with their short failure summaries). 1 when no verified summary could be written:
-a folder that already holds outputs, a data directory that does not load, a failure after the
-replay, a summary that does not verify (then neither ``summary.json`` nor ``report.html`` is
-written), or a ``summary.json`` whose bytes on disk are not the verified summary's. 2 for bad
+the ``v3_as_built`` arm, a folder that already holds outputs, a data directory that does not
+load, a failure after the replay, a summary that does not verify (then neither ``summary.json``
+nor ``report.html`` is written), or a ``summary.json`` whose bytes on disk are not the verified
+summary's. 2 for bad
 arguments (argparse's own): an arm, capital or cost multiple that is not the run's.
 
 **Output.** Standard output carries one line per cell: its id, outcome, record count, hours (open
@@ -59,6 +63,7 @@ from crypto_grid_bot.v4.engine.summary import (
 OUTPUT_FILES = (RECORDS_FILE, RECEIPT_FILE, SUMMARY_FILE, PAGE_FILE)
 
 Runner = Callable[[Market, CellSpec, Path], CellResult]
+# The v3 family is not here: V3's arm has its own CLI, which reads V3's pack.
 RUNNERS: dict[str, Runner] = {"v4": run_v4_cell, "hold": run_hold_cell}
 
 
@@ -78,6 +83,11 @@ def _fail(name: str, step: str, exc: BaseException | None = None) -> int:
 def run_cell(args: argparse.Namespace) -> int:
     """The ``run`` command: one cell's replay, verified summary and page (module docstring)."""
     cell = CellSpec(args.arm, args.capital, args.costs)
+    family = ARMS[cell.arm].family
+    if family not in RUNNERS:  # the v3 family: refused before anything is read or written
+        message = f"v4_cell run: the {cell.arm} arm runs through scripts/v4_v3_cell.py"
+        print(message, file=sys.stderr, flush=True)
+        return 1
     name = f"v4_cell run: {cell.cell_id}"
     folder = Path(args.out) / cell.cell_id
     found = [file for file in OUTPUT_FILES if (folder / file).exists()]
@@ -88,7 +98,7 @@ def run_cell(args: argparse.Namespace) -> int:
     except Exception as exc:
         return _fail(name, "refused: loading the data directory failed", exc)
     try:
-        result = RUNNERS[ARMS[cell.arm].family](market, cell, folder)
+        result = RUNNERS[family](market, cell, folder)
     except Exception as exc:  # outside the loop: the loop's own exceptions are engine_error
         return _fail(name, "the replay failed outside its loop", exc)
     records = folder / RECORDS_FILE
