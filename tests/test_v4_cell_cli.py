@@ -851,21 +851,6 @@ def test_cli_refuses_v3_as_built_on_v4_packs(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize("arm", ["hold_btc_trend"])
-def test_cli_refuses_the_new_arms_until_the_engine_runs_them(arm, tmp_path):
-    """The registry lists a new engine arm before the engine can run it (Task 4 of the arms
-    plan): its runner refuses with a ValueError before it writes anything, and the CLI reports
-    it as a failure outside the replay's loop, with exit code 1 and no files."""
-    data = write_world(tmp_path / "world", tiny_world())
-
-    code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out", arm))
-
-    assert (code, stdout) == (1, "")
-    cell_id = CellSpec(arm, CAPITAL, COSTS).cell_id
-    assert stderr == f"v4_cell run: {cell_id}: the replay failed outside its loop: ValueError\n"
-    assert not (tmp_path / "out" / cell_id).exists()
-
-
 @pytest.mark.parametrize(
     ("arm", "owner"), [("v4_main", run._V4Cell), ("hold_universe", hold._HoldCell)]
 )
