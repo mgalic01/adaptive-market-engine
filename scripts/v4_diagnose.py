@@ -355,6 +355,7 @@ def day_of(ms: int) -> str:
 
 def holding_time(held_ms: int) -> str:
     """The ``HOLDING_TIMES`` label of a trade held ``held_ms``."""
+    # Not strict on purpose: four labels, three upper bounds; the last label has none.
     for label, days in zip(HOLDING_TIMES, _HOLDING_DAYS, strict=False):
         if held_ms < days * DAY_MS:
             return label

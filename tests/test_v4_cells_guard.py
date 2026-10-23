@@ -368,6 +368,10 @@ def test_data_run_and_data_are_one_or_the_other():
 
 ROOT = Path(__file__).resolve().parents[1]
 PRE2025 = ROOT / "config" / "v4_data_pre2025.json"
+# The path as the workflow passes it, from the checkout's root. The guard cuts a path it shows at
+# 80 characters (log safety), so the tests pass this short one, as the workflow does, rather than
+# the absolute path, which on a runner is longer than that.
+PRE2025_ARG = "config/v4_data_pre2025.json"
 
 
 def test_the_checked_in_pre2025_config_is_the_one_pinned_here():
@@ -376,29 +380,40 @@ def test_the_checked_in_pre2025_config_is_the_one_pinned_here():
     assert hashlib.sha256(PRE2025.read_bytes()).hexdigest() == PIN
 
 
-def test_guard_accepts_data_of_the_config_given(tmp_path, capsys):
+def test_guard_accepts_data_of_the_config_given(tmp_path, capsys, monkeypatch):
     folder = write(tmp_path / "v4data", data_json())
-    code, out, err = guard(folder, capsys, "--config", str(PRE2025))
+    monkeypatch.chdir(ROOT)
+    code, out, err = guard(folder, capsys, "--config", PRE2025_ARG)
     assert (code, err) == (0, "")
     assert out == (
         f"v4_cells_guard: data end_month 2024-12, config_sha256 {PIN}: accepted (latest allowed "
-        f"month 2024-12, the SHA-256 of {PRE2025.as_posix()!r})\n"
+        f"month 2024-12, the SHA-256 of {PRE2025_ARG!r})\n"
     )
 
 
-def test_guard_refuses_data_of_another_config(tmp_path, capsys):
+def test_guard_refuses_data_of_another_config(tmp_path, capsys, monkeypatch):
     """A data run made from another version of the config (another universe or other dates
     under the same run name) is refused, and neither digest is echoed."""
     other = "0" * 64
     folder = write(tmp_path / "v4data", data_json(config_sha256=other))
     before = tree(tmp_path)
-    code, out, err = guard(folder, capsys, "--config", str(PRE2025))
+    monkeypatch.chdir(ROOT)
+    code, out, err = guard(folder, capsys, "--config", PRE2025_ARG)
     assert (code, out) == (1, "")
     assert err == (
         "::error::v4_cells_guard: data.json's config_sha256 is not the SHA-256 of "
-        f"{PRE2025.as_posix()!r}: refused\n"
+        f"{PRE2025_ARG!r}: refused\n"
     )
     assert tree(tmp_path) == before
+
+
+def test_guard_cuts_a_long_config_path_it_shows(tmp_path, capsys):
+    """A path longer than 80 characters is shown cut, on one line, and still refused."""
+    folder = write(tmp_path / "v4data", data_json())
+    long = tmp_path / ("x" * 120) / "config.json"
+    code, out, err = guard(folder, capsys, "--config", str(long))
+    assert (code, out) == (1, "")
+    assert err.count("\n") == 1 and "x" * 120 not in err and "refused" in err
 
 
 def test_guard_refuses_a_config_it_cannot_read(tmp_path, capsys):
