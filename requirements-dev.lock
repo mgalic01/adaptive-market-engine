@@ -7,7 +7,7 @@ certifi==2026.10.19
 charset-normalizer==3.5.1
 cyclonedx-python-lib==11.12.0
 defusedxml==0.7.1
-filelock==4.0.3
+filelock==4.2.1
 idna==3.20
 iniconfig==2.3.0
 librt==0.15.0
