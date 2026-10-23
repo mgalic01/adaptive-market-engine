@@ -3,12 +3,14 @@
 Owner decision v4-d03: no market data from 2025-01 onward is executed before the registered run.
 The guard reads one file, a data directory's ``data.json``, and refuses a data run whose
 ``end_month`` is after the latest allowed month, which is never later than 2024-12. These tests
-write small ``data.json`` files into pytest's temporary folders. They never open the real data
-packs (``E:`` and ``F:``), and the network is blocked for every test.
+write small ``data.json`` files into pytest's temporary folders. The data-run check (``--data-run``)
+is tested on the JSON of a workflow run written here, never fetched. The tests never open the real
+data packs (``E:`` and ``F:``), and the network is blocked for every test.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import socket
 import sys
@@ -203,3 +205,159 @@ def test_the_default_latest_month_is_2024_12():
     args = v4_cells_guard.build_parser().parse_args(["--data", "v4data"])
     assert args.data == Path("v4data")
     assert args.latest_month == "2024-12"
+
+
+# ---- the data run itself, checked before its artifact is downloaded ----
+
+RUN_ID = "18734501234"
+
+
+def run_json(**fields: object) -> dict[str, object]:
+    """The fields of the GitHub API's workflow-run object that the check reads, as the API
+    returns them for a successful run of the full stage with the pre-2025 config, among others
+    it ignores (a real answer holds about a hundred)."""
+    document: dict[str, object] = {
+        "id": int(RUN_ID),
+        "name": "v4-data",
+        "display_title": "v4-data full config/v4_data_pre2025.json",
+        "path": ".github/workflows/v4-data.yml",
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "head_branch": "main",
+        "head_sha": "7653d7d" + "0" * 33,
+        "run_attempt": 1,
+        "html_url": f"https://github.com/owner/repo/actions/runs/{RUN_ID}",
+    }
+    document.update(fields)
+    return document
+
+
+def check_run(capsys, monkeypatch, raw: bytes, run_id: str = RUN_ID) -> tuple[int, str, str]:
+    """``--data-run`` with ``raw`` on standard input, as ``gh api`` pipes it there."""
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
+    code = v4_cells_guard.main(["--data-run", run_id])
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_the_data_run_check_accepts_the_pre2025_full_data_run():
+    v4_cells_guard.check_data_run(run_json(), RUN_ID)
+    assert v4_cells_guard.DATA_WORKFLOW_PATH == ".github/workflows/v4-data.yml"
+    assert v4_cells_guard.DATA_RUN_TITLE == "v4-data full config/v4_data_pre2025.json"
+
+
+def test_the_data_run_title_is_the_data_workflows_run_name_for_the_pre2025_full_stage():
+    """The title the check wants is what the v4-data workflow's ``run-name`` makes of the full
+    stage and the pre-2025 config, both among its inputs' choices."""
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/v4-data.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "\nrun-name: v4-data ${{ inputs.stage }} ${{ inputs.config }}\n" in workflow
+    assert "          - full\n" in workflow
+    assert "          - config/v4_data_pre2025.json\n" in workflow
+    assert v4_cells_guard.DATA_RUN_TITLE == "v4-data full config/v4_data_pre2025.json"
+
+
+REFUSED_RUNS = {
+    # The full config's run: packs to 2026-09, the reserved window's data.
+    "full_config": run_json(display_title="v4-data full config/v4_data.json"),
+    "discover_stage": run_json(display_title="v4-data discover config/v4_data_pre2025.json"),
+    "other_workflow": run_json(path=".github/workflows/v4-cells.yml"),
+    # The API names a workflow's file alone (a real v4-data run's path was checked on
+    # 2026-10-23); anything else is not that file.
+    "workflow_at_a_ref": run_json(path=".github/workflows/v4-data.yml@refs/heads/main"),
+    # The data workflow's runs before the config input existed: the full config's.
+    "before_the_config_input": run_json(display_title="v4-data full"),
+    "failed": run_json(conclusion="failure"),
+    "cancelled": run_json(conclusion="cancelled"),
+    "still_running": run_json(status="in_progress", conclusion=None),
+    "no_conclusion": {k: v for k, v in run_json().items() if k != "conclusion"},
+    "no_path": {k: v for k, v in run_json().items() if k != "path"},
+    "no_title": {k: v for k, v in run_json().items() if k != "display_title"},
+    "another_run": run_json(id=int(RUN_ID) + 1),
+    "id_as_text": run_json(id=RUN_ID),
+    "id_as_bool": run_json(id=True),
+}
+
+
+@pytest.mark.parametrize("case", REFUSED_RUNS)
+def test_the_data_run_check_refuses_any_other_run(case):
+    with pytest.raises(ValueError):
+        v4_cells_guard.check_data_run(REFUSED_RUNS[case], RUN_ID)
+
+
+@pytest.mark.parametrize("value", [None, [], "run", 18734501234])
+def test_the_data_run_check_refuses_an_answer_that_is_not_an_object(value):
+    with pytest.raises(ValueError, match="not a JSON object"):
+        v4_cells_guard.check_data_run(value, RUN_ID)
+
+
+@pytest.mark.parametrize("run_id", ["", "0", "012", "12a", "1" * 21, "-5", " 5"])
+def test_the_data_run_check_refuses_a_malformed_run_id(run_id):
+    with pytest.raises(ValueError, match="run id"):
+        v4_cells_guard.check_data_run(run_json(), run_id)
+
+
+def test_data_run_prints_only_the_run_id_and_the_verdict(capsys, monkeypatch):
+    code, out, err = check_run(capsys, monkeypatch, json.dumps(run_json()).encode("ascii"))
+    assert (code, err) == (0, "")
+    assert out == (
+        f"v4_cells_guard: data run {RUN_ID}: a successful "
+        "'v4-data full config/v4_data_pre2025.json' run: accepted\n"
+    )
+    assert "7653d7d" not in out and "github.com" not in out
+
+
+@pytest.mark.parametrize("case", REFUSED_RUNS)
+def test_data_run_refuses_any_other_run_and_echoes_none_of_it(capsys, monkeypatch, case):
+    document = {**REFUSED_RUNS[case], "head_branch": "::error::injected"}
+    code, out, err = check_run(capsys, monkeypatch, json.dumps(document).encode("ascii"))
+    assert code == 1 and out == ""
+    (line,) = err.splitlines()
+    assert line.startswith(f"::error::v4_cells_guard: data run {RUN_ID}: ")
+    assert line.endswith(": refused")
+    assert "injected" not in err and "v4_data.json" not in err and "failure" not in err
+
+
+BAD_ANSWERS = {
+    "empty": b"",  # gh api failed and wrote nothing
+    "not_json": b'{"id": 18734501234, ',
+    "not_utf8": b'{"id": 18734501234, "path": "\xff"}',
+    "duplicate_conclusion": (
+        json.dumps(run_json(conclusion="failure"))[:-1] + ', "conclusion": "success"}'
+    ).encode("ascii"),
+    "too_large": json.dumps(run_json(padding="x" * 1_000_000)).encode("ascii"),
+}
+
+
+def test_data_run_reads_an_answer_with_free_text_in_utf8(capsys, monkeypatch):
+    """The API's answer is UTF-8 JSON with free text in it, a commit message among it."""
+    message = "v4 cells: Codex → Claude, déjà vu"
+    raw = json.dumps(run_json(head_commit={"message": message}), ensure_ascii=False).encode("utf-8")
+    assert not raw.isascii()
+    code, out, err = check_run(capsys, monkeypatch, raw)
+    assert (code, err) == (0, "") and "accepted" in out and "Codex" not in out
+
+
+@pytest.mark.parametrize("case", BAD_ANSWERS)
+def test_data_run_refuses_an_answer_that_is_not_one_runs_json(capsys, monkeypatch, case):
+    code, out, err = check_run(capsys, monkeypatch, BAD_ANSWERS[case])
+    assert code == 1 and out == ""
+    assert err.count("\n") == 1 and "refused" in err and RUN_ID in err
+
+
+def test_data_run_never_shows_a_malformed_run_id(capsys, monkeypatch):
+    raw = json.dumps(run_json()).encode("ascii")
+    code, out, err = check_run(capsys, monkeypatch, raw, run_id="12\n::error::injected")
+    assert code == 1 and out == ""
+    assert "injected" not in err and "(not a run id)" in err
+
+
+def test_data_run_and_data_are_one_or_the_other():
+    parser = v4_cells_guard.build_parser()
+    assert parser.parse_args(["--data-run", RUN_ID]).data_run == RUN_ID
+    assert parser.parse_args(["--data-run", RUN_ID]).data is None
+    for argv in ([], ["--data", "v4data", "--data-run", RUN_ID]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv)

@@ -9,8 +9,10 @@ config.
 
 ``.github/workflows/v4-cells.yml`` runs the diagnostic run's cells over a ``v4-data`` run's packs.
 Its tests pin the guard that refuses a data run reaching 2025 in every job that reads the packs,
-the one-day retention of every upload, the pinned actions, the way each input reaches the shell
-(through the environment, never expanded into a script) and the shape of the jobs.
+the check of the data run itself (through the GitHub API) before plan downloads anything, the
+one-day retention of every upload, the pinned actions, the way each input reaches the shell
+(through the environment, never expanded into a script), the shape of the jobs, and the timing
+and upload of a diagnosis that refused a cell.
 
 The tests parse the YAML and never call GitHub.
 """
@@ -34,6 +36,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import v4_cell  # noqa: E402
 import v4_cells_guard  # noqa: E402
 import v4_cells_plan  # noqa: E402
+import v4_cells_timing  # noqa: E402
 import v4_data  # noqa: E402
 import v4_data_month_guard  # noqa: E402
 
@@ -200,6 +203,19 @@ UPLOAD = "actions/upload-artifact@"
 DOWNLOAD = "actions/download-artifact@"
 # The cell's upload runs when every step passed, or when only the timing step failed.
 UPLOAD_CONDITION = "${{ success() || steps.timing.outcome == 'failure' }}"
+# The diagnosis's timing and upload run whenever the diagnosis ran, failed included.
+DIAGNOSED = (
+    "${{ !cancelled() && (steps.diagnose.outcome == 'success' || "
+    "steps.diagnose.outcome == 'failure') }}"
+)
+DIAGNOSE = (
+    "/usr/bin/time -v -o diagnose.time "
+    "python scripts/v4_diagnose.py --data v4data --cells cells --out diagnosis"
+)
+DATA_RUN_CHECK = (
+    'gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" '
+    '| python scripts/v4_cells_guard.py --data-run "$RUN_ID"'
+)
 
 
 def cells() -> dict[str, Any]:
@@ -264,6 +280,37 @@ def test_cells_workflow_guards_before_every_cell():
         for step in uploads(job):
             assert step["retention-days"] == 1, job
             assert step["if-no-files-found"] == "error", job
+
+
+def test_cells_workflow_checks_the_data_run_before_downloading_it():
+    """M2 of the final review: before plan downloads the data run's artifact, it asks the GitHub
+    API for that run and refuses it unless it is a successful run of the v4-data workflow's full
+    stage with the pre-2025 config (``v4_cells_guard.check_data_run``, tested on JSON in
+    ``tests/test_v4_cells_guard.py``). The run's JSON goes from ``gh api`` straight into the
+    check, through environment variables only, and the id is the plan step's validated one."""
+    steps = cell_steps("plan")
+    check = index_of_run("plan", "v4_cells_guard.py --data-run")
+    assert run_text(steps[check]) == DATA_RUN_CHECK
+    assert steps[check]["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "REPOSITORY": "${{ github.repository }}",
+        "RUN_ID": "${{ steps.plan.outputs.data_run }}",
+    }
+    assert "if" not in steps[check]
+    names = [step.get("with", {}).get("name") for step in steps]
+    assert index_of_run("plan", "v4_cells_plan.py") < check < names.index("v4-data")
+    # The cell and diagnose jobs download only after plan, this check included, succeeded.
+    for job in ("cell", "diagnose"):
+        assert not any("guard.py --data-run" in run_text(step) for step in cell_steps(job)), job
+    # The command line is one the guard's own parser reads as the data-run check.
+    command = run_text(steps[check]).split("| python scripts/v4_cells_guard.py ", 1)[1]
+    words = [{"$RUN_ID": "18734501234"}.get(w, w) for w in shlex.split(command)]
+    args = v4_cells_guard.build_parser().parse_args(words)
+    assert (args.data_run, args.data) == ("18734501234", None)
+    # The data workflow's run name is the one the check requires of the data run.
+    assert workflow()["run-name"] == "v4-data ${{ inputs.stage }} ${{ inputs.config }}"
+    assert v4_cells_guard.DATA_RUN_TITLE.split(" ") == ["v4-data", "full", PRE2025]
+    assert (ROOT / v4_cells_guard.DATA_WORKFLOW_PATH) == DATA_WORKFLOW
 
 
 def test_cells_workflow_is_dispatch_only_and_read_only():
@@ -394,9 +441,9 @@ def test_cells_workflow_guard_steps_match_the_guards_parser():
 
 def test_cells_workflow_cell_job_runs_one_matrix_entry_under_gnu_time():
     job = cells()["jobs"]["cell"]
-    # The first run is where the real cell time is learned: 240 of the 360 minutes a hosted job
+    # The first run is where the real cell time is learned: 340 of the 360 minutes a hosted job
     # may run.
-    assert job["timeout-minutes"] == 240
+    assert job["timeout-minutes"] == 340
     assert job["strategy"] == {
         "fail-fast": False,
         "matrix": "${{ fromJSON(needs.plan.outputs.matrix) }}",
@@ -448,18 +495,23 @@ def test_cells_workflow_a_failed_timing_step_does_not_discard_the_replay():
     assert upload == len(steps) - 1
 
 
-def test_cells_workflow_has_no_continue_on_error_and_one_step_condition():
+def test_cells_workflow_has_no_continue_on_error_and_three_step_conditions():
     text = CELLS_WORKFLOW.read_text(encoding="utf-8")
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     assert "continue-on-error" not in code
     conditions = [
-        (job, step["uses"].split("@")[0], step["if"])
+        (job, str(step.get("uses", step.get("run"))).split("@")[0].split(" --")[0], step["if"])
         for job, body in cells()["jobs"].items()
         for step in body["steps"]
         if "if" in step
     ]
-    # The one allowed step condition is the cell's upload (see the test above).
-    assert conditions == [("cell", "actions/upload-artifact", UPLOAD_CONDITION)]
+    # The allowed step conditions: the cell's upload (see the test above), and the diagnosis's
+    # timing and upload, which run after a diagnosis that failed too (see the diagnose tests).
+    assert conditions == [
+        ("cell", "actions/upload-artifact", UPLOAD_CONDITION),
+        ("diagnose", "python scripts/v4_cells_timing.py", DIAGNOSED),
+        ("diagnose", "actions/upload-artifact", DIAGNOSED),
+    ]
     # Neither plan nor cell has a job condition (diagnose's own is pinned in its test).
     for name in ("plan", "cell"):
         assert "if" not in cells()["jobs"][name], name
@@ -476,9 +528,7 @@ def test_cells_workflow_diagnose_runs_after_every_cell_that_finished():
     (cell_download,) = [d for d in downloads("diagnose") if "pattern" in d]
     assert cell_download == {"pattern": "v4-cell-*", "merge-multiple": False, "path": "cells"}
     diagnose = index_of_run("diagnose", "scripts/v4_diagnose.py")
-    assert run_text(job["steps"][diagnose]) == (
-        "python scripts/v4_diagnose.py --data v4data --cells cells --out diagnosis"
-    )
+    assert run_text(job["steps"][diagnose]) == DIAGNOSE
     (upload,) = uploads("diagnose")
     assert upload["name"] == "v4-diagnosis" and upload["path"] == "diagnosis/"
     # The cells are counted before the diagnosis; none at all stops the job with an error.
@@ -486,6 +536,35 @@ def test_cells_workflow_diagnose_runs_after_every_cell_that_finished():
     assert counted < diagnose
     assert "::error::" in run_text(job["steps"][counted])
     assert "exit 1" in run_text(job["steps"][counted])
+
+
+def test_cells_workflow_times_the_diagnosis_and_keeps_a_partial_one():
+    """M1 and M4 of the final review. The diagnosis runs under GNU time, checked first as in a
+    cell job; its wall time and peak memory go to ``diagnosis/diagnose-timing.json`` (the proxy
+    for the registered run's verdict step and its 2 GB memory limit). A diagnosis that refused a
+    cell writes the others' diagnosis and exits 1, so the timing and the upload run after the
+    diagnosis step whether it succeeded or failed, and not when it never ran; the upload comes
+    last, after the timing, so the artifact holds diagnose-timing.json."""
+    steps = cell_steps("diagnose")
+    check = index_of_run("diagnose", "-x /usr/bin/time")
+    diagnose = index_of_run("diagnose", "scripts/v4_diagnose.py")
+    timing = index_of_run("diagnose", "scripts/v4_cells_timing.py")
+    (upload,) = [i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith(UPLOAD)]
+    assert index_of_run("diagnose", GUARD) < check < diagnose < timing < upload == len(steps) - 1
+    assert "::error::" in run_text(steps[check]) and "exit 1" in run_text(steps[check])
+    assert steps[diagnose]["id"] == "diagnose" and "if" not in steps[diagnose]
+    assert run_text(steps[diagnose]) == DIAGNOSE
+    assert run_text(steps[timing]) == (
+        "python scripts/v4_cells_timing.py --time-file diagnose.time --diagnosis-dir diagnosis"
+    )
+    args = v4_cells_timing.build_parser().parse_args(shlex.split(run_text(steps[timing]))[2:])
+    assert (args.time_file, args.diagnosis_dir, args.cell_dir) == (
+        Path("diagnose.time"),
+        Path("diagnosis"),
+        None,
+    )
+    assert steps[timing]["if"] == steps[upload]["if"] == DIAGNOSED
+    assert steps[upload]["with"]["if-no-files-found"] == "error"
 
 
 def test_cells_workflow_logs_counts_only():

@@ -4,7 +4,9 @@
 Each cell job runs ``v4_cell.py`` under ``/usr/bin/time -v -o out/<cell>.time``. The helper turns
 that file and the cell's ``records.jsonl`` into ``out/<cell>/timing.json``: the wall seconds, the
 peak resident memory in MB and the records file's size in bytes. These are the numbers the spec's
-timing run needs. Nothing here reads market data.
+timing run needs. The diagnose job times its diagnosis the same way into
+``diagnosis/diagnose-timing.json``, with the exit status, since a diagnosis that refused a cell
+exits 1 after writing the others'. Nothing here reads market data.
 """
 
 from __future__ import annotations
@@ -281,3 +283,89 @@ def test_an_existing_timing_json_is_never_replaced(tmp_path, capsys):
     code, out, err = run(tmp_path, capsys)
     assert code == 1 and out == "" and "timing.json" in err
     assert (folder / "timing.json").read_text(encoding="ascii") == "earlier\n"
+
+
+# ---- the diagnose step's own timing ----
+
+
+def diagnose(
+    tmp_path: Path, capsys, text: str | None, *, folder: bool = True
+) -> tuple[int, str, str]:
+    """``--diagnosis-dir``: ``text`` as ``diagnose.time`` (none when None), into the folder
+    ``diagnosis`` the diagnosis made (missing when ``folder`` is false)."""
+    if folder:
+        (tmp_path / "diagnosis").mkdir()
+    if text is not None:
+        (tmp_path / "diagnose.time").write_text(text, encoding="ascii")
+    argv = ["--time-file", str(tmp_path / "diagnose.time")]
+    code = v4_cells_timing.main([*argv, "--diagnosis-dir", str(tmp_path / "diagnosis")])
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_the_diagnose_timing_holds_the_seconds_the_megabytes_and_the_exit_status(tmp_path, capsys):
+    code, out, err = diagnose(tmp_path, capsys, REALISTIC)
+    assert (code, err) == (0, "")
+    text = (tmp_path / "diagnosis" / "diagnose-timing.json").read_text(encoding="ascii")
+    assert json.loads(text) == {
+        "step": "diagnose",
+        "wall_seconds": 5025.0,
+        "peak_rss_mb": 2103.8,
+        "exit_status": 0,
+    }
+    assert text.endswith("\n") and text.count("\n") == 1
+    assert out == "v4_cells_timing: diagnose: 5025.00 s, 2103.8 MB peak, exit status 0\n"
+
+
+def test_a_diagnosis_that_refused_a_cell_is_timed_with_its_exit_status(tmp_path, capsys):
+    """The diagnosis exits 1 when it refused a cell and wrote the others' diagnosis: that run is
+    the one the timing must not lose."""
+    code, out, err = diagnose(tmp_path, capsys, REALISTIC_FAILED)
+    assert (code, err) == (0, "")
+    document = json.loads((tmp_path / "diagnosis" / "diagnose-timing.json").read_text())
+    assert document["exit_status"] == 1 and document["peak_rss_mb"] == 2103.8
+    assert out.endswith("exit status 1\n")
+
+
+def test_the_cell_timing_still_refuses_a_failed_command(tmp_path, capsys):
+    with pytest.raises(ValueError, match="exited with status 1"):
+        v4_cells_timing.parse_time_output(REALISTIC_FAILED)
+    assert v4_cells_timing.parse_time_output(REALISTIC_FAILED, allow_failure=True) == (
+        v4_cells_timing.Timing(Decimal(5025), 2154308, 1)
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (None, "/usr/bin/time"),
+        ("real\t0m 3.47s\n", "0 elapsed wall clock lines"),
+        (gnu_time() + "\tExit status: 0\n", "2 exit status lines"),
+    ],
+    ids=["missing", "not-gnu-time", "two-exit-lines"],
+)
+def test_the_diagnose_timing_refuses_a_bad_time_file(tmp_path, capsys, text, message):
+    code, out, err = diagnose(tmp_path, capsys, text)
+    assert code == 1 and out == "" and message in err
+    assert list((tmp_path / "diagnosis").iterdir()) == []
+
+
+def test_the_diagnose_timing_needs_the_diagnosis_folder_and_never_replaces_it(tmp_path, capsys):
+    code, out, err = diagnose(tmp_path, capsys, gnu_time(), folder=False)
+    assert code == 1 and out == "" and "diagnose-timing.json" in err
+    assert not (tmp_path / "diagnosis").exists()
+    (tmp_path / "diagnosis").mkdir()
+    (tmp_path / "diagnosis" / "diagnose-timing.json").write_text("earlier\n", encoding="ascii")
+    code, out, err = diagnose(tmp_path, capsys, gnu_time(), folder=False)
+    assert code == 1 and out == ""
+    assert (tmp_path / "diagnosis" / "diagnose-timing.json").read_text() == "earlier\n"
+
+
+def test_cell_dir_and_diagnosis_dir_are_one_or_the_other():
+    parser = v4_cells_timing.build_parser()
+    for argv in (
+        ["--time-file", "t"],
+        ["--time-file", "t", "--cell-dir", "c", "--diagnosis-dir", "d"],
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv)

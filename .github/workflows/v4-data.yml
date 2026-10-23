@@ -45,10 +45,11 @@ run-name: v4-data ${{ inputs.stage }} ${{ inputs.config }}
 #
 # No month after the chosen config's end_month is ever requested or read: the CLI refuses one
 # before any request or read. With the pre-2025 config nothing from 2025-01 on is requested or
-# read (owner decision v4-d03: that data is for the registered run only). "Refuse any file
-# named for a month after end_month" (scripts/v4_data_month_guard.py), in every job after its
-# last CLI step and before its upload, is a second, independent check of the names of
-# everything under v4/, which holds all the job fetched, downloaded or made.
+# read (owner decision v4-d03: 2025+ data is opened only for data preparation and for the
+# registered run). "Refuse any file named for a month after end_month"
+# (scripts/v4_data_month_guard.py), in every job after its last CLI step and before its upload,
+# is a second, independent check of the names of everything under v4/, which holds all the job
+# fetched, downloaded or made.
 #
 # Every upload overwrites an artifact of the same name (overwrite: true), so re-running all
 # jobs, or only the failed ones, replaces what an earlier attempt uploaded; the jobs after it

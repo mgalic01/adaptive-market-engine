@@ -15,6 +15,13 @@ It refuses, writing nothing and exiting 1: a time file that is missing (the runn
 one peak-memory line, a clean exit status), a cell folder without ``records.jsonl``, and a
 ``timing.json`` that already exists (a cell's files are never replaced). Standard output carries
 the cell's id, seconds, megabytes and bytes: times and sizes only, never a price.
+
+``--time-file diagnose.time --diagnosis-dir diagnosis`` times the ``diagnose`` job's own step the
+same way, as the proxy for the registered run's verdict step and its 2 GB memory limit: it writes
+``<diagnosis dir>/diagnose-timing.json``, one line of JSON with ``step`` (``diagnose``),
+``wall_seconds``, ``peak_rss_mb`` and ``exit_status``. The diagnosis exits 1 when it refused a
+cell but wrote the diagnosis of the others, so here a report of a command that exited 1 is
+timed too, with its status; the folder must exist (the diagnosis made it) and the file must not.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from pathlib import Path
 from crypto_grid_bot.v4.engine.run import RECORDS_FILE
 
 TIMING_FILE = "timing.json"
+DIAGNOSE_TIMING_FILE = "diagnose-timing.json"
 
 # GNU time -v prints "h:mm:ss" from one hour on, and "m:ss.ss" below it.
 _ELAPSED_LINE = re.compile(
@@ -49,6 +57,7 @@ _CLOCK = re.compile(
 class Timing:
     wall_seconds: Decimal
     peak_rss_kb: int
+    exit_status: int = 0
 
 
 def _one(pattern: re.Pattern[str], text: str, what: str) -> str:
@@ -69,15 +78,21 @@ def _wall_seconds(clock: str) -> Decimal:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def parse_time_output(text: str) -> Timing:
+def parse_time_output(text: str, *, allow_failure: bool = False) -> Timing:
     """The wall seconds and peak resident kilobytes of one ``/usr/bin/time -v`` report of a
-    command that exited 0; anything else is a ``ValueError``."""
+    command that exited 0; anything else is a ``ValueError``. With ``allow_failure`` a command
+    that exited with another status is timed too, with that status (one exit line at most)."""
     wall = _wall_seconds(_one(_ELAPSED_LINE, text, "elapsed wall clock"))
     peak = int(_one(_PEAK_LINE, text, "maximum resident set size"))
     if peak <= 0:
         raise ValueError("the maximum resident set size is not positive")
-    for status in _EXIT_LINE.findall(text):
-        if int(status) != 0:
+    statuses = [int(status) for status in _EXIT_LINE.findall(text)]
+    if allow_failure:
+        if len(statuses) > 1:
+            raise ValueError(f"{len(statuses)} exit status lines, expected one at most")
+        return Timing(wall, peak, statuses[0] if statuses else 0)
+    for status in statuses:
+        if status != 0:
             raise ValueError(f"the timed command exited with status {status}")
     return Timing(wall, peak)
 
@@ -85,7 +100,11 @@ def parse_time_output(text: str) -> Timing:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="v4_cells_timing.py", description=__doc__)
     parser.add_argument("--time-file", type=Path, required=True, help="the /usr/bin/time -v output")
-    parser.add_argument("--cell-dir", type=Path, required=True, help="out/<cell id>, with records")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--cell-dir", type=Path, help="out/<cell id>, with records")
+    target.add_argument(
+        "--diagnosis-dir", type=Path, help="the diagnosis folder, for diagnose-timing.json"
+    )
     return parser
 
 
@@ -94,16 +113,56 @@ def _fail(reason: str) -> int:
     return 1
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    cell = args.cell_dir.name
+def _read_time_file(path: Path) -> str | None:
     try:
-        text = args.time_file.read_text(encoding="ascii", errors="replace")
+        return path.read_text(encoding="ascii", errors="replace")
     except OSError as exc:
-        return _fail(
+        _fail(
             f"cannot read the time file ({type(exc).__name__}): "
             "is GNU time installed at /usr/bin/time?"
         )
+        return None
+
+
+def _diagnose_timing(time_file: Path, folder: Path) -> int:
+    """``--diagnosis-dir``: the diagnosis step's ``diagnose-timing.json`` (module docstring)."""
+    text = _read_time_file(time_file)
+    if text is None:
+        return 1
+    try:
+        timing = parse_time_output(text, allow_failure=True)
+    except ValueError as exc:
+        return _fail(f"the time file is not a GNU time -v report: {exc}")
+    seconds = timing.wall_seconds.quantize(Decimal("0.01"))
+    megabytes = (Decimal(timing.peak_rss_kb) / 1024).quantize(Decimal("0.1"))
+    document = {
+        "step": "diagnose",
+        "wall_seconds": float(seconds),
+        "peak_rss_mb": float(megabytes),
+        "exit_status": timing.exit_status,
+    }
+    try:
+        # Mode "x" in a folder that must exist: the diagnosis's own files are never replaced.
+        with (folder / DIAGNOSE_TIMING_FILE).open("x", encoding="ascii", newline="\n") as handle:
+            handle.write(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        return _fail(f"cannot create {DIAGNOSE_TIMING_FILE} ({type(exc).__name__})")
+    print(
+        f"v4_cells_timing: diagnose: {seconds} s, {megabytes} MB peak, "
+        f"exit status {timing.exit_status}",
+        flush=True,
+    )
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.diagnosis_dir is not None:
+        return _diagnose_timing(args.time_file, args.diagnosis_dir)
+    cell = args.cell_dir.name
+    text = _read_time_file(args.time_file)
+    if text is None:
+        return 1
     try:
         timing = parse_time_output(text)
     except ValueError as exc:
