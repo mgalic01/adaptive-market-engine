@@ -64,7 +64,7 @@ from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.combined.artifacts import _canonical
 from crypto_grid_bot.trend.metrics import maximum_drawdown
 from crypto_grid_bot.v4.engine import hold, run
-from crypto_grid_bot.v4.engine.arms import CellSpec
+from crypto_grid_bot.v4.engine.arms import ARMS, CellSpec
 from crypto_grid_bot.v4.engine.ledger import Audit
 from crypto_grid_bot.v4.engine.market import Market
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal
@@ -549,7 +549,11 @@ def known_records(out: Path) -> Receipt:
     close = {"quantity": D(2), "price": D(90), "unslipped_price": D(90), "fee": D("0.18")}
     add("fill", **spot, hour_ms=feb, side=-1, **close)
     add("funding", hour_ms=feb, coin="AAAUSDT", amount=D("0.25"))
-    legs = [{"reason": "delisting"}, {"reason": "funding-month exit"}]
+    # The penalty: |10 - 9| x 3 on the long spot leg, |50 - 55| x |-2| on the short futures leg.
+    legs = [
+        {"reason": "delisting", "held": D(3), "last_close": D(10), "price": D(9)},
+        {"reason": "funding-month exit", "held": D(-2), "last_close": D(50), "price": D(55)},
+    ]
     add("event", type="synthetic_closes", hour_ms=feb, coin=None, legs=legs)
     add("event", type="ceiling_cut", hour_ms=feb, coin=None)
     add("event", type="increase_cut", hour_ms=feb, coin="AAAUSDT")
@@ -614,6 +618,7 @@ def test_the_figures_of_a_known_cell(tmp_path):
         "traded_notional": "202",
         "fees": "0.2",
         "slippage": "2",
+        "synthetic_close_penalty": "0",
         "funding_records": 1,
         "funding": "-0.5",
     }
@@ -622,6 +627,7 @@ def test_the_figures_of_a_known_cell(tmp_path):
         "traded_notional": "180",
         "fees": "0.18",
         "slippage": "0",
+        "synthetic_close_penalty": "13",
         "funding_records": 1,
         "funding": "0.25",
     }
@@ -760,10 +766,17 @@ def test_side_and_exit_breakdowns_add_up_to_the_lifecycles(diagnosis, records):
 # ---- costs ---------------------------------------------------------------------------------
 
 
-def cost_sums(fills: Sequence[Mapping[str, Any]], funding: Sequence[Mapping[str, Any]]) -> dict:
+def cost_sums(
+    fills: Sequence[Mapping[str, Any]],
+    funding: Sequence[Mapping[str, Any]],
+    closes: Sequence[Mapping[str, Any]],
+) -> dict:
+    """The costs of some fill, funding and ``synthetic_closes`` event records."""
+
     def total(values: Iterator[Fraction]) -> str:
         return exact(sum(values, F(0)))
 
+    legs = [leg for event in closes for leg in event["legs"]]
     return {
         "fills": len(fills),
         "traded_notional": total(F(D(f["quantity"])) * F(D(f["price"])) for f in fills),
@@ -771,39 +784,61 @@ def cost_sums(fills: Sequence[Mapping[str, Any]], funding: Sequence[Mapping[str,
         "slippage": total(
             abs(F(D(f["price"])) - F(D(f["unslipped_price"]))) * F(D(f["quantity"])) for f in fills
         ),
+        "synthetic_close_penalty": total(
+            abs(F(D(leg["last_close"])) - F(D(leg["price"]))) * abs(F(D(leg["held"])))
+            for leg in legs
+        ),
         "funding_records": len(funding),
         "funding": total(F(D(f["amount"])) for f in funding),
     }
 
 
+def synthetic_closes(rows: Rows) -> list[dict[str, Any]]:
+    return [r for r in of_kind(rows, "event") if r["type"] == "synthetic_closes"]
+
+
 def test_costs_add_up_to_the_fills_and_funding_records(diagnosis, records):
-    """Each period's costs are the sums over the fill and funding records of its hours (each
-    record's ``hour_ms``), exactly: fills, traded notional (quantity x price), fees, slippage
-    (|price - unslipped price| x quantity) and funding (the records' signed amounts); the
-    months add up to the years, and the years to every record. The V4 cell pays slippage and
-    funding; a synthetic close has none of the first."""
+    """Each period's costs are the sums over the fill, funding and synthetic-close records of
+    its hours (each record's ``hour_ms``), exactly: fills, traded notional (quantity x price),
+    fees, slippage (|price - unslipped price| x quantity), the synthetic-close penalty
+    (|last close - penalised price| x |held| over the closes' legs) and funding (the records'
+    signed amounts); the months add up to the years, and the years to every record. The V4 cell
+    pays slippage, funding and LUNAUSDT's 10% dead-market penalty; a synthetic close has no
+    slippage. Over the whole run, the costs' fees and funding are the lifecycles' (the page
+    says they are the same money seen two ways)."""
     for arm in ARMS_RUN:
         entry = entry_of(diagnosis, arm)
         fills, funding = of_kind(records[arm], "fill"), of_kind(records[arm], "funding")
+        closes = synthetic_closes(records[arm])
         for period, size in (("months", 7), ("years", 4)):
             for row in entry[period]:
                 label = str(row["month" if period == "months" else "year"])
                 expected = cost_sums(
                     [f for f in fills if month_of(f["hour_ms"])[:size] == label],
                     [f for f in funding if month_of(f["hour_ms"])[:size] == label],
+                    [c for c in closes if month_of(c["hour_ms"])[:size] == label],
                 )
                 assert row["costs"] == expected, (arm, label)
-        everything = cost_sums(fills, funding)
+        everything = cost_sums(fills, funding, closes)
         for period in ("months", "years"):
             for key in ("fills", "funding_records"):
                 assert sum(row["costs"][key] for row in entry[period]) == everything[key]
-            for key in ("traded_notional", "fees", "slippage", "funding"):
+            for key in ("traded_notional", "fees", "slippage", "synthetic_close_penalty"):
                 assert (
                     exact(sum((F(D(row["costs"][key])) for row in entry[period]), F(0)))
                     == everything[key]
                 )
-    main = cost_sums(of_kind(records["v4_main"], "fill"), of_kind(records["v4_main"], "funding"))
+            assert (
+                exact(sum((F(D(row["costs"]["funding"])) for row in entry[period]), F(0)))
+                == everything["funding"]
+            )
+        for key in ("fees", "funding"):
+            booked = sum((F(D(row["lifecycles"][key])) for row in entry["years"]), F(0))
+            assert exact(booked) == everything[key], (arm, key)
+    rows = records["v4_main"]
+    main = cost_sums(of_kind(rows, "fill"), of_kind(rows, "funding"), synthetic_closes(rows))
     assert D(main["slippage"]) > 0 and main["funding_records"] > 0 and D(main["fees"]) > 0
+    assert D(main["synthetic_close_penalty"]) > 0
     synthetic = [f for f in of_kind(records["v4_main"], "fill") if f["reason"] == "delisting"]
     assert synthetic and all(f["price"] == f["unslipped_price"] for f in synthetic)
 
@@ -957,7 +992,7 @@ def test_market_regime_of_a_known_path(tmp_path):
         assert D(month["btc_close_over_sma200"]) > 0
         assert D(month["btc_return"]) > 0
         assert month["btc_sma20_crossings"] == 0
-        assert D(month["btc_volatility_30d"]) < D("0.05")
+        assert D(month["btc_volatility_30d_annualised"]) < D("0.05")
         assert (month["universe_coins"], month["universe_coins_with_return"]) == (1, 1)
         assert month["universe_median_return"] == month["btc_return"]
     with localcontext(CONTEXT):
@@ -971,11 +1006,44 @@ def test_market_regime_of_a_known_path(tmp_path):
     assert [month["month"] for month in full] == ["2023-08", "2023-09", "2023-10"]
     for month in full:
         assert month["btc_sma20_crossings"] >= 25, month["month"]
-        assert D(month["btc_volatility_30d"]) > 1
+        assert D(month["btc_volatility_30d_annualised"]) > 1
     cut = hours_in("2023-01", "2023-09")
     shorter = btc_world(hourly_closes(saw)[:cut], "2023-01", "2023-09", "2023-08")
     early = v4_diagnose.market_regime(Market.load(write_world(tmp_path / "saw-9", shorter)))
     assert early == full[:2]
+
+
+def test_the_universe_median_of_an_even_number_of_coins(tmp_path):
+    """Four spot coins with steady daily rates of their own: each month's median is the mean
+    of the two middle monthly returns, each the coin's last daily close of the month over its
+    last one before it, minus 1, rebuilt here from the closes the world was written with."""
+    days = hours_in("2023-01", "2023-04") // 24
+    rates = {"BTCUSDT": "1.001", "ETHUSDT": "1.002", "SOLUSDT": "0.997", "XRPUSDT": "1.004"}
+    with localcontext(CONTEXT):
+        daily = {
+            coin: [D(100) * D(rate) ** day for day in range(days)] for coin, rate in rates.items()
+        }
+    coins = tuple(
+        CoinSpec(coin, Series(month_start("2023-01"), tuple(hourly_closes(closes))))
+        for coin, closes in daily.items()
+    )
+    world = World("2023-04", coins, every_month("2023-03", "2023-04", tuple(rates)))
+    regime = v4_diagnose.market_regime(Market.load(write_world(tmp_path, world)))
+    quantum = D("0.00000001")
+    for month in regime:
+        start, end = month_bounds_ms(month["month"])
+        last = (end - month_start("2023-01")) // DAY - 1
+        before = (start - month_start("2023-01")) // DAY - 1
+        with localcontext(CONTEXT):
+            changes = sorted(
+                closes[last].quantize(quantum) / closes[before].quantize(quantum) - 1
+                for closes in daily.values()
+            )
+            median = (changes[1] + changes[2]) / 2
+        assert (month["universe_coins"], month["universe_coins_with_return"]) == (4, 4)
+        assert D(month["universe_median_return"]) == median, month["month"]
+        assert changes[1] != changes[2]
+    assert [month["month"] for month in regime] == ["2023-03", "2023-04"]
 
 
 def test_the_diagnosis_holds_the_regime_of_its_packs(diagnosis, world_dir):
@@ -1219,6 +1287,25 @@ def test_a_failure_cell_is_listed_without_figures(tmp_path, monkeypatch):
     assert "injected failure" not in text + stdout
 
 
+def test_a_failed_page_leaves_no_diagnosis_json(world_dir, cells_dir, tmp_path, monkeypatch):
+    """If ``diagnosis.md`` cannot be written after ``diagnosis.json`` was, the JSON is removed
+    again and the out folder the run made too: exit 1, one line on standard error with the
+    step and the exception's type, and nothing left behind."""
+    original = v4_diagnose._create
+
+    def create(path: Path, data: bytes) -> None:
+        if path.name == "diagnosis.md":
+            raise OSError("the disk is full")
+        original(path, data)
+
+    monkeypatch.setattr(v4_diagnose, "_create", create)
+    out = tmp_path / "out"
+    code, _, stderr = run_main(v4_diagnose, diagnose_argv(world_dir, cells_dir, out))
+    assert code == 1
+    assert stderr == "v4_diagnose: writing the diagnosis failed: OSError\n"
+    assert not out.exists()
+
+
 # ---- the output -------------------------------------------------------------------------------
 
 
@@ -1238,8 +1325,8 @@ def test_output_prints_no_prices(diagnosis, cells_dir, records):
         )
     assert lines[1:3] == expected
     assert lines[3:] == [
-        "v4_diagnose: 2 cells from 3 folders, 4 regime months; wrote diagnosis.json and "
-        "diagnosis.md"
+        "v4_diagnose: 2 cells from 3 folders (1 without summary.json), 6 planned cells "
+        "missing, 4 regime months; wrote diagnosis.json and diagnosis.md"
     ]
     assert re.search(r"[0-9]\.[0-9]", diagnosis.stdout) is None
     for arm in ARMS_RUN:
@@ -1294,15 +1381,58 @@ def test_diagnosis_json_holds_exact_strings_and_the_timing(diagnosis, world_dir,
             == read_receipt(cell_folder(cells_dir, arm) / run.RECEIPT_FILE).record_count
         )
         assert entry["receipt_sha256"] == summary["receipt_sha256"]
+    # The stray folder has no summary.json; the six other arms have no cell at 10000 and 1x.
+    others = [arm for arm in ARMS if arm not in ARMS_RUN]
+    assert document["missing"] == {
+        "folders_without_summary": ["stray"],
+        "cells": [CellSpec(arm, CAPITAL, COSTS).cell_id for arm in others],
+    }
 
 
 def test_markdown_has_the_regime_then_each_cell_years_months_and_breakdowns(diagnosis):
-    """``diagnosis.md``: the timing and the market regime first, shared by every cell, then one
-    section per cell, in order: the per-year tables, the per-month tables of every year, then
-    the breakdowns by side, exit reason and coin, and the signals."""
+    """``diagnosis.md``: a glossary, the timing, the missing cells and the market regime first,
+    shared by every cell, then one section per cell, in order: the per-year tables, the
+    per-month tables of every year, then the breakdowns by side, exit reason and coin, and the
+    signals. The volatility is labelled annualised; the lifecycle and costs captions say how
+    net P&L and the win rate are made and that their fees and funding are one amount seen two
+    ways; the missing section names the stray folder and the six missing cells."""
     text = diagnosis.markdown
     assert text.startswith("# V4 diagnosis\n")
-    order = [text.index("## Timing"), text.index("## Market regime")]
+    order = [
+        text.index("## Glossary"),
+        text.index("## Timing"),
+        text.index("## Missing cells"),
+        text.index("## Market regime"),
+    ]
+    glossary = text[order[0] : order[1]]
+    for term in (
+        "**Given back**",
+        "**Deferrals**",
+        "**Band skips**",
+        "**Cash-clip cuts**",
+        "**Refused orders**",
+        "They count legs, not coins",
+        "**L**",
+        "**S**",
+        "**Warming**",
+        "counts in the month and the year in which it closed",
+        "orders kept over a day with no daily bar",
+        "orders cancelled because the coin's market died",
+        "**Synthetic-close penalty**",
+        "Net P&L** = Gross profit + Gross loss - Fees + Funding",
+    ):
+        assert term in glossary, term
+    missing = text[order[2] : order[3]]
+    assert "- `stray`" in missing
+    for arm in ARMS:
+        cell = CellSpec(arm, CAPITAL, COSTS).cell_id
+        assert (f"- {cell}\n" in missing) == (arm not in ARMS_RUN), cell
+    assert "| BTC volatility (30 days, annualised) |" in text
+    assert "30-day volatility" not in text
+    assert "Net P&L = Gross profit + Gross loss - Fees + Funding" in text
+    assert "win rate is the share of closed trades whose net P&L is above 0" in text
+    assert "two views of one amount, so never add the two tables together" in text
+    assert "| Synthetic-close penalty |" in text
     for arm in ARMS_RUN:
         head = text.index(f"## Cell {CellSpec(arm, CAPITAL, COSTS).cell_id}")
         section = text[head:]

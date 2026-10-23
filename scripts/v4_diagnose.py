@@ -23,15 +23,21 @@ section is the "Verification" bullet's timing run (cell times, memory and output
    records are then streamed once more, to the end, keeping only the aggregates below, never a
    record; its years must equal the verified summary's. Any failure refuses the whole run;
 4. computes the market regime per month from the packs alone;
-5. creates ``O/diagnosis.json`` and ``O/diagnosis.md``, both exclusively. They hold results and
+5. creates ``O/diagnosis.json`` and ``O/diagnosis.md``, both exclusively; if the second cannot
+   be written, the first is removed again, so a failed run leaves no file. They hold results and
    stay on the owner's PC (the workflow uploads them as a 1-day artifact).
+
+The diagnosis also names what is missing: every subfolder of ``C`` without a ``summary.json``,
+and every arm of ``ARMS`` that has no cell at a capital and cost level that has one (a cell
+that was not run, failed or timed out).
 
 **Exit status.** 0 once both files are written; 1 for any refusal or failure, with nothing
 written; 2 for bad arguments (argparse's own).
 
 **Output.** Standard output carries the guard's line (the end month and the config pin), one
-line per cell (its id, outcome and its record, year and month counts) and a last line of counts:
-never a price, an equity or a return (owner rule: public logs). A failure is one line on standard
+line per cell (its id, outcome and its record, year and month counts) and a last line of counts
+(cells, folders, folders without a summary, missing cells, regime months): never a price, an
+equity or a return (owner rule: public logs). A failure is one line on standard
 error naming the step and the exception's type, never its text.
 
 **Periods** (Review Focus 3). A cell's months and years are summary.py's periods: each starts at
@@ -52,9 +58,13 @@ its ``entry_ms`` and counts, with its figures, in the period and year of its ``e
   funding``) is above 0, and the win rate over those closed; ``gross_pnl`` and its positive
   (``gross_profit``) and negative (``gross_loss``) parts; ``fees``, ``funding`` (positive when
   the wallet received it), ``net_pnl`` and ``given_back`` (profit given back from the peak).
-* Costs, from the fill and funding records: ``fills``, ``traded_notional`` (quantity x price),
-  ``fees``, ``slippage`` (|price - unslipped price| x quantity, so 0 for a synthetic close),
-  ``funding_records`` and ``funding`` (the records' signed amounts).
+* Costs, from the fill, funding and synthetic-close records: ``fills``, ``traded_notional``
+  (quantity x price), ``fees``, ``slippage`` (|price - unslipped price| x quantity, so 0 for a
+  synthetic close), ``synthetic_close_penalty`` (over the legs of the ``synthetic_closes``
+  events, dead market and funding month alike: |last close - penalised price| x |held|, the 10%
+  penalty), ``funding_records`` and ``funding`` (the records' signed amounts). The fees and
+  funding here are the lifecycles' fees and funding booked when paid rather than when the trade
+  ended: the same money seen two ways, never to be added together.
 * Counts, from the events: ``margin_cuts`` and ``ceiling_cuts`` (one per cut event);
   ``dead_market_closes`` and ``funding_month_closes`` (the legs of the synthetic closes, by
   reason); ``deferrals`` (a daily order, ``signal`` or a hold arm's ``rebalance``, that did not
@@ -81,8 +91,8 @@ from bars of the month and before it, for every month from the window's first to
 * ``btc_return``: BTCUSDT's last daily close of the month over its last close before it, minus 1;
 * ``btc_vs_sma200`` (``above``, ``below`` or ``equal``) and ``btc_close_over_sma200`` (minus 1):
   the month's last close against the mean of the last 200 daily closes up to it;
-* ``btc_volatility_30d``: the sample standard deviation of the daily returns of the 30 days
-  ending with the month's last bar (each against the bar before it), times sqrt(365);
+* ``btc_volatility_30d_annualised``: the sample standard deviation of the daily returns of the
+  30 days ending with the month's last bar (each against the bar before it), times sqrt(365);
 * ``btc_sma20_crossings``: the month's bars whose close is on the other side of the SMA20 from
   the last bar before them that was not on it (choppiness);
 * ``universe_coins``, ``universe_coins_with_return`` and ``universe_median_return``: the month's
@@ -94,6 +104,7 @@ A figure without the bars it needs is null, and so is every BTCUSDT figure of pa
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from bisect import bisect_left
@@ -443,7 +454,8 @@ class _Pass:
     def _event(self, record: Mapping[str, object]) -> None:
         kind = record.get("type")
         hour = _int(record.get("hour_ms"), "an event's hour_ms")
-        counts = self._month(hour).events.counts
+        month = self._month(hour)
+        counts = month.events.counts
         if kind == "margin_cut":
             counts["margin_cuts"] += 1
         elif kind == "ceiling_cut":
@@ -452,6 +464,10 @@ class _Pass:
             counts["cash_clip_cuts"] += 1
         elif kind == "synthetic_closes":
             for leg in _items(record.get("legs"), "a synthetic close's legs"):
+                held = _fraction(leg.get("held"), "a synthetic close's held quantity")
+                last = _fraction(leg.get("last_close"), "a synthetic close's last close")
+                price = _fraction(leg.get("price"), "a synthetic close's price")
+                month.costs.add("synthetic_close_penalty", abs(last - price) * abs(held))
                 if leg.get("reason") == DELISTING:
                     counts["dead_market_closes"] += 1
                 elif leg.get("reason") == FUNDING_EXIT:
@@ -619,6 +635,7 @@ def _period_tallies(lifecycles: _Tally, costs: _Tally, events: _Tally) -> dict[s
             "traded_notional": costs.total("traded_notional"),
             "fees": costs.total("fees"),
             "slippage": costs.total("slippage"),
+            "synthetic_close_penalty": costs.total("synthetic_close_penalty"),
             "funding_records": costs.counts["funding_records"],
             "funding": costs.total("funding"),
         },
@@ -894,7 +911,9 @@ def market_regime(market: Market) -> list[dict[str, Any]]:
                 "btc_return": _text(None if btc is None else btc.month_return(start, end)),
                 "btc_vs_sma200": side,
                 "btc_close_over_sma200": _text(ratio),
-                "btc_volatility_30d": _text(None if btc is None else btc.volatility(start, end)),
+                "btc_volatility_30d_annualised": _text(
+                    None if btc is None else btc.volatility(start, end)
+                ),
                 "btc_sma20_crossings": None if btc is None else btc.crossings_in(start, end),
                 "universe_coins": len(coins),
                 "universe_coins_with_return": len(returns),
@@ -956,7 +975,12 @@ def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
             for row in rows
         ),
     )
-    lines += ["Lifecycles, by the period they end in (P&L in USDT):", ""]
+    lines += [
+        "Lifecycles (trades), each counted in the period it closed, with all its money (USDT). "
+        "Net P&L = Gross profit + Gross loss - Fees + Funding (Gross loss is negative), and the "
+        "win rate is the share of closed trades whose net P&L is above 0.",
+        "",
+    ]
     lines += _table(
         (
             head,
@@ -991,9 +1015,24 @@ def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
             for lc in (row["lifecycles"],)
         ),
     )
-    lines += ["Costs, from the fill and funding records (USDT; funding received is positive):", ""]
+    lines += [
+        "Costs, counted in the period they were paid (USDT; funding received is positive). "
+        "These fees and funding are the same money as the lifecycle table's, which books them "
+        "when the trade closed: two views of one amount, so never add the two tables together. "
+        "Slippage and the synthetic-close penalty are already inside the trades' gross P&L.",
+        "",
+    ]
     lines += _table(
-        (head, "Fills", "Traded notional", "Fees", "Slippage", "Funding records", "Funding"),
+        (
+            head,
+            "Fills",
+            "Traded notional",
+            "Fees",
+            "Slippage",
+            "Synthetic-close penalty",
+            "Funding records",
+            "Funding",
+        ),
         (
             (
                 row[label],
@@ -1001,6 +1040,7 @@ def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
                 _rounded(costs["traded_notional"]),
                 _rounded(costs["fees"]),
                 _rounded(costs["slippage"]),
+                _rounded(costs["synthetic_close_penalty"]),
                 costs["funding_records"],
                 _rounded(costs["funding"]),
             )
@@ -1008,7 +1048,7 @@ def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
             for costs in (row["costs"],)
         ),
     )
-    lines += ["Events:", ""]
+    lines += ["Events (the two close columns count legs, not coins):", ""]
     lines += _table(
         (
             head,
@@ -1101,6 +1141,92 @@ def _signal_tables(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
+GLOSSARY: tuple[str, ...] = (
+    "## Glossary",
+    "",
+    "- **Period**: a calendar month or year (UTC). Its start equity is the account's value at "
+    "the first hour of the period, its end equity the value at the first hour of the next period "
+    "(the final value at the end of the run). Return = end / start - 1.",
+    "- **Max drawdown**: the largest fall from a high to a later low inside the period, from "
+    "the hourly values, as a share of that high.",
+    "- **Lifecycle** (a trade): one position in one coin on one side, long or short, from when "
+    "it opens to when it is closed, over spot and futures together. A trade counts in the month "
+    "and the year in which it closed, with all its profit, fees and funding, even if it opened "
+    "earlier; only the Opened columns count it where it opened.",
+    "- **Gross profit, Gross loss**: the trades' price gains and losses before fees and funding, "
+    "summed over the trades that gained and over those that lost (shown negative).",
+    "- **Net P&L** = Gross profit + Gross loss - Fees + Funding. **Win rate**: the share of "
+    "closed trades whose net P&L is above 0.",
+    "- **Given back**: profit a trade gave back from its best point: its best value along the "
+    "way minus what it finally made, summed over the trades.",
+    "- **Fees** are the exchange's. **Funding** is the futures funding payment: positive when "
+    "the account received money, negative when it paid. The lifecycle tables book fees and "
+    "funding when a trade closes, the costs tables when they are paid: the same money seen two "
+    "ways, so never add the two together.",
+    "- **Slippage**: what each fill lost to the price moving against it, the gap between the "
+    "price paid and the market's opening price, times the quantity.",
+    "- **Synthetic-close penalty**: when a market stops trading (no price for 168 hours, a "
+    "dead market) or a futures funding month is incomplete, the position is closed at its last "
+    "price less 10% (plus 10% for a short). This is that 10%: the gap between the last price "
+    "and the close price, times the quantity. Slippage and this penalty are already inside the "
+    "trades' gross P&L.",
+    "- **Traded notional**: the value of everything bought and sold.",
+    "- **Dead-market closes, Funding-month closes**: how many positions were closed that way. "
+    "They count legs, not coins: a coin held on both spot and futures counts twice.",
+    "- **Margin cuts, Ceiling cuts**: times the account cut its positions because the futures "
+    "margin ran low, or because the total exposure went above 3 times the equity.",
+    "- **Deferrals**: daily orders that could not fill in the hour after their decision, "
+    "counted when they end: filled later, replaced by a newer decision, or cancelled. So this "
+    "report also counts orders kept over a day with no daily bar (the coin got no new "
+    "decision) and orders cancelled because the coin's market died.",
+    "- **Refused orders**: planned buys or position increases below the exchange's minimum "
+    "size or value, so no order was sent (one per leg).",
+    "- **Cash-clip cuts**: buys or increases made smaller, or dropped, because the free cash or "
+    "margin did not cover them.",
+    "- **Band skips**: daily orders not traded because the new target was close enough to the "
+    "position held (inside the no-trade band), which saves costs.",
+    "- **Speeds** (fast, medium, slow): the three trend readings of each coin from its daily "
+    "closes. Up and Down are the shares of coin-days a reading pointed up or down; "
+    "**Warming** means neither: not enough history yet, no reading at all, or an exact tie. "
+    "**Flips**: how often a reading turned from up to down or back.",
+    "- **Coin-day**: one coin at one daily decision. **Mean coins with a target**: how many "
+    "coins the bot wanted a position in, on average per daily decision.",
+    "- **L**: the long fraction, the number of speeds that are up divided by 3 (0, 1/3, 2/3 "
+    "or 1). **S**: the short fraction, above 0 (0.25, 0.5 or 1) only when the medium speed is "
+    "down and a downtrend is confirmed.",
+    "- **Confirmed downtrend**: the close is below its trend average, that average is falling, "
+    "and the recent highs and lows are both lower than the ones before.",
+    "- **Market regime**: BTC return is BTCUSDT's change over the month. BTC vs SMA200 says "
+    "whether the month's last close was above or below the average of its last 200 daily "
+    "closes, and Close / SMA200 - 1 by how much. BTC volatility (30 days, annualised) is how "
+    "much BTC's daily price moved over the last 30 days, scaled to a year. SMA20 crossings "
+    "counts the times in the month the close crossed its 20-day average: many crossings mean "
+    "a choppy market with no clear trend. Median coin return is the middle monthly return of "
+    "the month's universe coins. Each month uses prices up to its own end only.",
+    "",
+)
+
+
+def _missing_section(missing: Mapping[str, Any]) -> list[str]:
+    """The folders without a summary and the planned cells with none."""
+    lines = ["## Missing cells", ""]
+    folders, cells = missing["folders_without_summary"], missing["cells"]
+    if not folders and not cells:
+        return [*lines, "None: every arm has a cell at each capital and cost level present.", ""]
+    if folders:
+        lines += ["Folders of --cells without a summary.json:", ""]
+        lines += [f"- `{name}`" for name in folders]
+        lines.append("")
+    if cells:
+        lines += [
+            "Cells absent at a capital and cost level present (not run, failed or timed out):",
+            "",
+        ]
+        lines += [f"- {cell}" for cell in cells]
+        lines.append("")
+    return lines
+
+
 def _when(ms: object) -> str:
     if type(ms) is not int:
         return "n/a"
@@ -1119,9 +1245,10 @@ def render_markdown(document: Mapping[str, Any]) -> str:
         f"Cells: {len(document['cells'])}.",
         "",
         "Rounded for reading; diagnosis.json holds the exact values. Fills, funding and events "
-        "count in the hour they happen; a lifecycle counts in the period it ends; signals in "
-        "the year of the decision.",
+        "count in the hour they happen; a trade counts in the period it closed; signals in the "
+        "year of the decision.",
         "",
+        *GLOSSARY,
         "## Timing",
         "",
     ]
@@ -1137,14 +1264,20 @@ def render_markdown(document: Mapping[str, Any]) -> str:
             for row in document["timing"]
         ),
     )
-    lines += ["## Market regime", "", "BTCUSDT, and the median of the month's universe:", ""]
+    lines += _missing_section(document["missing"])
+    lines += [
+        "## Market regime",
+        "",
+        "BTCUSDT, and the median of the month's universe; each month from prices up to its end:",
+        "",
+    ]
     lines += _table(
         (
             "Month",
             "BTC return",
             "BTC vs SMA200",
             "Close / SMA200 - 1",
-            "BTC 30-day volatility",
+            "BTC volatility (30 days, annualised)",
             "SMA20 crossings",
             "Universe coins",
             "With a return",
@@ -1156,7 +1289,7 @@ def render_markdown(document: Mapping[str, Any]) -> str:
                 _pct(row["btc_return"]),
                 row["btc_vs_sma200"] or "n/a",
                 _pct(row["btc_close_over_sma200"]),
-                _share(row["btc_volatility_30d"]),
+                _share(row["btc_volatility_30d_annualised"]),
                 "n/a" if row["btc_sma20_crossings"] is None else row["btc_sma20_crossings"],
                 row["universe_coins"],
                 row["universe_coins_with_return"],
@@ -1259,6 +1392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _fail(f"refused: the cell folder {name} repeats a cell of another folder")
         diagnosed.append((entry, timing))
     diagnosed.sort(key=lambda item: order[item[0]["cell"]["id"]])
+    missing = _missing(folders, cells, [entry["cell"] for entry, _ in diagnosed])
     for entry, _ in diagnosed:
         years = 0 if entry["years"] is None else len(entry["years"])
         months_seen = 0 if entry["months"] is None else len(entry["months"])
@@ -1275,6 +1409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "data": data_record(market.pins),
         "window": window_record(market),
         "timing": [timing for _, timing in diagnosed],
+        "missing": missing,
         "market_regime": regime,
         "cells": [entry for entry, _ in diagnosed],
     }
@@ -1282,17 +1417,59 @@ def main(argv: Sequence[str] | None = None) -> int:
         _canonical(document)  # exact JSON only: strings, integers, booleans, null
         payload = (json.dumps(document, indent=1, ensure_ascii=True) + "\n").encode("ascii")
         page = render_markdown(document).encode("utf-8")
+    except Exception as exc:
+        return _fail("building the diagnosis failed", exc)
+    made_out = not out.exists()
+    created: list[Path] = []
+    try:
         out.mkdir(parents=True, exist_ok=True)
         for target, data in ((out / JSON_FILE, payload), (out / MD_FILE, page)):
-            with target.open("xb") as handle:  # created exclusively
-                handle.write(data)
+            _create(target, data)
+            created.append(target)
     except Exception as exc:
+        # Nothing is left behind: a diagnosis.json without its page is removed again.
+        for target in created:
+            target.unlink(missing_ok=True)
+        if made_out:
+            with contextlib.suppress(OSError):
+                out.rmdir()
         return _fail("writing the diagnosis failed", exc)
     _say(
-        f"v4_diagnose: {len(diagnosed)} cells from {len(folders)} folders, {len(regime)} regime "
-        f"months; wrote {JSON_FILE} and {MD_FILE}"
+        f"v4_diagnose: {len(diagnosed)} cells from {len(folders)} folders "
+        f"({len(missing['folders_without_summary'])} without summary.json), "
+        f"{len(missing['cells'])} planned cells missing, {len(regime)} regime months; "
+        f"wrote {JSON_FILE} and {MD_FILE}"
     )
     return 0
+
+
+def _create(path: Path, data: bytes) -> None:
+    """Create ``path`` exclusively with ``data``; a write that fails removes the file it made."""
+    handle = path.open("xb")
+    try:
+        with handle:
+            handle.write(data)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _missing(
+    folders: Sequence[Path], cells: Sequence[Path], present: Sequence[Mapping[str, Any]]
+) -> dict[str, list[str]]:
+    """The subfolders without a ``summary.json``, and the cells of every arm of ``ARMS`` at each
+    capital and cost level that has a cell, absent from the diagnosis (in run order)."""
+    found = {cell["id"] for cell in present}
+    levels = {(cell["capital"], cell["cost_multiple"]) for cell in present}
+    # all_cells() is every arm of ARMS at every capital and cost level, in run order.
+    planned = [spec.cell_id for spec in all_cells() if (spec.capital, spec.cost_multiple) in levels]
+    with_summary = set(cells)
+    return {
+        "folders_without_summary": [
+            folder.name for folder in folders if folder not in with_summary
+        ],
+        "cells": [cell for cell in planned if cell not in found],
+    }
 
 
 if __name__ == "__main__":
