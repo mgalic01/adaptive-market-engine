@@ -13,7 +13,7 @@ Written by Claude Code (session f7f187df). The plan is `docs/superpowers/plans/2
 | `v4_confirm3` | `v4/engine/run.py` | a coin's new direction takes effect only after 3 consecutive daily readings (R1); a size change within one direction follows at once |
 | `hold_btc_trend` | `v4/engine/hold.py` | spot BTC with 0.99 x equity while BTC's slow vote is +1, else cash; it orders only on a state change |
 | `v3_as_built` | `v4/engine/v3_as_built.py`, `scripts/v4_v3_cell.py` | V3's frozen selector through V3.1's reviewed runner, unchanged. V3's own open marks become V4-format records and a `v4-summary-v3-1` summary that verifies itself. V3 stops and failed V3 accounting are incomplete, never a pass |
-| V3's input pack | `scripts/v4_v3_pack.py` | V3's pinned archives fetched, then V3's own loader and assembly. The result must equal V3.1's pin `8a4780009bfe580995396b60fd30e52bbc21888a470e49eedb84910087a55dee`, or nothing is uploaded |
+| V3's input pack | `scripts/v4_v3_pack.py` | V3's pinned archives fetched, then V3's own loader and assembly. The result must equal V3.1's registered `v3_pack_sha256` (in `config/v3_1_run_manifest.json`), or nothing is uploaded |
 | The v3 workflow | `.github/workflows/v4-v3.yml` | pack, then picks, then 4 cells, each under GNU time; artifacts kept 1 day; counts-only logs |
 
 The other arms' results do not change. Tests pin v4_main's summary (without `receipt_sha256`), its records (apart from the new null keys), and nine hold cells' summaries and records against their base values. Nothing under `simulation/`, `trend/`, `strategy/`, `backtest/` or `combined/` was edited.
