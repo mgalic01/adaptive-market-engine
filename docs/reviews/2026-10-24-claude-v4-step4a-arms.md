@@ -1,6 +1,6 @@
 # Claude: V4 step 4a, the remaining arms (build record)
 
-Index: 2026-10-24. V4 step 4a adds the four arms the registered run needs beyond step 3's eight: `v4_btc200_shorts` and `v4_confirm3` (owner decision v4-d22), `hold_btc_trend` (v4-d20) and `v3_as_built`. With them the run has 12 arms and 48 cells. V3's input pack is built on GitHub and pinned to V3.1's digest. The step was built subagent-driven in 7 tasks, each reviewed; then came a whole-branch review, one fix wave and its re-review. The two v4-d22 arms are not run on real data before the registered run. One owner question is open (below).
+Index: 2026-10-24. V4 step 4a adds the four arms the registered run needs beyond step 3's eight: `v4_btc200_shorts` and `v4_confirm3` (owner decision v4-d22), `hold_btc_trend` (v4-d20) and `v3_as_built`. With them the run has 12 arms and 48 cells. V3's input pack is built on GitHub and pinned to V3.1's digest. The step was built subagent-driven in 7 tasks, each reviewed; then came a whole-branch review, one fix wave and its re-review. The two v4-d22 arms are not run on real data before the registered run. The one owner question (below) was answered A, owner decision v4-d23.
 
 Written by Claude Code (session f7f187df). The plan is `docs/superpowers/plans/2026-10-23-v4-step4a-arms.md`. The spec, `docs/superpowers/specs/2026-10-17-v4-design.md`, carries this step's amendment, "Amended in the V4 step-4a PR". Step 4 is split in two (Delivery item 4): 4a, this PR, and 4b, the pipeline, the verdict step and the rehearsal.
 
@@ -47,12 +47,16 @@ Each ruling with its cost if wrong.
 13. **`V3Accounting`'s `hour_ms` (Task 6)** is the terminal stamp for a completed run; it is informational. Cost: one field's meaning.
 14. **Picks and pack pairing (Task 6).** The picks file does not name its pack; the workflow pairs them through both pins. Cost: a mispairing is caught only by the pins.
 15. **The pack pin (Task 7)** is a workflow constant tested against the manifest, not the pack job's own output, which would make the check circular. Cost: none.
-16. **I1 goes to the owner (final).** The rule is his v4-d22 definition and must be fixed before any result is seen. The code and spec keep R1 until he answers. Cost: one small change and its tests.
+16. **I1 goes to the owner (final).** The rule is his v4-d22 definition and must be fixed before any result is seen. The code and spec kept R1 until he answered; he chose A, so R1 stands (v4-d23). Cost: none.
 17. **Fix-wave scope (final).** I2, I3, M1, M2, M3 and M8 were fixed; the other minors wait for 4b. Cost: polish deferred.
 
-## Open owner question (I1, before step 5)
+## Owner question I1 (answered: A, v4-d23)
 
-`v4_btc200_shorts`: when BTC rises back above its 200-day average, should every open short close at the next decision (A, as built: a plain market filter with no shorts while BTC is in an uptrend), or should only new shorts be blocked, so open ones run until their own coin's signal ends them (B)? The owner was asked on 2026-10-24. This PR is not merged before the answer. If the answer is B, a small change follows before step 5.
+`v4_btc200_shorts`: when BTC rises back above its 200-day average, should every open short close at the next decision (A, as built: a plain market filter with no shorts while BTC is in an uptrend), or should only new shorts be blocked, so open ones run until their own coin's signal ends them (B)? The owner was asked on 2026-10-24 and answered A at 00:41 Zagreb time, before any result of the arm was seen. The code and the spec's rule R1 are unchanged; the spec records the answer as owner decision v4-d23.
+
+## CI: a dependency advisory
+
+CI's `pip-audit` flagged `filelock` 4.0.3 in `requirements-dev.lock` under three new advisories (CVE-2026-112907, CVE-2026-112913, CVE-2026-112940), all fixed in 4.2.1. It is unrelated to the engine and would fail every head, so the lock is bumped here, as `certifi` was in step 3. All 7,460 tests had passed at the earlier head.
 
 ## Deferred to step 4b (non-blocking)
 
