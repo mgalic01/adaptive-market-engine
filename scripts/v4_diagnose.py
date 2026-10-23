@@ -21,24 +21,35 @@ section is the "Verification" bullet's timing run (cell times, memory and output
    ``window`` must be those of ``D``'s packs (the regime is computed from them); and a
    ``timing.json``, when there is one, must be the cell's, with the records' size. A full cell's
    records are then streamed once more, to the end, keeping only the aggregates below, never a
-   record; its years must equal the verified summary's. Any failure refuses the whole run;
-4. computes the market regime per month from the packs alone;
+   record; its years must equal the verified summary's. A cell that fails any of these checks,
+   or whose records have a shape the pass refuses, is refused alone: it is listed under the
+   missing cells with the step that failed and the exception's type (never its text), and the
+   other cells are diagnosed;
+4. computes the market regime per month and per year from the packs alone;
 5. creates ``O/diagnosis.json`` and ``O/diagnosis.md``, both exclusively; if the second cannot
    be written, the first is removed again, so a failed run leaves no file. They hold results and
    stay on the owner's PC (the workflow uploads them as a 1-day artifact).
 
 The diagnosis also names what is missing: every subfolder of ``C`` without a ``summary.json``,
-and every arm of ``ARMS`` that has no cell at a capital and cost level that has one (a cell
-that was not run, failed or timed out).
+every cell folder it refused (its folder's name, step and exception type), and every arm of
+``ARMS`` that has no diagnosed cell at a capital and cost level that has one (a cell that was
+not run, failed, timed out or was refused).
 
-**Exit status.** 0 once both files are written; 1 for any refusal or failure, with nothing
-written; 2 for bad arguments (argparse's own).
+**Exit status.** 0 once both files are written and no cell was refused; 1 when a cell was
+refused, after both files were written with the other cells (partial results, never none), and
+for any other refusal or failure, with nothing written; 2 for bad arguments (argparse's own).
 
 **Output.** Standard output carries the guard's line (the end month and the config pin), one
-line per cell (its id, outcome and its record, year and month counts) and a last line of counts
-(cells, folders, folders without a summary, missing cells, regime months): never a price, an
-equity or a return (owner rule: public logs). A failure is one line on standard
-error naming the step and the exception's type, never its text.
+line per diagnosed cell (its id, outcome and its record, year and month counts) and a last line
+of counts (cells, folders, folders without a summary, refused cells, missing cells, regime
+months): never a price, an equity or a return (owner rule: public logs). A refused cell, and a
+failure, is one line on standard error naming the step and the exception's type, never its text.
+
+**The page** (``diagnosis.md``) opens with a headline that answers "what did the bot do in year
+X": one table of every cell's return and largest drawdown per year beside BTCUSDT's yearly return
+and the median yearly return of the universe's coins, then each cell's losing years, and one
+plain line per arm, made from ``arms.ARMS``. A glossary follows, then the timing, the missing
+cells, the market regime and one section per cell.
 
 **Periods** (Review Focus 3). A cell's months and years are summary.py's periods: each starts at
 the open mark of its first simulated hour and ends at the open mark of the hour that starts the
@@ -57,7 +68,21 @@ its ``entry_ms`` and counts, with its figures, in the period and year of its ``e
 * Lifecycles: opened and closed by side; ``wins``, those whose net P&L (``gross_pnl - fees +
   funding``) is above 0, and the win rate over those closed; ``gross_pnl`` and its positive
   (``gross_profit``) and negative (``gross_loss``) parts; ``fees``, ``funding`` (positive when
-  the wallet received it), ``net_pnl`` and ``given_back`` (profit given back from the peak).
+  the wallet received it), ``net_pnl`` and ``given_back`` (``best_unrealised - gross_pnl``, how
+  far the gross P&L fell from its best point, before fees and funding).
+* The return against the trades: ``equity_change`` (end equity minus start equity, USDT) and
+  ``open_trades_pnl``, that change minus the net P&L of the lifecycles closed in the period: the
+  profit or loss on trades still open at the period's start or end (a trade counts where it
+  closes, with all its P&L).
+* Exposure (``exposure``): ``hours`` (the hourly records of the period, by ``open_ms``),
+  ``mean_gross_exposure`` (the mean of the hourly ``gross``, gross notional over equity, over the
+  hours that have one), ``in_market_share`` (the share of hours whose ``gross`` is at least
+  ``IN_MARKET``, 1% of equity, so unsellable dust alone does not count), ``decisions`` (the daily
+  decisions, by ``decision_ms``) and ``mean_long_weight`` and ``mean_short_weight``: at each
+  decision, after its ``daily_coin`` records, the sum of the coins' positive targets and of their
+  negative targets' sizes, each coin keeping its last target when it gets none (a dead market's
+  is dropped, a target of 0 drops it), averaged over the decisions. A hold arm has no daily
+  record, so those are null.
 * Costs, from the fill, funding and synthetic-close records: ``fills``, ``traded_notional``
   (quantity x price), ``fees``, ``slippage`` (|price - unslipped price| x quantity, so 0 for a
   synthetic close), ``synthetic_close_penalty`` (over the legs of the ``synthetic_closes``
@@ -72,8 +97,16 @@ its ``entry_ms`` and counts, with its figures, in the period and year of its ``e
   superseded or is cancelled); ``refused_orders`` (an order event's legs with a refusal);
   ``cash_clip_cuts`` (``increase_cut`` events) and ``band_skips`` (orders the band kept).
 * By side, exit reason and coin, per year: lifecycles, wins, win rate (side only), gross P&L,
-  fees, funding, net P&L and profit given back. Both sides are listed every year; exit reasons
-  and coins only when they occur.
+  fees, funding, net P&L and given back. Both sides are listed every year; exit reasons
+  and coins only when they occur. A coin's row also holds ``coin_return``, the coin's own price
+  change in that year (below).
+* The bot's own trades, per year of ``exit_ms``: ``losing_trades``, the ``LOSERS_PER_YEAR``
+  lifecycles with the most negative net P&L (below 0), most negative first and the earlier record
+  first on a tie, kept in a bounded heap per year, each with its coin, side, ``entry_ms``,
+  ``exit_ms``, ``opened`` and ``closed`` (UTC days), ``hours_held`` (``exit_ms - entry_ms`` in
+  hours), ``net_pnl``, ``exit_reason`` and ``given_back``; and ``holding_times``, the lifecycles
+  of each ``HOLDING_TIMES`` bucket (under 1 week, 1 to 4 weeks, 1 to 3 months, over 3 months:
+  under 7, 28 and 91 days, and the rest) with their wins, win rate and net P&L.
 * Signals, per year, over the coin-days (the ``daily_coin`` records): for each speed the share
   up, down and warming (no reading, warming up, or an exact tie: the engine's ``None``) and its
   flips (a vote opposite to the coin's last up or down vote; a no-bar day repeats the last
@@ -98,6 +131,15 @@ from bars of the month and before it, for every month from the window's first to
 * ``universe_coins``, ``universe_coins_with_return`` and ``universe_median_return``: the month's
   universe and the median of their monthly returns, as BTCUSDT's is computed.
 
+**The market per year** (``market_years``), for every year from the window's first to
+``end_month``'s, over the part of the year inside the window (from the window's start in its
+first year): ``btc_return``, BTCUSDT's last daily close in that span over its last close before
+the span, minus 1 (over the coin's own span, from its first close in it, when it has no bar
+before); and ``universe_coins``, ``universe_coins_with_return`` and ``universe_median_return``
+for the coins in the universe in any month of that span, each coin's return computed as
+BTCUSDT's. A coin's ``coin_return`` in the by-coin breakdown is the same figure for that coin and
+year. A coin with fewer than two bars in the span, and none before it, has no return.
+
 A figure without the bars it needs is null, and so is every BTCUSDT figure of packs without it.
 """
 
@@ -105,6 +147,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import heapq
 import json
 import sys
 from bisect import bisect_left
@@ -123,7 +166,13 @@ from v4_cells_timing import TIMING_FILE
 from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.combined.artifacts import _canonical, _digest
 from crypto_grid_bot.v4.data.config import months
-from crypto_grid_bot.v4.engine.arms import all_cells
+from crypto_grid_bot.v4.engine.arms import (
+    ARMS,
+    HOLD_INVESTED,
+    MAIN_LOOKBACKS,
+    ArmSpec,
+    all_cells,
+)
 from crypto_grid_bot.v4.engine.hold import REBALANCE
 from crypto_grid_bot.v4.engine.lifecycle import EXIT_REASONS
 from crypto_grid_bot.v4.engine.market import HOUR_MS, Market
@@ -149,7 +198,7 @@ from crypto_grid_bot.v4.engine.summary import (
     verify_summary,
 )
 
-DIAGNOSIS_FORMAT = "v4-diagnosis-1"
+DIAGNOSIS_FORMAT = "v4-diagnosis-2"
 JSON_FILE = "diagnosis.json"
 MD_FILE = "diagnosis.md"
 OUTPUT_FILES = (JSON_FILE, MD_FILE)
@@ -176,12 +225,33 @@ COUNT_NAMES = (
 # The daily orders whose late fill is a deferral; a replacement buy or an exit has no decision.
 _DAILY_SOURCES = (SIGNAL, REBALANCE)
 _PERIOD_SUMS = ("gross_pnl", "gross_profit", "gross_loss", "fees", "funding", "net_pnl")
+# A full cell's figures, in the order of its entry; all null for a failure summary.
+FIGURE_NAMES = (
+    "years",
+    "months",
+    "sides",
+    "exit_reasons",
+    "coins",
+    "losing_trades",
+    "holding_times",
+    "signals",
+)
 _GROUP_SUMS = ("gross_pnl", "fees", "funding", "net_pnl", "given_back")
 # The keys of a summary's year (summary.py), which the diagnosis' years must reproduce.
 _YEAR_KEYS = ("year", "start_ms", "end_ms", "start_equity", "end_equity", "return")
 _TIMING_KEYS = frozenset({"cell", "wall_seconds", "peak_rss_mb", "records_bytes"})
 _MAX_TIMING_BYTES = 4096
 _ZERO = Fraction(0)
+
+# An hour is "in the market" when its gross exposure is at least 1% of equity, so the unsellable
+# dust a sale leaves behind (below the exchange's minimum order, normally far below 1%) does not
+# count as a position.
+IN_MARKET = Fraction(1, 100)
+# The losing trades kept per year, and the holding-time buckets with their upper bounds in days
+# (the last bucket has none).
+LOSERS_PER_YEAR = 10
+HOLDING_TIMES = ("under 1 week", "1 to 4 weeks", "1 to 3 months", "over 3 months")
+_HOLDING_DAYS = (7, 28, 91)
 
 # L is the number of speeds up over 3 (signals.py), so it takes one of these four values.
 _LONG_LEVELS: dict[Decimal, str] = {
@@ -250,6 +320,27 @@ def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
+def _mean(total: Fraction, count: int) -> str | None:
+    """``total / count`` under ``CONTEXT``, or None without a count."""
+    if count == 0:
+        return None
+    with localcontext(CONTEXT):
+        return str(Decimal(total.numerator) / (Decimal(total.denominator) * count))
+
+
+def day_of(ms: int) -> str:
+    """The UTC day (``YYYY-MM-DD``) of an instant in ms."""
+    return datetime.fromtimestamp(ms // 1000, UTC).strftime("%Y-%m-%d")
+
+
+def holding_time(held_ms: int) -> str:
+    """The ``HOLDING_TIMES`` label of a trade held ``held_ms``."""
+    for label, days in zip(HOLDING_TIMES, _HOLDING_DAYS, strict=False):
+        if held_ms < days * DAY_MS:
+            return label
+    return HOLDING_TIMES[-1]
+
+
 # ---- the aggregates of one pass -----------------------------------------------------------------
 
 
@@ -301,14 +392,32 @@ class _Month:
     lifecycles: _Tally = field(default_factory=_Tally)
     costs: _Tally = field(default_factory=_Tally)
     events: _Tally = field(default_factory=_Tally)
+    exposure: _Tally = field(default_factory=_Tally)
     drawdown: _Drawdown = field(default_factory=_Drawdown)
+
+    def tallies(self) -> tuple[_Tally, _Tally, _Tally, _Tally]:
+        return self.lifecycles, self.costs, self.events, self.exposure
+
+
+@dataclass(frozen=True, slots=True)
+class _Loser:
+    """A losing lifecycle, as the per-year heap keeps it."""
+
+    coin: str
+    side: str
+    entry_ms: int
+    exit_ms: int
+    net: Fraction
+    exit_reason: str
+    given_back: Fraction
 
 
 class _Pass:
     """One pass over a cell's records, in order, keeping only aggregates: per month the tallies
-    and the drawdown, per year the drawdown, the breakdowns and the signal counts, the open
-    marks a period reads (the first hour's and each month's first hour's), and the little a
-    reader needs across records (each coin's last up or down vote per speed, the last
+    and the drawdown, per year the drawdown, the breakdowns, the holding times, the signal counts
+    and at most ``LOSERS_PER_YEAR`` losing lifecycles (a heap), the open marks a period reads
+    (the first hour's and each month's first hour's), and the little a reader needs across
+    records (each coin's last up or down vote per speed and its last target, the last
     decision)."""
 
     def __init__(self) -> None:
@@ -322,8 +431,12 @@ class _Pass:
             "sides": {},
             "exit_reasons": {},
             "coins": {},
+            "holding_times": {},
         }
         self.signals: dict[int, Counter[str]] = {}
+        # Per year a min-heap of (-net, -order, loser): its top is the least bad loser kept, and
+        # on a tie the later record, so the earlier one stays.
+        self.losers: dict[int, list[tuple[Fraction, int, _Loser]]] = {}
         self.outcome: str | None = None
         self.final: str | None = None
         self._bounds: tuple[int, int, str] = (0, 0, "")
@@ -331,6 +444,8 @@ class _Pass:
         self._marked_year: int | None = None
         self._decision: int | None = None
         self._votes: dict[tuple[str, str], int] = {}
+        self._targets: dict[str, Fraction] = {}
+        self._lifecycles = 0
 
     def feed(self, kind: str, record: Mapping[str, object]) -> None:
         if self.outcome is not None:
@@ -374,11 +489,19 @@ class _Pass:
         if self.first_ms is None:
             self.first_ms = open_ms
         self.last_ms = open_ms
+        month = self._month(open_ms)
+        exposure = month.exposure
+        exposure.counts["hours"] += 1
+        gross = record.get("gross")
+        if gross is not None:  # null when equity is at or below zero
+            value = _fraction(gross, "an hourly record's gross")
+            exposure.counts["gross_hours"] += 1
+            exposure.counts["in_market_hours"] += int(value >= IN_MARKET)
+            exposure.add("gross", value)
         text = record.get("open_equity")
         if text is None:  # a stop before its open mark (only the last hour)
             return
         equity = _decimal(text, "an open mark")
-        month = self._month(open_ms)
         start, _, key = self._bounds
         if open_ms in (self.first_ms, start):
             self.marks[open_ms] = str(text)
@@ -417,6 +540,8 @@ class _Pass:
             raise ValueError("a lifecycle record needs its side, coin and exit reason")
         entry = _int(record.get("entry_ms"), "a lifecycle's entry_ms")
         exit_ms = _int(record.get("exit_ms"), "a lifecycle's exit_ms")
+        if exit_ms < entry:
+            raise ValueError("a lifecycle ends before it opens")
         gross = _fraction(record.get("gross_pnl"), "a lifecycle's gross P&L")
         fees = _fraction(record.get("fees"), "a lifecycle's fees")
         funding = _fraction(record.get("funding"), "a lifecycle's funding")
@@ -438,7 +563,13 @@ class _Pass:
         ):
             tally.add(name, amount)
         year = _year_of(exit_ms)
-        for group, key in (("sides", side), ("exit_reasons", reason), ("coins", coin)):
+        held = holding_time(exit_ms - entry)
+        for group, key in (
+            ("sides", side),
+            ("exit_reasons", reason),
+            ("coins", coin),
+            ("holding_times", held),
+        ):
             found = self.groups[group].setdefault((year, str(key)), _Tally())
             found.counts["lifecycles"] += 1
             found.counts["wins"] += win
@@ -450,6 +581,15 @@ class _Pass:
                 ("given_back", given_back),
             ):
                 found.add(name, amount)
+        self._lifecycles += 1
+        if net < 0:
+            loser = _Loser(coin, str(side), entry, exit_ms, net, str(reason), given_back)
+            heap = self.losers.setdefault(year, [])
+            item = (-net, -self._lifecycles, loser)
+            if len(heap) < LOSERS_PER_YEAR:
+                heapq.heappush(heap, item)
+            else:
+                heapq.heappushpop(heap, item)
 
     def _event(self, record: Mapping[str, object]) -> None:
         kind = record.get("type")
@@ -490,23 +630,33 @@ class _Pass:
 
     def _daily(self, record: Mapping[str, object]) -> None:
         decision = _int(record.get("decision_ms"), "a daily record's decision_ms")
+        coin = record.get("coin")
+        if type(coin) is not str:
+            raise ValueError("a daily record needs its coin")
         counts = self.signals.setdefault(_year_of(decision), Counter())
         if decision != self._decision:
+            if self._decision is not None and decision < self._decision:
+                raise ValueError("the daily records' decisions go back in time")
+            self._close_decision()
             counts["decisions"] += 1
             self._decision = decision
         counts["coin_days"] += 1
         target = record.get("target")
-        if target is not None and _decimal(target, "a target") != 0:
-            counts["nonzero_targets"] += 1
+        if target is not None:
+            weight = _fraction(target, "a target")
+            counts["nonzero_targets"] += int(weight != 0)
+            if weight == 0:
+                self._targets.pop(coin, None)
+            else:
+                self._targets[coin] = weight
+        elif record.get("dead_market") is True:  # its latest target is dropped (run.py)
+            self._targets.pop(coin, None)
         speeds = record.get("speeds")
         if speeds is None:
             counts["no_reading"] += 1
             for speed in SPEEDS:
                 counts[f"{speed}_warming"] += 1
             return
-        coin = record.get("coin")
-        if type(coin) is not str:
-            raise ValueError("a daily record needs its coin")
         votes = _mapping(speeds, "a reading's speeds")
         for speed in SPEEDS:
             vote = _mapping(votes.get(speed), f"the {speed} speed").get("vote")
@@ -526,8 +676,20 @@ class _Pass:
             raise ValueError("L is not 0, 1/3, 2/3 or 1")
         counts[f"long_{level}"] += 1
 
+    def _close_decision(self) -> None:
+        """The last decision's wanted long and short weights, after all its daily records:
+        every coin's last target, positive ones and negative ones' sizes summed."""
+        if self._decision is None:
+            return
+        exposure = self._month(self._decision).exposure
+        exposure.counts["decisions"] += 1
+        exposure.add("long_weight", sum((w for w in self._targets.values() if w > 0), _ZERO))
+        exposure.add("short_weight", sum((-w for w in self._targets.values() if w < 0), _ZERO))
+
     def finish(self) -> None:
-        """The end of the records: a full cell's final equity ends its last month and year."""
+        """The end of the records: the last decision's weights, and a full cell's final equity
+        ends its last month and year."""
+        self._close_decision()
         if self.outcome is None:
             raise ValueError("the records hold no outcome record")
         if self.outcome in FULL_OUTCOMES and self.final is not None:
@@ -544,7 +706,7 @@ class _Pass:
 def cell_figures(records_path: Path, receipt: Receipt) -> dict[str, Any]:
     """One pass over a full cell's records (``read_records``, to the end), and the cell's
     figures from it: ``record_count``, ``years``, ``months``, ``sides``, ``exit_reasons``,
-    ``coins`` and ``signals`` (module docstring)."""
+    ``coins``, ``losing_trades``, ``holding_times`` and ``signals`` (module docstring)."""
     reader = _Pass()
     for kind, record in read_records(records_path, receipt):
         reader.feed(kind, record)
@@ -565,33 +727,19 @@ def cell_figures(records_path: Path, receipt: Receipt) -> dict[str, Any]:
         start, end = month_bounds_ms(key)
         month = reader.months.get(key, _Month())
         month_rows.append(
-            {
-                "month": key,
-                **ending.period(start, end),
-                "max_drawdown": month.drawdown.value(),
-                **_period_tallies(month.lifecycles, month.costs, month.events),
-            }
+            _period_row({"month": key}, ending.period(start, end), month.drawdown, month)
         )
     years = list(range(_year_of(first), _year_of(last) + 1))
     year_rows = []
     for year in years:
-        tallies = (_Tally(), _Tally(), _Tally())
+        total = _Month()
         for key in keys:
             if key.startswith(f"{year:04d}-") and key in reader.months:
-                month = reader.months[key]
-                for total, part in zip(
-                    tallies, (month.lifecycles, month.costs, month.events), strict=True
-                ):
-                    total.merge(part)
+                for whole, part in zip(total.tallies(), reader.months[key].tallies(), strict=True):
+                    whole.merge(part)
+        period = ending.period(_year_start(year), _year_start(year + 1))
         drawdown = reader.year_drawdowns.get(year, _Drawdown())
-        year_rows.append(
-            {
-                "year": year,
-                **ending.period(_year_start(year), _year_start(year + 1)),
-                "max_drawdown": drawdown.value(),
-                **_period_tallies(*tallies),
-            }
-        )
+        year_rows.append(_period_row({"year": year}, period, drawdown, total))
     groups = reader.groups
     return {
         "record_count": reader.count,
@@ -613,7 +761,79 @@ def cell_figures(records_path: Path, receipt: Receipt) -> dict[str, Any]:
             _group_row(year, "coin", coin, tally)
             for (year, coin), tally in sorted(groups["coins"].items())
         ],
+        "losing_trades": [
+            _loser_row(year, loser)
+            for year in years
+            for _, _, loser in sorted(reader.losers.get(year, []), reverse=True)
+        ],
+        "holding_times": [
+            _holding_row(year, label, groups["holding_times"].get((year, label), _Tally()))
+            for year in years
+            for label in HOLDING_TIMES
+        ],
         "signals": [_signal_row(year, reader.signals.get(year, Counter())) for year in years],
+    }
+
+
+def _period_row(
+    head: dict[str, Any], period: Mapping[str, Any], drawdown: _Drawdown, month: _Month
+) -> dict[str, Any]:
+    """A month's or a year's row: its period, drawdown, return against the trades, exposure,
+    lifecycles, costs and counts."""
+    net = month.lifecycles.sums.get("net_pnl", _ZERO)
+    start, end = period["start_equity"], period["end_equity"]
+    change = (
+        None
+        if start is None or end is None
+        else to_fraction(Decimal(end)) - to_fraction(Decimal(start))
+    )
+    return {
+        **head,
+        **period,
+        "max_drawdown": drawdown.value(),
+        "equity_change": None if change is None else _exact(change),
+        "open_trades_pnl": None if change is None else _exact(change - net),
+        "exposure": _exposure_row(month.exposure),
+        **_period_tallies(month.lifecycles, month.costs, month.events),
+    }
+
+
+def _exposure_row(exposure: _Tally) -> dict[str, Any]:
+    counts, sums = exposure.counts, exposure.sums
+    return {
+        "hours": counts["hours"],
+        "mean_gross_exposure": _mean(sums.get("gross", _ZERO), counts["gross_hours"]),
+        "in_market_share": _ratio(counts["in_market_hours"], counts["hours"]),
+        "decisions": counts["decisions"],
+        "mean_long_weight": _mean(sums.get("long_weight", _ZERO), counts["decisions"]),
+        "mean_short_weight": _mean(sums.get("short_weight", _ZERO), counts["decisions"]),
+    }
+
+
+def _loser_row(year: int, loser: _Loser) -> dict[str, Any]:
+    return {
+        "year": year,
+        "coin": loser.coin,
+        "side": loser.side,
+        "entry_ms": loser.entry_ms,
+        "exit_ms": loser.exit_ms,
+        "opened": day_of(loser.entry_ms),
+        "closed": day_of(loser.exit_ms),
+        "hours_held": (loser.exit_ms - loser.entry_ms) // HOUR_MS,
+        "net_pnl": _exact(loser.net),
+        "exit_reason": loser.exit_reason,
+        "given_back": _exact(loser.given_back),
+    }
+
+
+def _holding_row(year: int, label: str, tally: _Tally) -> dict[str, Any]:
+    return {
+        "year": year,
+        "holding_time": label,
+        "lifecycles": tally.counts["lifecycles"],
+        "wins": tally.counts["wins"],
+        "win_rate": _ratio(tally.counts["wins"], tally.counts["lifecycles"]),
+        "net_pnl": tally.total("net_pnl"),
     }
 
 
@@ -684,6 +904,10 @@ def _signal_row(year: int, counts: Counter[str]) -> dict[str, Any]:
 # ---- one cell folder ----------------------------------------------------------------------------
 
 
+_REPEATED = "the cell repeats the cell of another folder"
+_FAILED = "the diagnosis of the cell failed"
+
+
 class CellRefused(Exception):
     """A cell folder that cannot be diagnosed: the step that failed and the exception."""
 
@@ -742,7 +966,9 @@ class _Step:
             raise CellRefused(self.step, exc) from None
 
 
-def diagnose_cell(folder: Path, market: Market) -> tuple[dict[str, Any], dict[str, Any]]:
+def diagnose_cell(
+    folder: Path, market: Market, prices: _Prices | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """One cell folder, checked (module docstring, step 3), and its diagnosis: the cell's
     entry and its timing. Every refusal is a ``CellRefused``."""
     with _Step("reading summary.json failed"):
@@ -775,9 +1001,8 @@ def diagnose_cell(folder: Path, market: Market) -> tuple[dict[str, Any], dict[st
         "record_count": receipt.record_count,
         "receipt_sha256": receipt_sha256,
     }
-    names = ("years", "months", "sides", "exit_reasons", "coins", "signals")
     if summary["outcome"] not in FULL_OUTCOMES:
-        return {**entry, **dict.fromkeys(names)}, timing
+        return {**entry, **dict.fromkeys(FIGURE_NAMES)}, timing
     with _Step("reading the records for the diagnosis failed"):
         figures = cell_figures(records, receipt)
         if figures["record_count"] != receipt.record_count:
@@ -786,7 +1011,11 @@ def diagnose_cell(folder: Path, market: Market) -> tuple[dict[str, Any], dict[st
         mine = [{key: year[key] for key in _YEAR_KEYS} for year in figures["years"]]
         if mine != summary["years"]:
             raise ValueError("the diagnosis' years are not the summary's")
-    return {**entry, **{name: figures[name] for name in names}}, timing
+    with _Step("the coins' own returns could not be computed"):
+        prices = prices or _Prices(market)
+        for row in figures["coins"]:
+            row["coin_return"] = _text(prices.year_return(row["coin"], row["year"]))
+    return {**entry, **{name: figures[name] for name in FIGURE_NAMES}}, timing
 
 
 # ---- the market regime --------------------------------------------------------------------------
@@ -872,6 +1101,43 @@ class _Daily:
             return None
         return bisect_left(self.crossings, end) - bisect_left(self.crossings, start)
 
+    def span_return(self, start: int, end: int) -> Decimal | None:
+        """The span's last close over the last close before it, minus 1; from the span's first
+        close for a coin with no bar before it; None with fewer than two closes to compare."""
+        last = self.last_in(start, end)
+        if last is None:
+            return None
+        base = bisect_left(self.opens, start) - 1
+        if base < 0:
+            base = bisect_left(self.opens, start)
+            if base == last:
+                return None
+        with localcontext(CONTEXT):
+            return self.closes[last] / self.closes[base] - 1
+
+
+class _Prices:
+    """Each coin's daily bars as ``_Daily``, built once per symbol, and the year spans the
+    diagnosis measures a year's returns over: the part of the year inside the window."""
+
+    def __init__(self, market: Market) -> None:
+        self.market = market
+        self._cache: dict[str, _Daily] = {}
+
+    def daily(self, symbol: str) -> _Daily:
+        if symbol not in self._cache:
+            self._cache[symbol] = _Daily.of(self.market, symbol)
+        return self._cache[symbol]
+
+    def year_span(self, year: int) -> tuple[int, int]:
+        return max(_year_start(year), self.market.window_start_ms), _year_start(year + 1)
+
+    def year_return(self, symbol: str, year: int) -> Decimal | None:
+        """``symbol``'s return over the year's span (module docstring), None without the coin."""
+        if symbol not in self.market.symbols:
+            return None
+        return self.daily(symbol).span_return(*self.year_span(year))
+
 
 def _median(values: Sequence[Decimal]) -> Decimal | None:
     ordered = sorted(values)
@@ -884,16 +1150,10 @@ def _median(values: Sequence[Decimal]) -> Decimal | None:
         return (ordered[middle - 1] + ordered[middle]) / 2
 
 
-def market_regime(market: Market) -> list[dict[str, Any]]:
+def market_regime(market: Market, prices: _Prices | None = None) -> list[dict[str, Any]]:
     """The market regime of every month from the window's first to ``end_month`` (module
     docstring), each from daily bars of that month and before it."""
-    cache: dict[str, _Daily] = {}
-
-    def daily(symbol: str) -> _Daily:
-        if symbol not in cache:
-            cache[symbol] = _Daily.of(market, symbol)
-        return cache[symbol]
-
+    daily = (prices or _Prices(market)).daily
     btc = daily(BTC) if BTC in market.symbols else None
     rows: list[dict[str, Any]] = []
     for key in months(month_of(market.window_start_ms), market.end_month):
@@ -921,6 +1181,89 @@ def market_regime(market: Market) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def market_years(market: Market, prices: _Prices | None = None) -> list[dict[str, Any]]:
+    """The market of every year from the window's first to ``end_month``'s (module docstring):
+    BTCUSDT's return over the year's span, and the median return of the coins in the universe in
+    any month of it."""
+    prices = prices or _Prices(market)
+    keys = months(month_of(market.window_start_ms), market.end_month)
+    rows: list[dict[str, Any]] = []
+    for year in range(_year_of(market.window_start_ms), int(market.end_month[:4]) + 1):
+        coins = sorted(
+            {
+                coin
+                for key in keys
+                if key.startswith(f"{year:04d}-")
+                for coin in market.universe(key)
+            }
+        )
+        returns = [
+            change
+            for change in (prices.year_return(coin, year) for coin in coins)
+            if change is not None
+        ]
+        rows.append(
+            {
+                "year": year,
+                "btc_return": _text(prices.year_return(BTC, year)),
+                "universe_coins": len(coins),
+                "universe_coins_with_return": len(returns),
+                "universe_median_return": _text(_median(returns)),
+            }
+        )
+    return rows
+
+
+# ---- the arms ---------------------------------------------------------------------------------
+
+
+def _whole_percent(value: Decimal) -> str:
+    with localcontext(CONTEXT):
+        return f"{(value * 100).normalize():f}%"
+
+
+def describe_arm(spec: ArmSpec, widest_universe: int) -> str:
+    """One plain line on what an arm of ``arms.ARMS`` does, from its own figures."""
+    invested = _whole_percent(HOLD_INVESTED)
+    if spec.family == "hold":
+        if spec.name == "hold_btc":
+            return (
+                f"no signal, spot only: {invested} of the account in {BTC} from the first hour, "
+                "held to the end."
+            )
+        return (
+            f"no signal, spot only: {invested} of the account split equally across the month's "
+            f"universe (the top coins by trading volume, at most {widest_universe} in these "
+            "packs), rebalanced at each month's start."
+        )
+    lookbacks, target = spec.lookbacks, spec.vol_target
+    if lookbacks is None or target is None:
+        raise ValueError(f"the V4 arm {spec.name} has no lookbacks or volatility target")
+    sides = (
+        "long only (on spot, never short)"
+        if spec.long_only
+        else "long and short (longs on spot first, shorts on futures)"
+    )
+    if lookbacks == MAIN_LOOKBACKS:
+        windows = "the main trend windows"
+    elif lookbacks.slow < MAIN_LOOKBACKS.slow:
+        windows = "shorter trend windows than the main ones"
+    else:
+        windows = "longer trend windows than the main ones"
+    return (
+        f"the trend bot, {sides}, sized to a {_whole_percent(target)} volatility target, with "
+        f"{windows}: fast {lookbacks.fast} days, medium {lookbacks.ema_fast}/{lookbacks.ema_slow} "
+        f"days, slow {lookbacks.slow} days."
+    )
+
+
+def arm_rows(market: Market) -> list[dict[str, str]]:
+    """Every arm of ``ARMS``, in order, with its plain line."""
+    keys = months(month_of(market.window_start_ms), market.end_month)
+    widest = max((len(market.universe(key)) for key in keys), default=0)
+    return [{"arm": name, "description": describe_arm(spec, widest)} for name, spec in ARMS.items()]
 
 
 # ---- the markdown -------------------------------------------------------------------------------
@@ -959,20 +1302,82 @@ def _table(head: Sequence[str], rows: Iterable[Sequence[object]], *, text: int =
     return [*lines, ""]
 
 
-def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
+def _days(hours: object) -> str:
+    """Hours as days, for reading."""
+    if type(hours) is not int:
+        return "n/a"
+    with localcontext(CONTEXT):
+        return _rounded(Decimal(hours) / 24)
+
+
+def _period_tables(
+    rows: Sequence[Mapping[str, Any]], label: str, btc: Mapping[object, object]
+) -> list[str]:
+    """A cell's tables for its years or for the months of one year; ``btc`` is BTCUSDT's
+    return by period."""
     head = label.capitalize()
-    lines = ["Equity (USDT):", ""]
+    lines = ["Equity (USDT), beside BTCUSDT's own return over the same period:", ""]
     lines += _table(
-        (head, "Start equity", "End equity", "Return", "Max drawdown"),
+        (head, "Start equity", "End equity", "Return", "BTC return", "Max drawdown"),
         (
             (
                 row[label],
                 _rounded(row["start_equity"]),
                 _rounded(row["end_equity"]),
                 _pct(row["return"]),
+                _pct(btc.get(row[label])),
                 _share(row["max_drawdown"]),
             )
             for row in rows
+        ),
+    )
+    lines += [
+        "Return against the trades (USDT). A trade counts in the period it closed, with all its "
+        "P&L, so the equity change and the net P&L of the trades closed in the period differ by "
+        "the profit or loss on trades still open at the period's start or end.",
+        "",
+    ]
+    lines += _table(
+        (
+            head,
+            "Equity change",
+            "Net P&L of trades closed",
+            "P&L on trades still open at the start or end",
+        ),
+        (
+            (
+                row[label],
+                _rounded(row["equity_change"]),
+                _rounded(row["lifecycles"]["net_pnl"]),
+                _rounded(row["open_trades_pnl"]),
+            )
+            for row in rows
+        ),
+    )
+    lines += [
+        "Exposure: how much the bot held (longs and shorts together, as a multiple of equity), "
+        "how often it held anything, and the long and short weights it wanted at its daily "
+        "decisions (shares of equity; n/a for a hold arm, which makes none):",
+        "",
+    ]
+    lines += _table(
+        (
+            head,
+            "Mean gross exposure (x equity)",
+            "Hours in the market",
+            "Mean long weight",
+            "Mean short weight",
+        ),
+        (
+            (
+                row[label],
+                _rounded(exposure["mean_gross_exposure"]),
+                _share(exposure["in_market_share"]),
+                _share(exposure["mean_long_weight"]),
+                _share(exposure["mean_short_weight"]),
+            )
+            for row in rows
+            for exposure in (row["exposure"],)
         ),
     )
     lines += [
@@ -1069,19 +1474,86 @@ def _period_tables(rows: Sequence[Mapping[str, Any]], label: str) -> list[str]:
 def _group_table(rows: Sequence[Mapping[str, Any]], label: str, title: str) -> list[str]:
     if not rows:
         return ["No lifecycle ended.", ""]
-    rate = label == "side"
-    head = ["Year", title, "Lifecycles", "Wins", *(["Win rate"] if rate else [])]
-    head += ["Gross P&L", "Fees", "Funding", "Net P&L", "Given back"]
+    rate, coin = label == "side", label == "coin"
+    head = ["Year", title, *(["Coin's own return"] if coin else []), "Lifecycles", "Wins"]
+    head += [*(["Win rate"] if rate else []), "Gross P&L", "Fees", "Funding", "Net P&L"]
+    head.append("Given back")
     return _table(
         head,
         (
             (
                 row["year"],
                 row[label],
+                *([_pct(row["coin_return"])] if coin else []),
                 row["lifecycles"],
                 row["wins"],
                 *([_share(row["win_rate"])] if rate else []),
                 *(_rounded(row[name]) for name in _GROUP_SUMS),
+            )
+            for row in rows
+        ),
+        text=2,
+    )
+
+
+def _loser_tables(rows: Sequence[Mapping[str, Any]], years: Sequence[int]) -> list[str]:
+    lines = [
+        f"The {LOSERS_PER_YEAR} trades closed in each year with the largest net loss (fewer when "
+        "fewer lost), the worst first. Opened and Closed are UTC days; Given back is how far the "
+        "trade's gross P&L fell from its best point (glossary).",
+        "",
+    ]
+    for year in years:
+        mine = [row for row in rows if row["year"] == year]
+        lines += [f"{year}:", ""]
+        if not mine:
+            lines += ["No trade closed at a loss.", ""]
+            continue
+        lines += _table(
+            (
+                "Coin",
+                "Side",
+                "Opened",
+                "Closed",
+                "Days held",
+                "Net P&L",
+                "Exit reason",
+                "Given back",
+            ),
+            (
+                (
+                    row["coin"],
+                    row["side"],
+                    row["opened"],
+                    row["closed"],
+                    _days(row["hours_held"]),
+                    _rounded(row["net_pnl"]),
+                    row["exit_reason"],
+                    _rounded(row["given_back"]),
+                )
+                for row in mine
+            ),
+            text=4,
+        )
+    return lines
+
+
+def _holding_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    lines = [
+        "The trades closed each year, by how long they were held. Many short trades losing "
+        "money in a year point to back-and-forth trading: the trend readings flipping, and the "
+        "bot buying and selling back again.",
+        "",
+    ]
+    return lines + _table(
+        ("Year", "Held", "Trades", "Win rate", "Net P&L"),
+        (
+            (
+                row["year"],
+                row["holding_time"],
+                row["lifecycles"],
+                _share(row["win_rate"]),
+                _rounded(row["net_pnl"]),
             )
             for row in rows
         ),
@@ -1141,35 +1613,124 @@ def _signal_tables(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
+def _negative(value: object) -> bool:
+    return value is not None and Decimal(str(value)) < 0
+
+
+def _headline(document: Mapping[str, Any]) -> list[str]:
+    """The page's first section: every cell's year beside the market's, each cell's losing
+    years, and one plain line per arm."""
+    market = {row["year"]: row for row in document["market_years"]}
+    cells = document["cells"]
+    years = sorted({*market, *(y["year"] for cell in cells for y in cell["years"] or ())})
+    lines = [
+        "## Headline",
+        "",
+        "Each cell's return and largest fall from a high (max DD) in each calendar year, beside "
+        "the market's: BTC is BTCUSDT's own price change over the year, and Median coin the "
+        "middle yearly price change of the coins in the bot's universe that year. The window's "
+        "first year is measured from the window's start, and a stopped cell's last year ends at "
+        "the stop. Trades count in the year they closed (glossary), so a year's return and its "
+        "trades' P&L can differ; each cell's Years section reconciles the two.",
+        "",
+    ]
+    head = ["Year", "BTC", "Median coin"]
+    for cell in cells:
+        head += [f"{cell['cell']['id']} return", f"{cell['cell']['id']} max DD"]
+    body: list[list[object]] = []
+    for year in years:
+        shown = market.get(year, {})
+        line: list[object] = [
+            year,
+            _pct(shown.get("btc_return")),
+            _pct(shown.get("universe_median_return")),
+        ]
+        for cell in cells:
+            found = {row["year"]: row for row in cell["years"] or ()}.get(year)
+            line += (
+                ["n/a", "n/a"]
+                if found is None
+                else [_pct(found["return"]), _share(found["max_drawdown"])]
+            )
+        body.append(line)
+    lines += _table(head, body)
+    lines += ["Losing years (a negative return):", ""]
+    if not cells:
+        lines.append("- No cell was diagnosed (see Missing cells).")
+    for cell in cells:
+        ident = cell["cell"]["id"]
+        if cell["years"] is None:
+            lines.append(f"- {ident}: no figures (outcome {cell['outcome']}).")
+            continue
+        losing = [row for row in cell["years"] if _negative(row["return"])]
+        if not losing:
+            lines.append(f"- {ident}: no losing year.")
+            continue
+        named = ", ".join(f"{row['year']} ({_pct(row['return'])})" for row in losing)
+        lines.append(f"- {ident}: lost money in {named}.")
+    lines += ["", "The arms (a cell is an arm at one starting capital and one cost level):", ""]
+    lines += [f"- **{row['arm']}**: {row['description']}" for row in document["arms"]]
+    return [*lines, ""]
+
+
 GLOSSARY: tuple[str, ...] = (
     "## Glossary",
     "",
     "- **Period**: a calendar month or year (UTC). Its start equity is the account's value at "
     "the first hour of the period, its end equity the value at the first hour of the next period "
     "(the final value at the end of the run). Return = end / start - 1.",
-    "- **Max drawdown**: the largest fall from a high to a later low inside the period, from "
-    "the hourly values, as a share of that high.",
+    "- **Max drawdown** (max DD): the largest fall from a high to a later low inside the period, "
+    "from the hourly values, as a share of that high.",
+    "- **BTC, BTC return**: BTCUSDT's own price change over the same period, from its last daily "
+    "close before the period to its last close in it. **Median coin**: the middle yearly price "
+    "change of the coins that were in the universe in any month of the year, each measured the "
+    "same way (from its first close in the year when it started trading that year). **Coin's own "
+    "return** (by coin): that coin's price change in the year, measured the same way.",
     "- **Lifecycle** (a trade): one position in one coin on one side, long or short, from when "
     "it opens to when it is closed, over spot and futures together. A trade counts in the month "
     "and the year in which it closed, with all its profit, fees and funding, even if it opened "
     "earlier; only the Opened columns count it where it opened.",
+    "- **Equity change**: end equity minus start equity, in USDT. **Net P&L of trades closed**: "
+    "the net P&L of the trades that closed in the period. **P&L on trades still open at the "
+    "start or end**: the difference between the two, the profit or loss on trades still open at "
+    "the period's start or end. Because trades count when they close, a year can show a negative "
+    "return and a positive trade P&L, or the reverse: a trade that gained in one year and closed "
+    "in the next counts wholly in the next, while its gain was already in the first year's "
+    "return.",
     "- **Gross profit, Gross loss**: the trades' price gains and losses before fees and funding, "
     "summed over the trades that gained and over those that lost (shown negative).",
     "- **Net P&L** = Gross profit + Gross loss - Fees + Funding. **Win rate**: the share of "
     "closed trades whose net P&L is above 0.",
-    "- **Given back**: profit a trade gave back from its best point: its best value along the "
-    "way minus what it finally made, summed over the trades.",
+    "- **Given back**: how far a trade's gross P&L fell from its best point before it ended: its "
+    "best gross P&L along the way (realised plus unrealised, best_unrealised) minus its final "
+    "gross P&L, summed over the trades. Like the gross P&L, it is before fees and funding.",
+    "- **Mean gross exposure**: the average, over the period's hours, of everything held (longs "
+    "and shorts together, at market value) divided by the account's value: 1.00 means positions "
+    "as large as the account, 0 means all cash. **Hours in the market**: the share of hours in "
+    "which that exposure was at least 1% of the account, so the unsellable remainders a sale "
+    "leaves (dust) do not count.",
+    "- **Mean long weight, Mean short weight**: the positions the bot wanted at its daily "
+    "decisions, as shares of the account, summed over the coins (longs, and shorts as positive "
+    "sizes) and averaged over the period's decisions. A coin with no new target that day keeps "
+    "its last one. A hold arm makes no daily decision, so it shows n/a.",
+    "- **Biggest losing trades**: per year, the 10 trades closed that year with the most "
+    "negative net P&L. **Days held**: from the hour it opened to the hour it closed.",
+    "- **Held** (holding time): the trades closed in a year grouped by how long they were held: "
+    "under 1 week (under 7 days), 1 to 4 weeks (7 to 28 days), 1 to 3 months (28 to 91 days) and "
+    "over 3 months (91 days or more).",
     "- **Fees** are the exchange's. **Funding** is the futures funding payment: positive when "
     "the account received money, negative when it paid. The lifecycle tables book fees and "
     "funding when a trade closes, the costs tables when they are paid: the same money seen two "
     "ways, so never add the two together.",
     "- **Slippage**: what each fill lost to the price moving against it, the gap between the "
     "price paid and the market's opening price, times the quantity.",
-    "- **Synthetic-close penalty**: when a market stops trading (no price for 168 hours, a "
-    "dead market) or a futures funding month is incomplete, the position is closed at its last "
-    "price less 10% (plus 10% for a short). This is that 10%: the gap between the last price "
-    "and the close price, times the quantity. Slippage and this penalty are already inside the "
-    "trades' gross P&L.",
+    "- **Synthetic-close penalty**: when a market stops trading (no price for 168 hours, a dead "
+    "market), the position is closed at its last price less 10% (plus 10% for a short). A "
+    "futures position whose next funding month is incomplete is normally closed before that "
+    "month at normal costs; the penalty applies to it only when the perpetual had no bar before "
+    "the month to close at. This is that 10%: the gap between the last price and the close "
+    "price, times the quantity. Slippage and this penalty are already inside the trades' gross "
+    "P&L.",
     "- **Traded notional**: the value of everything bought and sold.",
     "- **Dead-market closes, Funding-month closes**: how many positions were closed that way. "
     "They count legs, not coins: a coin held on both spot and futures counts twice.",
@@ -1208,18 +1769,32 @@ GLOSSARY: tuple[str, ...] = (
 
 
 def _missing_section(missing: Mapping[str, Any]) -> list[str]:
-    """The folders without a summary and the planned cells with none."""
+    """The folders without a summary, the cell folders refused and the planned cells with
+    none."""
     lines = ["## Missing cells", ""]
-    folders, cells = missing["folders_without_summary"], missing["cells"]
-    if not folders and not cells:
+    folders, refused, cells = (
+        missing["folders_without_summary"],
+        missing["refused"],
+        missing["cells"],
+    )
+    if not folders and not refused and not cells:
         return [*lines, "None: every arm has a cell at each capital and cost level present.", ""]
     if folders:
         lines += ["Folders of --cells without a summary.json:", ""]
         lines += [f"- `{name}`" for name in folders]
         lines.append("")
+    if refused:
+        lines += [
+            "Cell folders refused, each with the check that failed and the type of the error "
+            "(its text is never shown); the other cells are diagnosed:",
+            "",
+        ]
+        lines += [f"- `{row['folder']}`: {row['step']} ({row['error']})" for row in refused]
+        lines.append("")
     if cells:
         lines += [
-            "Cells absent at a capital and cost level present (not run, failed or timed out):",
+            "Cells absent at a capital and cost level present (not run, failed, timed out or "
+            "refused):",
             "",
         ]
         lines += [f"- {cell}" for cell in cells]
@@ -1234,8 +1809,9 @@ def _when(ms: object) -> str:
 
 
 def render_markdown(document: Mapping[str, Any]) -> str:
-    """``diagnosis.md``: the timing, the market regime, then one section per cell (its years,
-    its months year by year, then the breakdowns and the signals), rounded for reading."""
+    """``diagnosis.md``: the headline, the glossary, the timing, the missing cells, the market
+    regime, then one section per cell (its years, its months year by year, its biggest losing
+    trades and holding times, then the breakdowns and the signals), rounded for reading."""
     data, window = document["data"], document["window"]
     lines = [
         "# V4 diagnosis",
@@ -1248,6 +1824,7 @@ def render_markdown(document: Mapping[str, Any]) -> str:
         "count in the hour they happen; a trade counts in the period it closed; signals in the "
         "year of the decision.",
         "",
+        *_headline(document),
         *GLOSSARY,
         "## Timing",
         "",
@@ -1264,11 +1841,35 @@ def render_markdown(document: Mapping[str, Any]) -> str:
             for row in document["timing"]
         ),
     )
+    lines += [
+        "The diagnosis's own wall time and peak memory are in diagnose-timing.json beside this "
+        "page (the workflow writes it after the diagnosis ends).",
+        "",
+    ]
     lines += _missing_section(document["missing"])
     lines += [
         "## Market regime",
         "",
-        "BTCUSDT, and the median of the month's universe; each month from prices up to its end:",
+        "By year: BTCUSDT's return, and the median yearly return of the coins in the universe "
+        "in any month of the year:",
+        "",
+    ]
+    lines += _table(
+        ("Year", "BTC return", "Universe coins", "With a return", "Median coin return"),
+        (
+            (
+                row["year"],
+                _pct(row["btc_return"]),
+                row["universe_coins"],
+                row["universe_coins_with_return"],
+                _pct(row["universe_median_return"]),
+            )
+            for row in document["market_years"]
+        ),
+    )
+    lines += [
+        "By month: BTCUSDT, and the median of the month's universe; each month from prices up to "
+        "its end:",
         "",
     ]
     lines += _table(
@@ -1298,6 +1899,8 @@ def render_markdown(document: Mapping[str, Any]) -> str:
             for row in document["market_regime"]
         ),
     )
+    btc_years = {row["year"]: row["btc_return"] for row in document["market_years"]}
+    btc_months = {row["month"]: row["btc_return"] for row in document["market_regime"]}
     for cell in document["cells"]:
         lines += [f"## Cell {cell['cell']['id']}", ""]
         outcome = f"Outcome: {cell['outcome']}"
@@ -1310,11 +1913,15 @@ def render_markdown(document: Mapping[str, Any]) -> str:
             lines += ["A failure summary: the cell has no figures.", ""]
             continue
         lines += ["### Years", ""]
-        lines += _period_tables(cell["years"], "year")
+        lines += _period_tables(cell["years"], "year", btc_years)
         for year in cell["years"]:
             inside = [row for row in cell["months"] if row["month"].startswith(f"{year['year']}-")]
             lines += [f"### Months of {year['year']}", ""]
-            lines += _period_tables(inside, "month")
+            lines += _period_tables(inside, "month", btc_months)
+        lines += ["### Biggest losing trades", ""]
+        lines += _loser_tables(cell["losing_trades"], [year["year"] for year in cell["years"]])
+        lines += ["### Holding time", ""]
+        lines += _holding_table(cell["holding_times"])
         lines += ["### By side", ""]
         lines += _group_table(cell["sides"], "side", "Side")
         lines += ["### By exit reason", ""]
@@ -1379,20 +1986,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not cells:
         return _fail("refused: no cell folder holds a summary.json")
     order = {spec.cell_id: index for index, spec in enumerate(all_cells())}
+    prices = _Prices(market)
     diagnosed: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    refused: list[dict[str, str]] = []
     for folder in cells:
-        name = f"{folder.name!r:.80}"
         try:
-            entry, timing = diagnose_cell(folder, market)
+            entry, timing = diagnose_cell(folder, market, prices)
+            if any(entry["cell"]["id"] == other["cell"]["id"] for other, _ in diagnosed):
+                raise CellRefused(_REPEATED, ValueError("a cell of another folder"))
         except CellRefused as refusal:
-            return _fail(f"refused: the cell folder {name}: {refusal.step}", refusal.cause)
+            step, cause = refusal.step, refusal.cause
         except Exception as exc:
-            return _fail(f"refused: the cell folder {name} failed", exc)
-        if any(entry["cell"]["id"] == other["cell"]["id"] for other, _ in diagnosed):
-            return _fail(f"refused: the cell folder {name} repeats a cell of another folder")
-        diagnosed.append((entry, timing))
+            step, cause = _FAILED, exc
+        else:
+            diagnosed.append((entry, timing))
+            continue
+        # Refused alone (M1): the step and the exception's type, never its text, on standard
+        # error and under the missing cells; the other cells are still diagnosed.
+        _fail(f"refused: the cell folder {folder.name!r:.80}: {step}", cause)
+        refused.append({"folder": folder.name, "step": step, "error": type(cause).__name__})
     diagnosed.sort(key=lambda item: order[item[0]["cell"]["id"]])
-    missing = _missing(folders, cells, [entry["cell"] for entry, _ in diagnosed])
+    missing = _missing(folders, cells, [entry["cell"] for entry, _ in diagnosed], refused)
     for entry, _ in diagnosed:
         years = 0 if entry["years"] is None else len(entry["years"])
         months_seen = 0 if entry["months"] is None else len(entry["months"])
@@ -1401,16 +2015,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{entry['record_count']} records, {years} years, {months_seen} months"
         )
     try:
-        regime = market_regime(market)
+        regime = market_regime(market, prices)
+        yearly = market_years(market, prices)
+        arms = arm_rows(market)
     except Exception as exc:
         return _fail("computing the market regime failed", exc)
     document: dict[str, Any] = {
         "format": DIAGNOSIS_FORMAT,
         "data": data_record(market.pins),
         "window": window_record(market),
+        "arms": arms,
         "timing": [timing for _, timing in diagnosed],
         "missing": missing,
         "market_regime": regime,
+        "market_years": yearly,
         "cells": [entry for entry, _ in diagnosed],
     }
     try:
@@ -1436,11 +2054,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fail("writing the diagnosis failed", exc)
     _say(
         f"v4_diagnose: {len(diagnosed)} cells from {len(folders)} folders "
-        f"({len(missing['folders_without_summary'])} without summary.json), "
-        f"{len(missing['cells'])} planned cells missing, {len(regime)} regime months; "
-        f"wrote {JSON_FILE} and {MD_FILE}"
+        f"({len(missing['folders_without_summary'])} without summary.json, "
+        f"{len(refused)} refused), {len(missing['cells'])} planned cells missing, "
+        f"{len(regime)} regime months; wrote {JSON_FILE} and {MD_FILE}"
     )
-    return 0
+    # A refused cell was named on standard error; the diagnosis of the others is written, and
+    # the run still fails.
+    return 1 if refused else 0
 
 
 def _create(path: Path, data: bytes) -> None:
@@ -1455,10 +2075,14 @@ def _create(path: Path, data: bytes) -> None:
 
 
 def _missing(
-    folders: Sequence[Path], cells: Sequence[Path], present: Sequence[Mapping[str, Any]]
-) -> dict[str, list[str]]:
-    """The subfolders without a ``summary.json``, and the cells of every arm of ``ARMS`` at each
-    capital and cost level that has a cell, absent from the diagnosis (in run order)."""
+    folders: Sequence[Path],
+    cells: Sequence[Path],
+    present: Sequence[Mapping[str, Any]],
+    refused: Sequence[Mapping[str, str]],
+) -> dict[str, Any]:
+    """The subfolders without a ``summary.json``, the cell folders refused (each with its step
+    and exception type), and the cells of every arm of ``ARMS`` at each capital and cost level
+    that has a diagnosed cell, absent from the diagnosis (in run order)."""
     found = {cell["id"] for cell in present}
     levels = {(cell["capital"], cell["cost_multiple"]) for cell in present}
     # all_cells() is every arm of ARMS at every capital and cost level, in run order.
@@ -1468,6 +2092,7 @@ def _missing(
         "folders_without_summary": [
             folder.name for folder in folders if folder not in with_summary
         ],
+        "refused": [dict(row) for row in refused],
         "cells": [cell for cell in planned if cell not in found],
     }
 
