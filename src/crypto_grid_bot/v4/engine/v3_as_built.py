@@ -62,7 +62,11 @@ under the format ``v4-summary-v3-1``, built from the records alone by ``summary.
 cell, window and data bound to the records, the first open mark the capital, the eras and years
 of ``_Ending`` and ``ERAS``, every value exact. Its ``data`` is the two pins, ``equity_2025`` and
 ``final_after_close`` are null (V3's window ends before 2025-01-01 00:00 and V3 makes no closing
-trade), and ``accounting_residual`` is the absolute value of V3's. A complete cell's final equity
+trade), and ``accounting_residual`` is the absolute value of V3's. A full summary also has
+``disclosures``, V3's own list from the outcome record (a list of nonempty strings, holding
+``V3_CAPITAL_ADAPTER`` exactly when the cell's capital is not V3's 10,000), so that the run
+summary, which reads summaries only, can disclose the capital adapter of a 1,000 USDT cell; the
+short failure summary has none. A complete cell's final equity
 is read from its one terminal event, which must be at ``V3_END_MS``; its periods end there, the
 window's end; a stop's at its hour. Records with another number of terminal events than their
 outcome has (above) are refused. A full summary (``complete`` or ``liquidated``) requires both
@@ -79,7 +83,9 @@ of another cell, window, pack or picks do not verify.
 **The page** (``render_v3_page``) follows ruling F2: ``summary.render_page`` and
 ``write_cell_outputs`` take only V4's summary format (and the page's "every position was closed"
 does not hold for V3), so this module renders its own minimal page with ``summary.py``'s escaping,
-tables, sparkline and style, and writes the two files with ``write_v3_outputs``.
+tables, sparkline and style, and writes the two files with ``write_v3_outputs``. A full page lists
+the disclosures. The outcome line of a ``V3Accounting`` is worded by case: a completed run (its
+hour is ``V3_END_MS``) "ran to its window's end", a liquidation's was liquidated.
 """
 
 from __future__ import annotations
@@ -151,9 +157,15 @@ V3_END_MS = 1735689600000  # 2025-01-01 00:00 UTC, V3's terminal mark
 V3_SUMMARY_FORMAT = "v4-summary-v3-1"
 PICKS_FILE = "v3_picks.json"
 V3_STOP = "V3Stop"  # the exception type of an engine_error that is a V3 stop
-V3_ACCOUNTING = "V3Accounting"  # that of a completed V3 run whose accounting does not reconcile
+# The exception type of an engine_error that is a V3 run, completed (status None) or liquidated,
+# whose own accounting does not reconcile.
+V3_ACCOUNTING = "V3Accounting"
 # V3's own reconciliation flags (``BaselineEvidence``), in the order a failure names them.
 ACCOUNTING_FLAGS = ("accounting_explained", "wallet_quantity_exact")
+V3_CAPITAL = 10000  # V3's own starting capital: a cell at any other runs through the adapter
+# V3.1's disclosure of that adapter (``replay_v3_baseline``), in the outcome record's list and so
+# in a full summary's ``disclosures``, exactly when the cell's capital is not V3's own.
+V3_CAPITAL_ADAPTER = "v3_capital_adapter_sets_only_starting_capital"
 TERMINAL = "terminal"  # the event type of V3's terminal mark
 # V3.1's registered adapter pin of the selector (config/v3_1_registration.json, adapter_pins):
 # the comparison report V3.1's runner builds names it; this module reads only the native marks.
@@ -582,6 +594,7 @@ def _full(cell: CellSpec, records: _V3Records, receipt_sha256: str) -> dict[str,
     if error_keys:
         raise ValueError(f"a {name} outcome record has no {', '.join(error_keys)}")
     residual = _text(outcome.get("accounting_residual"), "the accounting residual")
+    disclosures = _disclosures(outcome.get("disclosures"), cell)
     by_ms = {ms: equity for ms, equity, _ in records.hours}
     ending = _Ending(first_ms, last_ms, by_ms, final_text, end_ms)
     initial = Decimal(cell.capital)
@@ -606,6 +619,7 @@ def _full(cell: CellSpec, records: _V3Records, receipt_sha256: str) -> dict[str,
         "compounded_return": str(compounded),
         "liquidations": liquidations,
         "accounting_residual": str(Decimal(residual).copy_abs()),
+        "disclosures": disclosures,
         "receipt_sha256": receipt_sha256,
         "eras": [{"name": era, **ending.period(start, end)} for era, start, end in ERAS],
         "years": [
@@ -614,6 +628,20 @@ def _full(cell: CellSpec, records: _V3Records, receipt_sha256: str) -> dict[str,
         ],
         "open_marks": [[ms, equity, flag] for ms, equity, flag in records.hours],
     }
+
+
+def _disclosures(value: object, cell: CellSpec) -> list[str]:
+    """The outcome record's disclosures, V3's own list: nonempty strings, and the capital
+    adapter's among them exactly when the cell's capital is not V3's, so a 1,000 USDT cell is
+    never summarised without its disclosure, nor a 10,000 cell with one."""
+    if not isinstance(value, list) or not all(type(item) is str and item for item in value):
+        raise ValueError("the outcome record's disclosures must be a list of nonempty strings")
+    if (V3_CAPITAL_ADAPTER in value) != (cell.capital != V3_CAPITAL):
+        raise ValueError(
+            f"the outcome record's disclosures must hold {V3_CAPITAL_ADAPTER} exactly for a "
+            f"capital other than {V3_CAPITAL}, not for {cell.cell_id}"
+        )
+    return list(value)
 
 
 def _failure(cell: CellSpec, records: _V3Records) -> dict[str, object]:
@@ -742,9 +770,17 @@ def _outcome_line(summary: Mapping[str, object]) -> str:
             "stop's mark is the final equity."
         )
     if summary.get("type") == V3_ACCOUNTING:
+        # A completed run's hour is its terminal mark's, V3's window end; a liquidation's is the
+        # hour of its own mark, before it (``_failure``).
+        flag = _e(summary.get("message"))
+        if summary.get("hour_ms") == V3_END_MS:
+            return line + (
+                ": V3 ran to its window's end, but its own accounting did not reconcile "
+                f"({flag}). The cell has no figures."
+            )
         return line + (
-            ": V3 ran to its window's end, but its own accounting did not reconcile "
-            f"({_e(summary.get('message'))}). The cell has no figures."
+            f": V3 was liquidated, and its own accounting did not reconcile ({flag}). "
+            "The cell has no figures."
         )
     return line + ": V3 stopped before its window's end. The cell has no figures."
 
@@ -791,4 +827,7 @@ def _full_sections(summary: Mapping[str, object]) -> list[str]:
         periods = summary.get(key)
         rows = [_period_row(item, label) for item in (periods if isinstance(periods, list) else [])]
         sections += [f"<h2>{title}</h2>", _table((title[:-1], *head), rows)]
+    notes = summary.get("disclosures")
+    if isinstance(notes, list) and notes:
+        sections += ["<h2>Disclosures</h2>", _table(("Disclosure",), [(_plain(n),) for n in notes])]
     return sections

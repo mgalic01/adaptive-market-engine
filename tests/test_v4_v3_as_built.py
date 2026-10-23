@@ -96,6 +96,8 @@ FULL_KEYS = {
     "years",
     "open_marks",
 }
+# A full v3 summary has them and one more: V3's own disclosures (the adapter's, at 1,000 USDT).
+V3_FULL_KEYS = FULL_KEYS | {"disclosures"}
 
 
 @pytest.fixture(autouse=True)
@@ -272,13 +274,14 @@ def test_v3_cell_at_10000_is_v3s_own_replay(tmp_path, monkeypatch):
 
     summary = summary_of(folder, receipt)
     verify_v3_summary(summary, folder / RECORDS, receipt)
-    assert set(summary) == FULL_KEYS
+    assert set(summary) == V3_FULL_KEYS
     final = str(terminal.equity)
     assert final != "10000"  # R2L traded
     with localcontext(CONTEXT):
         change = str(terminal.equity / 10000 - 1)
     path = [D(equity) for _, equity in open_marks(evidence)] + [terminal.equity]
-    assert {key: summary[key] for key in FULL_KEYS - {"eras", "years", "open_marks"}} == {
+    assert ADAPTER not in summary["disclosures"]  # V3's own capital: no adapter
+    assert {key: summary[key] for key in V3_FULL_KEYS - {"eras", "years", "open_marks"}} == {
         "format": V3_SUMMARY_FORMAT,
         "cell": cell_json(),
         "window": {"start_ms": START, "end_ms": END - HOUR},
@@ -295,6 +298,7 @@ def test_v3_cell_at_10000_is_v3s_own_replay(tmp_path, monkeypatch):
         "liquidations": 0,
         "accounting_residual": str(abs(evidence.accounting_residual)),
         "receipt_sha256": hashlib.sha256((folder / RECEIPT).read_bytes()).hexdigest(),
+        "disclosures": list(evidence.disclosures),
     }
     assert summary["open_marks"] == [[ms, equity, True] for ms, equity in open_marks(evidence)]
     # The world lies in the first era; the period ends at the terminal mark, the window's end.
@@ -336,10 +340,72 @@ def test_v3_cell_at_1000_runs_through_the_capital_adapter_and_says_so(tmp_path, 
     verify_v3_summary(summary, folder / RECORDS, receipt)
     assert summary["initial_equity"] == "1000"
     assert summary["final_equity"] == str(evidence.native[-1].equity)
+    # M8: the summary, which the run summary reads alone, carries the adapter's disclosure.
+    assert set(summary) == V3_FULL_KEYS
+    assert ADAPTER in summary["disclosures"]
+    assert summary["disclosures"] == list(evidence.disclosures) == outcome["disclosures"]
 
     big_folder, big_receipt = run_cell(w)
     (big,) = of_kind(rows(big_folder, big_receipt), "outcome")
     assert ADAPTER not in big["disclosures"]
+    assert ADAPTER not in summary_of(big_folder, big_receipt)["disclosures"]
+
+
+def test_the_v3_summary_verifies_its_disclosures_against_the_records_and_the_cell(
+    tmp_path, monkeypatch
+):
+    """M8: ``disclosures`` is built from the outcome record and verified like every other field.
+    A summary without the key, or with another list (the adapter's disclosure dropped or another
+    added, reordered or altered), does not verify against the records. Records whose
+    disclosures are not a list of nonempty strings, or whose adapter disclosure does not match
+    the cell (missing at 1,000 USDT, present at V3's own 10,000), are refused when the summary is
+    built, so a 1,000 cell can never be summarised without the disclosure, nor a 10,000 cell
+    with one. A short failure summary has none."""
+    w = world(tmp_path, monkeypatch)
+    folder, receipt = run_cell(w, capital=1000)
+    records = folder / RECORDS
+    summary = summary_of(folder, receipt, capital=1000)
+    disclosures = summary["disclosures"]
+    verify_v3_summary(summary, records, receipt)
+    without_adapter = [item for item in disclosures if item != ADAPTER]
+    assert without_adapter != disclosures
+    forged_lists = {
+        "adapter dropped": without_adapter,
+        "another added": [*disclosures, "another_disclosure"],
+        "reordered": list(reversed(disclosures)),
+        "altered": [*disclosures[:-1], disclosures[-1] + "x"],
+        "empty": [],
+    }
+    for forged_list in forged_lists.values():
+        forged = {**summary, "disclosures": forged_list}
+        with pytest.raises(ValueError, match="disclosures"):
+            verify_v3_summary(forged, records, receipt)
+    without_key = {key: value for key, value in summary.items() if key != "disclosures"}
+    with pytest.raises(ValueError, match="disclosures"):
+        verify_v3_summary(without_key, records, receipt)
+
+    def edit(value: object) -> Callable[[dict], None]:
+        return lambda record: record.update(disclosures=value)
+
+    bad_records: dict[str, tuple[int, object]] = {
+        "no adapter at 1000": (1000, without_adapter),
+        "not a list": (1000, "v3_funding_after_fills_is_native_timing"),
+        "null": (1000, None),
+        "a non-string": (1000, [*disclosures, 7]),
+        "an empty string": (1000, [*disclosures, ""]),
+        "adapter at 10000": (10000, disclosures),
+    }
+    for name, (capital, value) in bad_records.items():
+        base_folder, base_receipt = (folder, receipt) if capital == 1000 else run_cell(w)
+        target = tmp_path / "forged" / name.replace(" ", "_")
+        forged_receipt = rewrite(base_folder, base_receipt, target, edit(value))
+        with pytest.raises(ValueError, match="disclosures|adapter"):
+            build_v3_summary(CellSpec(ARM, capital, 1), target / RECORDS, forged_receipt)
+    # The short failure summary of a cell that did not run to its end has no disclosures.
+    failed = world(tmp_path / "failed", monkeypatch, picks={START + DAY: "R2L"})
+    failed_folder, failed_receipt = run_cell(failed, capital=1000)
+    failure = summary_of(failed_folder, failed_receipt, capital=1000)
+    assert failure["outcome"] == "engine_error" and "disclosures" not in failure
 
 
 def test_v3_cell_at_doubled_costs_uses_v3s_cost_multiple_2(tmp_path, monkeypatch):
@@ -1019,6 +1085,15 @@ def test_v3_page_is_self_contained_and_escapes_every_value(tmp_path, monkeypatch
     assert "default-src 'none'; style-src 'unsafe-inline'" in page
     assert "<script" not in page and "http" not in page.replace('http-equiv="', "")
     assert f"V4 cell {ARM}-10000-1x" in page and "terminal mark" in page
+    assert ADAPTER not in page  # V3's own capital runs without the adapter
+    # M8: a 1,000 USDT cell's page lists V3's disclosures, the adapter's among them, escaped.
+    small_folder, small_receipt = run_cell(w, capital=1000)
+    small = summary_of(small_folder, small_receipt, capital=1000)
+    small_page = render_v3_page(small)
+    assert "<h2>Disclosures</h2>" in small_page and ADAPTER in small_page
+    marked = render_v3_page({**small, "disclosures": ['<script>alert("d")</script>']})
+    assert "<script>" not in marked
+    assert "&lt;script&gt;alert(&quot;d&quot;)&lt;/script&gt;" in marked
     failure = {
         "format": V3_SUMMARY_FORMAT,
         "cell": cell_json(),
@@ -1035,6 +1110,19 @@ def test_v3_page_is_self_contained_and_escapes_every_value(tmp_path, monkeypatch
     with pytest.raises(ValueError):
         render_v3_page({**failure, "format": "v4-summary-1"})
     assert "V3 stopped before its window's end" in shown
-    accounting = render_v3_page({**failure, "type": "V3Accounting", "message": "<b>"})
-    assert "its own accounting did not reconcile (&lt;b&gt;)" in accounting
-    assert "V3 stopped before" not in accounting
+    # M2: a V3Accounting is worded by case. A completed run's hour is its terminal mark's.
+    accounting = render_v3_page(
+        {**failure, "type": "V3Accounting", "message": "<b>", "hour_ms": END}
+    )
+    assert (
+        "V3 ran to its window's end, but its own accounting did not reconcile (&lt;b&gt;)"
+        in accounting
+    )
+    assert "V3 stopped before" not in accounting and "liquidated" not in accounting
+    # A liquidation's is the hour of its mark: it did not run to its window's end.
+    liquidation = render_v3_page(
+        {**failure, "type": "V3Accounting", "message": "<b>", "hour_ms": END - HOUR}
+    )
+    assert "V3 was liquidated, and its own accounting did not reconcile (&lt;b&gt;)" in liquidation
+    assert "ran to its window's end" not in liquidation
+    assert "V3 stopped before" not in liquidation

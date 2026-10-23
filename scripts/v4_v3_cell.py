@@ -19,7 +19,9 @@ the pin every cell then requires.
 2. replays the cell into its folder (``run_v3_cell``): the picks F through their pin T and the
    pack P through its pin S, then V3's replay, all before anything is written; then
    ``records.jsonl`` and ``receipt.json``. A V3 stop other than a liquidation is the outcome
-   ``engine_error`` (``V3Stop``);
+   ``engine_error`` (``V3Stop``), and so is a V3 run, completed or liquidated, whose own
+   accounting does not reconcile (``accounting_explained`` or ``wallet_quantity_exact`` not
+   true): ``engine_error`` of type ``V3Accounting``, its message the first failed flag;
 3. builds the summary from the records (``build_v3_summary``) and verifies it, in memory,
    against the records and the receipt (``verify_v3_summary``), before anything more is written;
 4. writes ``summary.json`` and ``report.html`` (``write_v3_outputs``), then reads
