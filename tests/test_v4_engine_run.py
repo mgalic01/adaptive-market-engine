@@ -1,7 +1,8 @@
 """V4 engine task 12: the hour loop of the V4 arms (part 12a: the loop, the open marks, the
 records, the 00:00 decisions, the audit and the error paths; part 12b: the fill phase and the
 window-end close; part 12c: the synthetic closes, the post-fill and funding checks and cuts,
-funding, the adverse-extreme liquidation and the stops).
+funding, the adverse-extreme liquidation and the stops). Step 4a adds the short filter of
+``v4_btc200_shorts`` (ruling R1).
 
 Each test replays a small synthetic world from ``tests/v4_synthetic.py`` through
 ``run_v4_cell``. ``seed`` books fills into the cell's ledger and opens their lifecycles before
@@ -3121,6 +3122,188 @@ def test_a_long_on_spot_flips_to_a_short_on_futures_in_one_batch(tmp_path):
     assert F(D(short["venues"]["futures"]["sold_quantity"])) >= quantity
     assert D(short["venues"]["spot"]["bought_quantity"]) == 0
     check_conservation(rows, result.final_equity)
+
+
+# ---- step 4a: v4_btc200_shorts, shorts only while BTC is below its SMA(200) ----------------
+
+BTC200 = CellSpec("v4_btc200_shorts", CAPITAL, 1)
+BTC_DOWN = T0 + 9 * DAY  # 2025-01-10: BTCUSDT's first daily close below its SMA(200)
+BTC_UP = T0 + 19 * DAY  # 2025-01-20: its first daily close back above it
+
+
+def falling_alt() -> CoinSpec:
+    """ALTUSDT falling from 2024-10 with its perpetual (funding 0): a confirmed downtrend every
+    day of January, which v4_main shorts at the 0.30 coin cap."""
+    return one_coin("ALTUSDT", "2000", "-0.0003", 51, perpetual=PerpetualSpec(funding_rate="0"))
+
+
+def btc_crossing(masked: Sequence[int] = ()) -> CoinSpec:
+    """BTCUSDT on spot only, from 2024-05: flat at 100 (its close ties its SMA(200), so no slow
+    vote), at 90 from BTC_DOWN (below its SMA(200)) and at 120 from BTC_UP (above it)."""
+    start = month_start("2024-05")
+    closes = (
+        ("100",) * ((BTC_DOWN - start) // HOUR)
+        + ("90",) * ((BTC_UP - BTC_DOWN) // HOUR)
+        + ("120",) * ((month_start("2025-02") - BTC_UP) // HOUR)
+    )
+    return CoinSpec("BTCUSDT", Series(start, closes, masked=masked))
+
+
+def alt_only(btc: CoinSpec | None) -> World:
+    """ALTUSDT alone in January's universe, with ``btc`` in the packs but never selected."""
+    coins = (falling_alt(),) if btc is None else (btc, falling_alt())
+    return World("2025-01", coins, {"2025-01": ("ALTUSDT",)})
+
+
+def shorts(rows: Iterable[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """The futures sells and the short lifecycles of a run."""
+    sells = [f for f in of_kind(rows, "fill") if f["venue"] == "futures" and f["side"] == -1]
+    return sells + [r for r in of_kind(rows, "lifecycle") if r["side"] == "short"]
+
+
+def test_btc200_shorts_blocks_every_short_while_btc_is_above_its_sma200(tmp_path):
+    """Ruling R1: BTCUSDT rises for 260 days, so from its 200th close on its slow vote is +1 and
+    shorts are never allowed. v4_main shorts the falling ALTUSDT; v4_btc200_shorts clamps every
+    coin's signal to max(signal, 0), so it never targets below 0 and never sells futures. BTCUSDT
+    is decided too, and its own trading reading is the plain one: the filter's BTC state is
+    separate from it."""
+    start = T0 - 229 * DAY
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(start, path("50000", (260 * 24, "0.0003"), noise="0.003", seed=52)),
+        perpetual=PerpetualSpec(funding_rate="0"),
+    )
+    market = load(
+        tmp_path, World("2025-01", (btc, falling_alt()), {"2025-01": ("BTCUSDT", "ALTUSDT")})
+    )
+
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+
+    assert result.outcome == "complete"
+    assert shorts(main_rows) and all(
+        D(r["target"]) < 0 for r in of_kind(main_rows, "daily_coin") if r["coin"] == "ALTUSDT"
+    )
+    assert all(r["short_filter"] is None for r in of_kind(main_rows, "daily_coin"))
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_main"])
+    assert len([day for day in btc_readings if day < T0]) == 229  # warm before January
+    daily = of_kind(rows, "daily_coin")
+    assert {r["decision_ms"] for r in daily} == set(range(T0, month_start("2025-02"), DAY))
+    for record in daily:
+        btc_reading = latest(btc_readings, record["day_ms"])
+        assert btc_reading is not None and btc_reading.slow == 1
+        assert record["short_filter"] == {"btc_slow_vote": 1, "allowed": False}
+        assert D(record["signal"]) == max(D(record["s"]), D(0))
+        assert record["target"] is not None and D(record["target"]) >= 0
+        if record["coin"] == "BTCUSDT":
+            check_reading(record, btc_reading)
+    assert all(D(r["s"]) < 0 for r in daily if r["coin"] == "ALTUSDT")  # the clamp acted
+    assert shorts(rows) == []
+
+
+def test_btc200_shorts_allows_shorts_once_btc_closes_below_and_closes_them_when_it_recovers(
+    tmp_path,
+):
+    """Ruling R1: BTCUSDT (never selected) ties its SMA(200) until BTC_DOWN, closes below it
+    from BTC_DOWN and above it from BTC_UP. ALTUSDT's short target appears at the decision after
+    BTC_DOWN and equals v4_main's at every decision while shorts are allowed; the decision after
+    BTC_UP gives it 0, so the short closes at the next fill, a lifecycle ended by ``signal``."""
+    market = load(tmp_path, alt_only(btc_crossing()))
+
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+
+    assert result.outcome == "complete"
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_main"])
+    main_daily, daily = daily_by(main_rows), daily_by(rows)
+    decisions = list(range(T0, month_start("2025-02"), DAY))
+    assert sorted(daily) == sorted(main_daily) == [(h, "ALTUSDT") for h in decisions]
+    for h in decisions:
+        record, main = daily[(h, "ALTUSDT")], main_daily[(h, "ALTUSDT")]
+        allowed = BTC_DOWN < h <= BTC_UP
+        vote = None if h <= BTC_DOWN else (-1 if allowed else 1)
+        btc_reading = latest(btc_readings, h - DAY)
+        assert btc_reading is not None and btc_reading.slow == vote
+        assert record["short_filter"] == {"btc_slow_vote": vote, "allowed": allowed}
+        assert D(main["target"]) < 0  # v4_main is short all month
+        if allowed:
+            assert record["target"] == main["target"]
+        else:
+            assert D(record["target"]) == 0
+    entry, exit_ = BTC_DOWN + DAY + HOUR, BTC_UP + DAY + HOUR
+    sells, buys = (
+        [f for f in of_kind(rows, "fill") if f["side"] == side and f["venue"] == "futures"]
+        for side in (-1, 1)
+    )
+    assert sells[0]["hour_ms"] == entry and buys[-1]["hour_ms"] == exit_
+    assert holdings(rows, exit_ - 1)[("futures", "ALTUSDT")] < 0
+    assert holdings(rows, exit_) == {}  # flat after the closing fill
+    (short,) = of_kind(rows, "lifecycle")
+    assert (short["coin"], short["side"]) == ("ALTUSDT", "short")
+    assert (short["entry_ms"], short["exit_ms"], short["exit_reason"]) == (entry, exit_, "signal")
+    assert not short["censored"]
+
+
+def test_btc200_shorts_keeps_the_last_btc_reading_on_a_day_without_a_btc_bar(tmp_path):
+    """Review Focus 1: BTCUSDT's hours 00:00 to 05:59 of BTC_UP are masked, so that day has no
+    daily bar, though its closes would have voted +1. The decision closing BTC_UP keeps BTC's
+    reading of the day before, a slow vote of -1, so shorts stay allowed; the next decision
+    reads the bar of the day after and closes the short."""
+    market = load(tmp_path, alt_only(btc_crossing(masked=day_hours(BTC_UP, range(6)))))
+    btc_days = {bar.open_ms for bar in market.daily("BTCUSDT")}
+    assert BTC_UP - DAY in btc_days and BTC_UP not in btc_days and BTC_UP + DAY in btc_days
+
+    result, rows = cell_run(market, tmp_path, BTC200)
+
+    assert result.outcome == "complete"
+    daily = daily_by(rows)
+    before, kept, after = (daily[(h, "ALTUSDT")] for h in (BTC_UP, BTC_UP + DAY, BTC_UP + 2 * DAY))
+    assert before["short_filter"] == {"btc_slow_vote": -1, "allowed": True}
+    assert kept["short_filter"] == before["short_filter"]
+    assert D(kept["target"]) < 0  # still short
+    assert after["short_filter"] == {"btc_slow_vote": 1, "allowed": False}
+    assert D(after["target"]) == 0
+    (short,) = of_kind(rows, "lifecycle")
+    assert (short["exit_ms"], short["exit_reason"]) == (BTC_UP + 2 * DAY + HOUR, "signal")
+
+
+@pytest.mark.parametrize("btc_start", [month_start("2024-10"), T0 + 5 * DAY])
+def test_btc200_shorts_while_btc_warms_up_allows_no_short(btc_start, tmp_path):
+    """Ruling R1: fewer than 200 BTC closes (123 from 2024-10, and none before BTCUSDT's first
+    bar on 2025-01-06) is no slow vote, so shorts are not allowed, though BTCUSDT falls."""
+    closes = path("50000", ((month_start("2025-02") - btc_start) // HOUR, "-0.0003"), seed=53)
+    market = load(tmp_path, alt_only(CoinSpec("BTCUSDT", Series(btc_start, closes))))
+
+    result, rows = cell_run(market, tmp_path, BTC200)
+
+    assert result.outcome == "complete"
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_main"])
+    assert len(btc_readings) < 200
+    daily = of_kind(rows, "daily_coin")
+    assert len(daily) == 31
+    for record in daily:
+        btc_reading = latest(btc_readings, record["day_ms"])
+        assert btc_reading is None or btc_reading.sma_slow is None
+        assert record["short_filter"] == {"btc_slow_vote": None, "allowed": False}
+        assert D(record["s"]) < 0 and D(record["signal"]) == D(record["target"]) == 0
+    assert of_kind(rows, "fill") == []
+
+
+def test_btc200_shorts_without_btcusdt_is_an_engine_error(tmp_path):
+    """The filter reads BTCUSDT's own bars, so a market without BTCUSDT ends the cell as
+    ``engine_error`` at its first decision, as hold_btc does. v4_main never reads BTCUSDT for the
+    filter and runs on the same market."""
+    market = load(tmp_path, alt_only(None))
+
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+    main, _ = cell_run(market, tmp_path, MAIN, name="main")
+
+    assert main.outcome == "complete"
+    assert result.outcome == "engine_error"
+    assert result.reason == "ValueError: 'BTCUSDT' is not a coin of the packs"
+    kind, outcome = rows[-1]
+    assert kind == "outcome" and outcome["type"] == "ValueError" and outcome["hour_ms"] == T0
+    assert of_kind(rows, "daily_coin") == [] and of_kind(rows, "fill") == []
 
 
 # ---- outputs ------------------------------------------------------------------------------

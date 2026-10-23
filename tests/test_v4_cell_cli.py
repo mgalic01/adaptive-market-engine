@@ -31,11 +31,13 @@ and the covariance's 60 days). Four coins, each with one job, selected in this r
 Each feature has a test that reads the records and checks that it happened, at the hour and price
 the spec gives. Two tests hold for the whole run: a rerun of one V4 arm and one hold arm writes
 byte-identical files, and every arm conserves money exactly through its lifecycles (the final
-review). The CLI's own behaviour has the rest: the exact one-line output; the refusals and
-failures that return 1, each a fixed line on standard error with the exception's type and never
-its text (a bad pin, bad data, existing outputs, a failure before the summary, a summary that does
-not verify, which writes no summary and no page, and written bytes that are not the verified
-summary's); argparse's exit code 2; and the failure summary of an engine error, which returns 0.
+review). A third pins v4_main's summary and records to those of step 4a's base, but for the null
+``short_filter`` field that v4_btc200_shorts added. The CLI's own behaviour has the rest: the
+exact one-line output; the refusals and failures that return 1, each a fixed line on standard
+error with the exception's type and never its text (a bad pin, bad data, existing outputs, a
+failure before the summary, a summary that does not verify, which writes no summary and no page,
+and written bytes that are not the verified summary's); argparse's exit code 2; and the failure
+summary of an engine error, which returns 0.
 
 The network is blocked for every test (the autouse fixture, and the module fixture blocks it for
 its own run). Only synthetic worlds in pytest's temporary folders are read.
@@ -413,6 +415,41 @@ def test_a_rerun_writes_the_same_bytes(arm, world_dir, cells, tmp_path):
         assert (folder / name).read_bytes() == (cells[arm].folder / name).read_bytes(), name
 
 
+def canonical_sha256(value: object) -> str:
+    """The SHA-256 of ``value`` as canonical JSON: sorted keys, no spaces, ASCII."""
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+# v4_main on this world at the step-4a base (154cfd1), before v4_btc200_shorts: its summary.json
+# without receipt_sha256, and its records as [kind, record] lines, each canonical JSON and a
+# newline, in order (3189 records).
+MAIN_SUMMARY_SHA256 = "79151b4ef2fd3387d283258b88ea5cb9b82e6ed80f71e2619e84c704fc8d0523"
+MAIN_RECORDS_SHA256 = "dbd7c8b93f9bf4b4d46846a306a617435c1c6c4c0e220b1740c79b4829cca7ee"
+
+
+def test_the_main_arm_is_unchanged_by_the_filter_code(cells):
+    """v4_btc200_shorts (step 4a, ruling R1) adds a ``short_filter`` field to every arm's
+    ``daily_coin`` records, null for an arm without the filter, so the records' bytes and the
+    receipt change. Nothing else may: v4_main's summary.json, but for its receipt_sha256, is
+    the one the step-4a base wrote, and its records with the null field set aside are the base's
+    records, one for one."""
+    cell = cells["v4_main"]
+    summary = {key: value for key, value in cell.summary.items() if key != "receipt_sha256"}
+    assert canonical_sha256(summary) == MAIN_SUMMARY_SHA256
+    lines = hashlib.sha256()
+    for kind, record in cell.rows:
+        if kind == "daily_coin":
+            assert record["short_filter"] is None
+            record = {key: value for key, value in record.items() if key != "short_filter"}
+        line = json.dumps([kind, record], sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        lines.update(line.encode("ascii") + b"\n")
+    assert len(cell.rows) == 3189 and lines.hexdigest() == MAIN_RECORDS_SHA256
+    for arm in (name for name in DIAGNOSTIC_ARMS if ARMS[name].family == "v4"):
+        daily = of_kind(cells[arm].rows, "daily_coin")
+        assert daily and all(record["short_filter"] is None for record in daily), arm
+
+
 def test_every_arm_conserves_money_through_its_lifecycles(cells):
     """For every arm, each fill and each funding payment belongs to exactly one lifecycle, and a
     lifecycle censored with dust carries its unrealised P&L, so over all lifecycles ``gross -
@@ -786,11 +823,11 @@ def test_cli_refuses_v3_as_built_on_v4_packs(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize("arm", ["v4_btc200_shorts", "v4_confirm3", "hold_btc_trend"])
+@pytest.mark.parametrize("arm", ["v4_confirm3", "hold_btc_trend"])
 def test_cli_refuses_the_new_arms_until_the_engine_runs_them(arm, tmp_path):
-    """The registry lists the three new engine arms before the engine can run them (Tasks 2 to 4
-    of the arms plan): their runners refuse with a ValueError before they write anything, and
-    the CLI reports it as a failure outside the replay's loop, with exit code 1 and no files."""
+    """The registry lists two new engine arms before the engine can run them (Tasks 3 and 4 of
+    the arms plan): their runners refuse with a ValueError before they write anything, and the
+    CLI reports it as a failure outside the replay's loop, with exit code 1 and no files."""
     data = write_world(tmp_path / "world", tiny_world())
 
     code, stdout, stderr = run_cli(cell_argv(data, tmp_path / "out", arm))
