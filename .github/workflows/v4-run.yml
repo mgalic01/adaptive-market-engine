@@ -102,14 +102,18 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #
 # A registered run is executed once. Re-running any job, the failed ones or all of them, is a new
 # recorded attempt (a new run_attempt), whose artifacts carry its number: the verdict refuses a
-# cell from an attempt other than 1 (a re-run), and a re-run voids the verdict, by design. A v3
-# cell re-run without the picks job fails at its download: it takes the picks of its own attempt.
-# Do not re-run a registered run. The one exception is the spec's single aggregate-only re-run
-# after an infrastructure failure: re-running the verdict job alone (with the status job, which
-# needs it) is harmless, since its artifacts are named for its attempt and the cells' summaries
-# it reads are unchanged, still those of attempt 1. Such a re-run starts the verdict from zero:
-# its progress/ folder is never uploaded (resuming is for a local run). (A rehearsal's verdict
-# re-run alone fails at its forced cells' download, which takes its own attempt's.)
+# cell from an attempt other than 1 (a re-run), and a re-run voids the verdict, by design. The
+# verdict job's dispatch check also reads this run's own attempts (every job record of every
+# attempt): any job but verdict, analysis and status that ran in an attempt after the first,
+# even a cell job that failed before its upload and left no artifact, and any third attempt,
+# makes the verdict incomplete, as does a failure to read them. A v3 cell re-run without the
+# picks job fails at its download: it takes the picks of its own attempt. Do not re-run a
+# registered run. The one exception is the spec's single aggregate-only re-run after an
+# infrastructure failure: re-running the verdict job alone (with the status job, which needs it)
+# is harmless, since its artifacts are named for its attempt and the cells' summaries it reads
+# are unchanged, still those of attempt 1. Such a re-run starts the verdict from zero: its
+# progress/ folder is never uploaded (resuming is for a local run). (A rehearsal's verdict re-run
+# alone fails at its forced cells' download, which takes its own attempt's.)
 #
 # The reserved window (owner decision v4-d03): no market data from 2025-01 onward is executed
 # before the registered run. The rehearsal and timing modes run on synthetic worlds only, and the
@@ -164,11 +168,12 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   v4-forced-attempt-<n>.
 # - verdict (every mode), after every cell job that ended, failed or timed out included, never
 #   after a cancelled run or a failed plan. In a registered run it first judges every other
-#   dispatch of the registration again, before any download (scripts/v4_registration.py
-#   dispatch-check --judge-all: any that counts, or a check that could not rule one out, makes
-#   the verdict incomplete), its deadline 55 minutes from the job's start (which the job's first
-#   step records); the job's timeout is 180 minutes, so the verdict always has more than two
-#   hours after it. Then
+#   dispatch of the registration again, and this run's own attempts, before any download
+#   (scripts/v4_registration.py dispatch-check --judge-all: any dispatch that counts, any job
+#   run again outside the single aggregate-only re-run, or a check that could not rule one out,
+#   makes the verdict incomplete), its deadline 55 minutes from the job's start (which the job's
+#   first step records); the job's timeout is 180 minutes, so the verdict always has more than
+#   two hours after it. Then
 #   it downloads v4-data and every v4-summary-*, one folder per artifact, each cell's summary and
 #   receipt alone, never a cell's records (Ruling W1); writes the expected file under GNU time
 #   (scripts/v4_run_plan.py expected, which loads the whole data pack: the mode's cells, the
@@ -919,11 +924,12 @@ jobs:
       # Ruling G4, again, as the verdict's input, first after the setup and before any download,
       # so its deadline (55 minutes from the job's start) never eats into the verdict's time:
       # every earlier dispatch of the registration is judged and none refused; each that counts,
-      # or why none could be ruled out (any failure of the check, its deadline passing included),
-      # goes to reasons.json and makes the verdict incomplete. Such a failure is a reason, not a
-      # failed step: reasons.json is still written. The step fails, writing no file, only when
-      # the file cannot be written (or already exists, or the options are wrong); then nothing
-      # after it runs, the verdict included.
+      # each job this run ran again outside the single aggregate-only re-run (read from this
+      # run's own attempts), or why none could be ruled out (any failure of the check, its
+      # deadline passing included), goes to reasons.json and makes the verdict incomplete. Such a
+      # failure is a reason, not a failed step: reasons.json is still written. The step fails,
+      # writing no file, only when the file cannot be written (or already exists, or the options
+      # are wrong); then nothing after it runs, the verdict included.
       - name: Judge every other dispatch of the registration
         if: ${{ inputs.mode == 'registered' }}
         env:

@@ -968,6 +968,158 @@ def test_the_verdict_jobs_check_past_its_deadline_still_writes_its_reasons(
     assert api.requests == []  # refused before any request: nothing was asked of GitHub
 
 
+# A registered run's first attempt as GitHub lists it (scenarios is a rehearsal's job), and its
+# single aggregate-only re-run: the verdict job again, running its check, the status job queued.
+RAN = (
+    ("plan", "success"),
+    ("v3-pack", "success"),
+    ("v3-picks", "success"),
+    ("cell (v4_main-1000-1x)", "success"),
+    ("v3-cell (v3_as_built-1000-1x)", "success"),
+    ("scenarios", "skipped"),
+    ("verdict", "failure"),
+    ("analysis", "success"),
+    ("status", "success"),
+)
+JOBS_500 = "runs/500/jobs?filter=all&per_page=100&page=1"
+
+
+def rerun(*names, attempt=2, first=200):
+    """Job records of run 500's attempt ``attempt``, each still running, as during its verdict."""
+    return [
+        job(first + index, name, None, run=500, attempt=attempt, status="in_progress")
+        for index, name in enumerate(names)
+    ]
+
+
+def at_attempt(attempts):
+    return {**CURRENT, "run_attempt": attempts}
+
+
+def test_replay_reasons_allow_only_the_single_aggregate_only_rerun():
+    first = jobs_of(RAN, run=500, first=100)
+    # A first attempt, and a second whose jobs are only the verdict, analysis and status jobs.
+    assert reg.replay_reasons(CURRENT, first) == ()
+    allowed = [*first, *rerun("verdict", "analysis", "status")]
+    assert reg.replay_reasons(at_attempt(2), allowed) == ()
+    # Any other job in a later attempt is a replay, named by id, name and attempt, never by its
+    # result: it may have failed before its upload, so that no artifact shows it.
+    cell = job(300, "cell (v4_main-1000-1x)", "failure", run=500, attempt=2)
+    (reason,) = reg.replay_reasons(at_attempt(2), [*allowed, cell])
+    named = "this run (500) ran job 300 'cell (v4_main-1000-1x)' again in attempt 2: "
+    assert reason.startswith(named)
+    assert "failure" not in reason and "success" not in reason
+    others = ("plan", "v3-pack", "v3-picks", "scenarios", "cell", "v3-cell (v3_as_built-1000-1x)")
+    for name in (*others, "aggregate"):  # a name V4's workflow does not give a job, too
+        (reason,) = reg.replay_reasons(at_attempt(2), [*allowed, *rerun(name, first=400)])
+        assert f"ran job 400 {name!r} again in attempt 2" in reason, name
+    # A third attempt is a second re-run, whatever ran in it.
+    third = [*allowed, *rerun("verdict", "status", attempt=3, first=300)]
+    (reason,) = reg.replay_reasons(at_attempt(3), third)
+    assert reason.startswith("this run (500) is at attempt 3: ")
+    # Records the rule cannot read: one reason, nothing ruled out.
+    for current, jobs in (
+        (at_attempt(2), [*first, *rerun("verdict", attempt=3)]),  # an attempt the run lacks
+        (at_attempt(2), []),
+        (at_attempt(2), "jobs"),
+        (at_attempt("2"), allowed),
+        (at_attempt(2), [*allowed, {**first[0], "run_id": 499, "id": 999}]),  # another run's
+    ):
+        (reason,) = reg.replay_reasons(current, jobs)
+        assert reason.startswith(
+            "the attempts of this run (500) could not be read, so a re-run of its jobs could not "
+            "be ruled out: its job listing does not have the shape the check reads: "
+        ), (current, jobs)
+
+
+def test_the_verdict_jobs_check_reads_this_runs_attempts(github_env, capsys, tmp_path):
+    argv = ["dispatch-check", "--mode", "registered", "--registration-sha256", SHA, "--judge-all"]
+    first = jobs_of(RAN, run=500, first=100)
+
+    def judged(current, jobs, name, runs=()):
+        api = FakeGitHub([current, *runs], current, jobs={500: jobs})
+        api.jobs[300] = jobs_of([("plan", "success")], run=300)
+        out = tmp_path / f"{name}.json"
+        code = reg.main([*argv, "--out", str(out)], github_opener=api, sleep=no_sleep)
+        assert code == 0, capsys.readouterr().err
+        return report.read_dispatch_reasons(out), api.requests
+
+    # A cell job re-run that failed before its upload: no artifact names it, the jobs do.
+    cell = job(300, "cell (v4_main-1000-1x)", "failure", run=500, attempt=2)
+    reasons, requests = judged(at_attempt(2), [*first, *rerun("verdict", "status"), cell], "cell")
+    assert reasons == (
+        "this run (500) ran job 300 'cell (v4_main-1000-1x)' again in attempt 2: only the "
+        "verdict, analysis, status jobs may run in the single aggregate-only re-run",
+    )
+    assert requests == [API + "runs/500", API + JOBS_500, API + PAGE]
+    assert "ran job 300" in capsys.readouterr().err  # logged: ids and the attempt alone
+    # The single aggregate-only re-run: nothing to report.
+    reasons, _ = judged(at_attempt(2), [*first, *rerun("verdict", "analysis", "status")], "ok")
+    assert reasons == ()
+    # A third attempt; and the earlier launches are still judged beside this run's attempts.
+    third = [*first, *rerun("verdict", "status"), *rerun("verdict", attempt=3, first=300)]
+    reasons, _ = judged(at_attempt(3), third, "third", runs=[workflow_run(300)])
+    assert len(reasons) == 2 and reasons[0].startswith("this run (500) is at attempt 3: ")
+    assert reasons[1].startswith("another dispatch of this registration: run 300 (")
+    # A first attempt asks nothing more than before: no request for this run's jobs.
+    reasons, requests = judged(CURRENT, first, "first")
+    assert reasons == () and requests == [API + "runs/500", API + PAGE]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ([http_error(502)] * 5, "HTTP 502 (still failing after 5 attempts)"),
+        ([http_error(404)], "HTTP 404"),
+        ([answer({"total_count": 1})], "total_count and jobs required"),
+        ([answer({"total_count": 1, "jobs": [job(1, "plan", "success", run=499)]})], "run_id 499"),
+    ],
+)
+def test_the_verdict_jobs_check_fails_closed_on_this_runs_attempts(
+    github_env, capsys, tmp_path, failure, message
+):
+    """This run's attempts that cannot be read are a reason (fail closed): the file is still
+    written, readable by the verdict step, and the earlier launches are still judged."""
+    api = FakeGitHub([at_attempt(2), workflow_run(400, conclusion="failure")], at_attempt(2))
+    api.answers[JOBS_500] = list(failure)
+    out = tmp_path / "reasons.json"
+    argv = ["dispatch-check", "--mode", "registered", "--registration-sha256", SHA]
+    code = reg.main(
+        [*argv, "--judge-all", "--out", str(out)], github_opener=api, sleep=lambda s: None
+    )
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    (reason,) = report.read_dispatch_reasons(out)
+    assert reason.startswith(
+        "the attempts of this run (500) could not be read, so a re-run of its jobs could not be "
+        "ruled out: "
+    )
+    assert message in reason and "stand-in-token" not in reason
+    assert reg.uncounted_line(400) in captured.err  # the earlier launch, judged all the same
+    assert "1 counted, 1 not counted" in captured.out
+
+
+def test_only_the_verdict_jobs_check_reads_this_runs_attempts(github_env, tmp_path):
+    api = FakeGitHub([at_attempt(2)], at_attempt(2))
+    with pytest.raises(ValueError, match=r"the verdict job's check \(judge_all\) alone"):
+        reg.dispatch_check(SHA, api, mode="registered", sleep=no_sleep, replays=[])
+    assert api.requests == []
+    # The plan job's check never reads them (a re-run of the plan fails at its upload).
+    assert reg.dispatch_check(SHA, api, mode="registered", sleep=no_sleep) == ()
+    assert API + JOBS_500 not in api.requests
+    # The deadline passing while they are read stops the whole check: one reason.
+    api = FakeGitHub([at_attempt(2)], at_attempt(2), answers={JOBS_500: [http_error(503)] * 5})
+
+    def clock() -> float:  # the deadline passes once this run's jobs have been asked for
+        return 1e9 if API + JOBS_500 in api.requests else 0.0
+
+    counted, uncounted = reg.dispatch_reasons(SHA, api, sleep=no_sleep, clock=clock)
+    assert uncounted == () and api.requests == [API + "runs/500", API + JOBS_500]
+    (reason,) = counted
+    assert reason.startswith("another dispatch of this registration could not be ruled out: ")
+    assert "deadline" in reason and "this run's own jobs (500)" in reason
+
+
 def test_the_job_start_is_v4s(github_env, monkeypatch):
     """The deadline counts from V4_JOB_STARTED; V3.1's variable is not read."""
     monkeypatch.setenv("V31_JOB_STARTED", "not a time")

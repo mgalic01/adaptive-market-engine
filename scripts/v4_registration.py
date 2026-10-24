@@ -62,10 +62,18 @@ decision v31-d21's layers L1 to L3), on V4's workflow, whose runs GitHub titles 
 - ``--judge-all`` (the verdict job's check; ``--mode registered`` and ``--out`` required) is
   V3.1's ``dispatch_reasons``. It judges every earlier launch, refuses none, and writes each one
   that counts, or why none could be ruled out (any failure of the check, its deadline of
-  ``VERDICT_JOB_BUDGET`` after the job's start among them), so the verdict is incomplete.
+  ``VERDICT_JOB_BUDGET`` after the job's start among them), so the verdict is incomplete. New
+  in V4, it also reads the current run's own attempts (``replay_reasons``; spec, "Registration
+  and the run", item 5): after a first attempt, every job record of every attempt
+  (``run_jobs``, ``filter=all``, with the same retries and deadline). It writes a line for each
+  job other than ``verdict``, ``analysis`` and ``status`` (``RERUN_JOBS``, the single
+  aggregate-only re-run's) that ran in an attempt after the first, even one that failed before
+  it uploaded anything, so that no artifact names it; one for an attempt past
+  ``MAX_RUN_ATTEMPT``; and one when the attempts cannot be read.
 
-``--out F`` writes ``{"format": "v4-dispatch-check-1", "earlier": [...]}``, one line per earlier
-launch that counts, the verdict step's ``--dispatch-reasons`` (``report.read_dispatch_reasons``).
+``--out F`` writes ``{"format": "v4-dispatch-check-1", "earlier": [...]}``, one line per reason
+(this run's attempts, an earlier launch that counts, or a check that could not rule one out),
+the verdict step's ``--dispatch-reasons`` (``report.read_dispatch_reasons``).
 It is canonical JSON, created exclusively, and written only when the check passes. An ``F`` that
 exists is refused before any request. The check prints one line of counts on standard output;
 its decisions and retries go to standard error.
@@ -156,6 +164,12 @@ PLAN_JOB = "plan"
 STATUS_JOB = "status"
 SKIPPED_JOBS = ("v3-pack", "v3-picks", "scenarios", "verdict", "analysis")
 SKIPPED_MATRIX_JOBS = ("cell", "v3-cell")
+# The spec's single aggregate-only re-run, after an infrastructure failure ("Registration and the
+# run", item 5): a registered run's second attempt may run these jobs again and no other, the
+# verdict job and the jobs GitHub may run beside it (the status job needs every job). A third
+# attempt is a second re-run.
+RERUN_JOBS = ("verdict", "analysis", STATUS_JOB)
+MAX_RUN_ATTEMPT = 2
 GATE_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
 TITLE_MODES = ("registered", "rehearsal", "timing")  # the workflow's modes, in its run-name
 # The workflow's name, which starts its run-name:
@@ -749,6 +763,96 @@ def launch_reason(run: object, jobs: object) -> str | None:
     return launch_decision(run, jobs)[0]
 
 
+def _unread_attempts(run_id: object, why: str) -> str:
+    return (
+        f"the attempts of this run ({run_id}) could not be read, so a re-run of its jobs could "
+        f"not be ruled out: {why}"
+    )
+
+
+def replay_reasons(current: object, jobs: object) -> tuple[str, ...]:
+    """Why the current registered run's own attempts break its one execution (spec, "Registration
+    and the run", item 5: one dispatch, never cancelled, never re-run, but for a single
+    aggregate-only re-run after an infrastructure failure), one plain sentence each, naming a
+    job's id, name and attempt, never its result; empty when nothing breaks it. New in V4: V3.1's
+    aggregate found a re-run by its artifacts alone.
+
+    A pure decision on ``current`` (the run as ``/actions/runs/{id}`` gives it) and ``jobs`` (every
+    job record of every attempt, ``filter=all``, as ``run_jobs`` lists them). Each of these is a
+    reason:
+
+    - a ``run_attempt`` past ``MAX_RUN_ATTEMPT``: more than the one aggregate-only re-run;
+    - each job record of an attempt after the first whose job (``_job_kind``) is not one of
+      ``RERUN_JOBS`` (``verdict``, ``analysis``, ``status``): ``plan``, ``v3-pack``, ``v3-picks``,
+      ``scenarios``, a ``cell`` or ``v3-cell`` matrix job, or a name this workflow does not give a
+      job, whatever its status or conclusion. A cell job run again is a replay even when it failed
+      before its upload, leaving no folder for the verdict's own re-run check (V3) to find.
+
+    Records that lack the shape the rule reads (``job_listing_error``: a positive ``run_attempt``,
+    at least one record, each of this run and of an attempt from 1 to its own, no id twice) are
+    one reason: the attempts could not be read, so no replay could be ruled out."""
+    run_id = current.get("id") if isinstance(current, dict) else None
+    problem = job_listing_error(current, jobs)
+    # job_listing_error refuses a run that is not an object and jobs that are not a list.
+    if problem is not None or not isinstance(current, dict) or not isinstance(jobs, list | tuple):
+        return (
+            _unread_attempts(
+                run_id, f"its job listing does not have the shape the check reads: {problem}"
+            ),
+        )
+    # job_listing_error has checked the run's run_attempt and every record's fields.
+    attempts: int = current["run_attempt"]
+    reasons = []
+    if attempts > MAX_RUN_ATTEMPT:
+        reasons.append(
+            f"this run ({run_id}) is at attempt {attempts}: a registered run is re-run at most "
+            f"once, aggregate-only, so it has no attempt after {MAX_RUN_ATTEMPT}"
+        )
+    for record in jobs:
+        attempt, name = record["run_attempt"], record["name"]
+        if attempt > 1 and _job_kind(name) not in RERUN_JOBS:
+            reasons.append(
+                f"this run ({run_id}) ran job {record['id']} {name!r} again in attempt {attempt}: "
+                f"only the {', '.join(RERUN_JOBS)} jobs may run in the single aggregate-only re-run"
+            )
+    return tuple(reasons)
+
+
+def _own_attempts(
+    current: Mapping[str, Any],
+    repository: str,
+    token: str,
+    opener: GitHubOpener,
+    *,
+    sleep: Callable[[float], None],
+    log: Log,
+    deadline: _Deadline,
+) -> tuple[str, ...]:
+    """``replay_reasons`` on the current run (the verdict job's check): a first attempt needs no
+    request, since nothing ran again; a later one is judged on its jobs (``run_jobs``, retried as
+    L1 says, within the check's deadline). Any failure to read them is a reason (fail closed: the
+    verdict is incomplete). The deadline passing is no decision: it stops the whole check."""
+    # ``current`` is the current run as dispatch_check validated it: an object with a positive
+    # integer id, which is GITHUB_RUN_ID.
+    run_id: int = current["id"]
+    attempts = current.get("run_attempt")
+    if type(attempts) is int and attempts == 1:
+        return ()
+    try:
+        jobs = github_retry(
+            lambda: run_jobs(repository, token, opener, run_id),
+            f"this run's own jobs ({run_id})",
+            sleep=sleep,
+            log=log,
+            deadline=deadline,
+        )
+    except DeadlineExpired:
+        raise
+    except ValueError as exc:
+        return (_unread_attempts(run_id, str(exc)),)
+    return replay_reasons(current, jobs)
+
+
 def _judge(
     run: Mapping[str, Any],
     repository: str,
@@ -815,12 +919,13 @@ def dispatch_check(
     log: Log = log,
     report_only: bool = False,
     judge_all: bool = False,
+    replays: list[str] | None = None,
 ) -> tuple[EarlierLaunch, ...]:
     """The earlier launches of this run's title, ascending, and whether each counts (Ruling G4;
     owner decision v31-d21), from GitHub's REST API. Copy of ``v31_driver.dispatch_check``
-    (scripts/v31_driver.py:1929) with V4's workflow, titles, jobs and job-start variable, and an
+    (scripts/v31_driver.py:1929) with V4's workflow, titles, jobs and job-start variable, an
     explicit ``mode`` (V3.1's was "rehearsal" exactly when report-only; here ``mode`` names the
-    titles and must agree with ``report_only``, ``_mode_problem``).
+    titles and must agree with ``report_only``, ``_mode_problem``) and ``replays``.
 
     The current run and this workflow's runs (``workflow_runs``) name the launches
     (``other_dispatches``), and each completed one's jobs (``run_jobs``) decide it
@@ -834,6 +939,11 @@ def dispatch_check(
     every launch, and also reads the current run's own job listing, refusing unless every record
     has the shape the rule reads (``job_listing_error``).
 
+    ``replays``, given by the verdict job's check alone (``dispatch_reasons``, with ``judge_all``),
+    collects what the current run's own attempts break (``_own_attempts``), read right after the
+    current run and before this workflow's runs: ``replay_reasons``'s lines, or why the attempts
+    could not be read. A first attempt makes no request for them.
+
     Each read is retried on a transient failure (``github_retry``, L1). The whole check has one
     deadline on ``clock``: 20 minutes from its start, or earlier, ``job_budget`` from its job's
     start when ``V4_JOB_STARTED`` gives it (the time the job has run is taken once, from
@@ -841,6 +951,8 @@ def dispatch_check(
     outlasts the retries and the deadline passing are one ``ValueError``: the caller fails
     closed. A launch whose jobs cannot be read, or whose records are malformed, counts."""
     problem = _mode_problem(mode, report_only)
+    if problem is None and replays is not None and not judge_all:
+        problem = "the current run's attempts are read by the verdict job's check (judge_all) alone"
     if problem is not None:
         raise ValueError(f"the dispatch check cannot run: {problem}")
     if report_only and registration_sha256 == "":
@@ -897,6 +1009,10 @@ def dispatch_check(
             f"GitHub API {path}: the current run's id is {current_id}, not GITHUB_RUN_ID "
             f"{run_id}: this is not the run that asked"
         )
+    if replays is not None:
+        replays.extend(
+            _own_attempts(current, repository, token, read, sleep=sleep, log=log, deadline=deadline)
+        )
     if report_only:
         # The probe (L3): even a first rehearsal, with no earlier launch to judge, reads a job
         # listing, its own, and checks every record's shape.
@@ -947,13 +1063,17 @@ def dispatch_reasons(
     wall: Callable[[], float] = time.time,
     log: Log = log,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """What the verdict job hands the verdict step (``--judge-all``, Ruling G4): first every
-    earlier launch of the registration that counts, with why, or why none could be ruled out (a
-    failure of the check, its deadline passing among them), either of which leaves the verdict
-    incomplete (fail closed); then every earlier launch that stopped at the plan job with nothing
-    run (L2), which changes nothing. It judges every launch (``judge_all``). Copy of
-    ``v31_driver.dispatch_reasons`` (scripts/v31_driver.py:2070) with the verdict job's budget
-    (``VERDICT_JOB_BUDGET``) in place of the aggregate's."""
+    """What the verdict job hands the verdict step (``--judge-all``, Ruling G4): first what this
+    run's own attempts break (``replay_reasons``: a job other than the verdict, the analysis and
+    the status job run again, even one that left no artifact, or a third attempt; or why they
+    could not be read), then every earlier launch of the registration that counts, with why, or
+    why none could be ruled out (a failure of the check, its deadline passing among them), any of
+    which leaves the verdict incomplete (fail closed); then every earlier launch that stopped at
+    the plan job with nothing run (L2), which changes nothing. It judges every launch
+    (``judge_all``). Copy of ``v31_driver.dispatch_reasons`` (scripts/v31_driver.py:2070) with the
+    verdict job's budget (``VERDICT_JOB_BUDGET``) in place of the aggregate's, and the current
+    run's attempts (``dispatch_check``'s ``replays``), which V3.1's did not read."""
+    replays: list[str] = []
     try:
         launches = dispatch_check(
             registration_sha256,
@@ -965,15 +1085,19 @@ def dispatch_reasons(
             job_budget=VERDICT_JOB_BUDGET,
             log=log,
             judge_all=True,
+            replays=replays,
         )
     except ValueError as exc:
-        return (f"another dispatch of this registration could not be ruled out: {exc}",), ()
+        # What the attempts broke before the check failed is kept beside its failure.
+        failed = f"another dispatch of this registration could not be ruled out: {exc}"
+        return (*replays, failed), ()
     counted = tuple(
         f"another dispatch of this registration: run {launch.run_id} ({launch.reason})"
         for launch in launches
         if launch.counts
     )
-    return counted, tuple(uncounted_line(launch.run_id) for launch in launches if not launch.counts)
+    uncounted = tuple(uncounted_line(launch.run_id) for launch in launches if not launch.counts)
+    return (*replays, *counted), uncounted
 
 
 def dispatch_check_command(
