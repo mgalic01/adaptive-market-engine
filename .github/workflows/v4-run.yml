@@ -103,9 +103,10 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   timing run builds the real-size world and guards its data. It uploads the checked data as
 #   v4-data (and, in a rehearsal, v4-v3-pack and v4-rehearsal-world). Its outputs are the
 #   matrices, the cells' ids, the v3 cell count, and the gate's V3 pack pin and registration.
-# - v3-pack (registered): scripts/v4_v3_pack.py fetches V3's pinned archives and builds V3's input
-#   pack, which must be both V3.1's registered pin (V3_PACK_SHA256) and the run manifest's (the
-#   plan's v3_pack_sha256); then v4-v3-pack.
+# - v3-pack (registered): checks first that the run manifest's V3 pack pin (the plan's
+#   v3_pack_sha256) is V3.1's registered one (V3_PACK_SHA256); then scripts/v4_v3_pack.py fetches
+#   V3's pinned archives and builds V3's input pack, whose pin (the SHA-256 of the JSON the file
+#   compresses) must be both; then v4-v3-pack.
 # - v3-picks (registered, rehearsal): trains V3's selector once on that pack
 #   (scripts/v4_v3_cell.py picks; a rehearsal's stand-in, scripts/v4_rehearsal.py picks); its
 #   output picks_sha256 is the SHA-256 of the file it wrote, the pin every v3 cell requires.
@@ -368,14 +369,26 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
+      # Before the long fetch: the run manifest must name V3.1's registered pack, the only pack
+      # the script can build (it refuses any other pin).
+      - name: Check the run manifest's V3 pack pin against V3.1's
+        run: |
+          if [ "$PACK_SHA256" != "$V3_PACK_SHA256" ]; then
+            echo "::error::the run manifest's V3 pack pin is not V3.1's registered pin." >&2
+            exit 1
+          fi
+
       # The script exits 0 only if the pack's pin is V3.1's (ruling R4 of step 4a).
       - name: Fetch V3's archives and build its input pack
         run: python scripts/v4_v3_pack.py --work work --out out
 
-      # And the run manifest's: the registration names the pack the v3 cells read.
+      # And the run manifest's: the registration names the pack the v3 cells read. A pack's pin
+      # is the SHA-256 of the canonical JSON the file compresses, not of the gzip file's bytes;
+      # pipefail makes a gzip that cannot be read fail the step.
       - name: Check the pack against V3.1's pin and the run manifest's
         run: |
-          digest=$(sha256sum out/v3-input.pack.json.gz | cut -d' ' -f1)
+          set -o pipefail
+          digest=$(gzip -dc out/v3-input.pack.json.gz | sha256sum | cut -d' ' -f1)
           if [ "$digest" != "$V3_PACK_SHA256" ] || [ "$digest" != "$PACK_SHA256" ]; then
             echo "::error::the V3 pack is not both V3.1's registered pack and the run manifest's." >&2
             exit 1
@@ -631,11 +644,14 @@ jobs:
           name: v4-v3-picks-attempt-${{ github.run_attempt }}
           path: picks
 
-      # Before anything runs: each file must be the one its pin names. The script checks both
-      # pins again when it reads the files.
+      # Before anything runs: each file must be the one its pin names. The pack's pin is the
+      # SHA-256 of the JSON it compresses, the picks' that of the file's own bytes; pipefail
+      # makes a gzip that cannot be read fail the step. The script checks both pins again when
+      # it reads the files.
       - name: Check the pack and the picks against their pins
         run: |
-          pack=$(sha256sum v3pack/v3-input.pack.json.gz | cut -d' ' -f1)
+          set -o pipefail
+          pack=$(gzip -dc v3pack/v3-input.pack.json.gz | sha256sum | cut -d' ' -f1)
           if [ "$pack" != "$PACK_SHA256" ]; then
             echo "::error::the downloaded V3 pack is not the one the plan pinned." >&2
             exit 1

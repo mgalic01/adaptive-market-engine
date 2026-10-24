@@ -42,6 +42,7 @@ from typing import Any
 import pytest
 import yaml
 
+from crypto_grid_bot.combined.driver.packs import _write_gzip_json
 from crypto_grid_bot.v4.engine.v3_as_built import PICKS_FILE
 from crypto_grid_bot.v4.verdict import inputs as verdict_inputs
 
@@ -352,11 +353,13 @@ REAL_PYTHON = 'python() { "$TEST_PYTHON" "$@"; }\n'
 
 
 def run_script(
-    script: str, cwd: Path, env: Mapping[str, str], *, prelude: str = ""
+    script: str, cwd: Path, env: Mapping[str, str], *, prelude: str = "", pipefail: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    """``script`` as GitHub runs a bash step (``-e -o pipefail``) in ``cwd``."""
+    """``script`` as GitHub runs a bash step (``-e -o pipefail``) in ``cwd``; with ``pipefail``
+    False, as a bash without that option runs it (a step that needs it must set it itself)."""
+    options = ["-e", "-o", "pipefail"] if pipefail else ["-e"]
     return subprocess.run(
-        [real_bash(), "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", prelude + script],
+        [real_bash(), "--noprofile", "--norc", *options, "-c", prelude + script],
         cwd=cwd,
         env={
             **os.environ,
@@ -368,6 +371,17 @@ def run_script(
         text=True,
         check=False,
     )
+
+
+def write_pack(path: Path) -> tuple[str, str]:
+    """A small V3 pack written as ``write_v3_pack`` writes one (``packs._write_gzip_json``): its
+    pin, the SHA-256 of the canonical JSON the file compresses, and the SHA-256 of the gzip
+    file's own bytes, which is not the pin."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pin = _write_gzip_json({"format": "a synthetic pack", "rows": [1, 2, 3]}, path)
+    file_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert pin != file_digest
+    return pin, file_digest
 
 
 def context(mode: str) -> dict[str, str]:
@@ -1060,18 +1074,25 @@ def test_v3_cell_checks_both_pins_before_anything_runs(tmp_path):
     assert max(downloads) < pins < gate < replay
     assert "if" not in v3_steps[pins]
 
-    # The check, run for real on small files: both digests must be the pins.
-    (tmp_path / "v3pack").mkdir()
+    # The check, run for real on small files: a pack written as write_v3_pack writes one, whose
+    # pin is the SHA-256 of the JSON it compresses, and a picks file, whose pin is the SHA-256 of
+    # its own bytes.
+    pack, pack_file_digest = write_pack(tmp_path / PACK_PATH)
     (tmp_path / "picks").mkdir()
-    (tmp_path / PACK_PATH).write_bytes(b"a pack")
     (tmp_path / PICKS_PATH).write_bytes(b'{"picks":{}}')
-    pack = hashlib.sha256(b"a pack").hexdigest()
     picks = hashlib.sha256(b'{"picks":{}}').hexdigest()
     script = str(v3_steps[pins]["run"])
     done = run_script(script, tmp_path, {"PACK_SHA256": pack, "PICKS_SHA256": picks})
     assert done.returncode == 0, done.stderr
     assert done.stdout == ""
-    for pack_pin, picks_pin in ((picks, picks), (pack, pack), ("", picks), (pack, ""), ("", "")):
+    for pack_pin, picks_pin in (
+        (picks, picks),
+        (pack, pack),
+        ("", picks),
+        (pack, ""),
+        ("", ""),
+        (pack_file_digest, picks),  # the gzip file's own SHA-256 is not the pack's pin
+    ):
         done = run_script(script, tmp_path, {"PACK_SHA256": pack_pin, "PICKS_SHA256": picks_pin})
         assert done.returncode != 0 and "::error::" in done.stderr, (pack_pin, picks_pin)
     for missing in (PACK_PATH, PICKS_PATH):
@@ -1080,6 +1101,13 @@ def test_v3_cell_checks_both_pins_before_anything_runs(tmp_path):
         done = run_script(script, tmp_path, {"PACK_SHA256": pack, "PICKS_SHA256": picks})
         assert done.returncode != 0, missing
         moved.rename(tmp_path / missing)
+    # A pack that is not gzip fails the step, even in a bash without pipefail: the step sets it.
+    (tmp_path / PACK_PATH).write_bytes(b"not a gzip file")
+    empty = hashlib.sha256(b"").hexdigest()  # what a failed gzip would pipe to sha256sum
+    for pipefail in (True, False):
+        env = {"PACK_SHA256": empty, "PICKS_SHA256": picks}
+        done = run_script(script, tmp_path, env, pipefail=pipefail)
+        assert done.returncode != 0, pipefail
 
     # The gate again before the cell: on this checkout, or on the rehearsal world's repository,
     # which the job downloads and unpacks first.
@@ -1246,11 +1274,13 @@ def test_v3_pack_pin_equals_v4_v3_and_the_pack_script(tmp_path):
     assert scripts == ["python scripts/v4_v3_pack.py --work work --out out"]
     args = v4_v3_pack.build_parser().parse_args(shlex.split(scripts[0])[2:])
     assert (args.work, args.out, args.repo) == (Path("work"), Path("out"), Path("."))
+    manifest_check = index_of("v3-pack", '[ "$PACK_SHA256" != "$V3_PACK_SHA256" ]')
     build = index_of("v3-pack", "scripts/v4_v3_pack.py")
     check = index_of("v3-pack", "sha256sum")
     (upload,) = [i for i, s in enumerate(job_steps) if is_upload(s)]
-    assert SETUP_STEPS <= build < check < upload == len(job_steps) - 1
-    for step in job_steps[build:]:
+    # The manifest's pin is checked before the long fetch, the pack's after it.
+    assert SETUP_STEPS == manifest_check < build < check < upload == len(job_steps) - 1
+    for step in job_steps[manifest_check:]:
         assert "if" not in step and "continue-on-error" not in step  # a refusal uploads nothing
     assert job_steps[upload]["with"] == {
         "name": "v4-v3-pack",
@@ -1260,20 +1290,44 @@ def test_v3_pack_pin_equals_v4_v3_and_the_pack_script(tmp_path):
         "compression-level": 0,
     }
 
-    # The check, run for real: the pack's digest must be both V3.1's pin and the plan's (the run
-    # manifest's).
-    (tmp_path / "out").mkdir()
-    (tmp_path / "out" / v4_v3_pack.PACK_FILE).write_bytes(b"a pack")
-    digest = hashlib.sha256(b"a pack").hexdigest()
+    # Before the fetch, run for real: the run manifest's pin must be V3.1's.
+    script = str(job_steps[manifest_check]["run"])
+    done = run_script(script, tmp_path, {"V3_PACK_SHA256": pin, "PACK_SHA256": pin})
+    assert done.returncode == 0 and done.stdout == "", done.stderr
+    for plan_pin in ("0" * 64, "", pin.upper()):
+        done = run_script(script, tmp_path, {"V3_PACK_SHA256": pin, "PACK_SHA256": plan_pin})
+        assert done.returncode != 0 and "::error::" in done.stderr, plan_pin
+
+    # After the build, run for real on a pack written as write_v3_pack writes one: its pin is the
+    # SHA-256 of the JSON the file compresses, and it must be both V3.1's and the plan's.
+    pack = tmp_path / "out" / v4_v3_pack.PACK_FILE
+    digest, file_digest = write_pack(pack)
     script = str(job_steps[check]["run"])
     done = run_script(script, tmp_path, {"V3_PACK_SHA256": digest, "PACK_SHA256": digest})
-    assert done.returncode == 0, done.stderr
-    for v3_pin, plan_pin in ((digest, "0" * 64), ("0" * 64, digest), (digest, ""), ("", "")):
+    assert done.returncode == 0 and done.stdout == "", done.stderr
+    for v3_pin, plan_pin in (
+        (digest, "0" * 64),
+        ("0" * 64, digest),
+        (digest, ""),
+        ("", ""),
+        (file_digest, file_digest),  # the gzip file's own SHA-256 is not the pack's pin
+    ):
         done = run_script(script, tmp_path, {"V3_PACK_SHA256": v3_pin, "PACK_SHA256": plan_pin})
         assert done.returncode != 0 and "::error::" in done.stderr, (v3_pin, plan_pin)
-    (tmp_path / "out" / v4_v3_pack.PACK_FILE).unlink()
-    done = run_script(script, tmp_path, {"V3_PACK_SHA256": digest, "PACK_SHA256": digest})
-    assert done.returncode != 0
+    # A file that is not gzip fails the step, even in a bash without pipefail: the step sets it.
+    pack.write_bytes(b"not a gzip file")
+    empty = hashlib.sha256(b"").hexdigest()  # what a failed gzip would pipe to sha256sum
+    for pipefail in (True, False):
+        done = run_script(
+            script, tmp_path, {"V3_PACK_SHA256": empty, "PACK_SHA256": empty}, pipefail=pipefail
+        )
+        assert done.returncode != 0, pipefail
+    pack.unlink()
+    for pipefail in (True, False):
+        done = run_script(
+            script, tmp_path, {"V3_PACK_SHA256": empty, "PACK_SHA256": empty}, pipefail=pipefail
+        )
+        assert done.returncode != 0, pipefail
 
 
 def test_v3_picks_runs_the_modes_picks_and_pins_the_file_it_wrote(tmp_path):
