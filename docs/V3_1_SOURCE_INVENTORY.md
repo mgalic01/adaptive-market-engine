@@ -17,8 +17,11 @@ Status: Package A, no historical execution authorized.
 *Update, 2026-10-17:* the exact V3.1 pins were registered on 2026-10-15 (trial
 `v3-1-registered-1`; [registration review](reviews/2026-10-15-claude-v3-1-registration.md)).
 The one registered run, 38703911852, has finished. Verdict: **FAIL**
-([verdict record](reviews/2026-10-17-claude-v3-1-verdict.md)). Its result files are kept
-on the owner's PC ([run archive](RUN_ARCHIVE.md)). The paragraph below is the
+([verdict record](reviews/2026-10-17-claude-v3-1-verdict.md)). Its result files were kept
+on the owner's PC until the owner deleted them on 2026-10-24
+([run archive](RUN_ARCHIVE.md)); the
+[V3.0 and V3.1 final record](reviews/2026-10-24-claude-v3-v31-final-summary.md) keeps the
+results. The paragraph below is the
 pre-registration state, kept as history.
 
 Exact V3.1 configuration/code/data/FX/comparison pins were not registered yet.
