@@ -264,7 +264,8 @@ Read only what the steps above did not already show:
 - [the collaboration guide](AGENT_HANDOFF.md): roles, conventions, escalation;
 - [the run archive](RUN_ARCHIVE.md): where every registered run's result files are kept.
   They are on the owner's PC, never in this repository or a release. It also says how to
-  verify them and who can reach them.
+  verify them and who can reach them. V3.0's and V3.1's were deleted on 2026-10-24; the
+  final summary keeps their results.
 
 ## 7. Before you end your turn
 

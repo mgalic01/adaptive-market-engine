@@ -126,6 +126,10 @@ approved. It is not a new reading, so no further owner decision was needed.
 
 ## What the analysis found (local, read-only)
 
+*(Note, 2026-10-24: the owner deleted the archive, the findings file below included; the
+[V3.0 and V3.1 final record](2026-10-24-claude-v3-v31-final-summary.md) keeps the
+results.)*
+
 Details are in the archive's `analysis\findings-2026-10-17.md`. In brief:
 - every V3.1 component lost money, spot trend most;
 - most trades ended at the initial two-four-hour-ATR stop;

@@ -3,7 +3,8 @@
 Owner instruction, 2026-10-17: run results stay on the owner's PC and are never published
 as a release. Write where they are clearly, so every agent can find them. **Read this
 before you look for any registered run's result files.** They are not in this
-repository.
+repository. V3.0's and V3.1's run files no longer exist: the owner deleted them on
+2026-10-24 (see the V3.1 section below).
 
 ## Rules for every agent
 
@@ -14,8 +15,8 @@ repository.
   GitHub release, an artifact upload, a gist, an issue attachment or anything else, unless
   the owner asks. Allowed in review files: summaries with aggregated numbers, and SHA-256
   fingerprints.
-- **Never edit, move or delete** the files below. Work on a copy in your own scratch
-  folder.
+- **Never edit, move or delete** the files below that still exist. Work on a copy in your
+  own scratch folder.
 - **Check a fingerprint before trusting a copy.** Each archive has a `SHA256SUMS.txt`
   (`sha256sum -c SHA256SUMS.txt` from the archive root). The zips also match the digests
   GitHub recorded at upload (`meta/zips.json`).
@@ -28,9 +29,10 @@ repository.
 Verdict **FAIL**. Record: [the verdict review](reviews/2026-10-17-claude-v3-1-verdict.md).
 
 **Deleted on 2026-10-24.** The owner deleted these run files (both local copies below, and
-`E:\v31-diag\`) after the final summary was merged (PR #297). At 15:49 UTC Claude Code
-(session f7f187df) checked the drives: the folders were gone and both drives' Recycle Bins
-empty. See
+`E:\v31-diag\`) after the final summary was merged (PR #297), as the owner reported in
+chat. On 2026-10-24 at 15:49 UTC Claude Code (session f7f187df) checked the drives: the
+folders were gone and both drives' Recycle Bins empty. The check shows only that the
+folders were gone at that time; who deleted them and when is the owner's statement. See
 [the V3.0 and V3.1 final summary](reviews/2026-10-24-claude-v3-v31-final-summary.md): what
 each folder held, the results and the fingerprints that keep any copy checkable.
 
@@ -38,13 +40,13 @@ each folder held, the results and the fingerprints that keep any copy checkable.
 | --- | --- | --- | --- |
 | Working copy | `E:\v31-run-38703911852\` (WD 750 GB hard disk, label BACKUPS) | everything below, plus `cells\`: the 325 artifacts unpacked (107 GB) | verified 2026-10-15; deleted by the owner 2026-10-24 |
 | Backup | `F:\v31-run-38703911852-backup\` (Kingston 960 GB SSD, a separate physical disk) | `zips\`, `meta\`, `summary-out-4\`, `analysis\`, `scripts\` and `SHA256SUMS.txt` (957 files, about 38 GB) | verified 2026-10-17: every file equals the E: copy, and the 328 zips equal GitHub's digests; deleted by the owner 2026-10-24 |
-| GitHub | the run's artifacts on Actions | the 328 artifact zips | deleted automatically by GitHub on **2027-01-13 08:11 UTC** (90-day retention). The local copies are deleted, so after that date no copy remains and the final summary is the record |
+| GitHub | the run's artifacts on Actions | the 328 artifact zips | deleted automatically by GitHub on **2027-01-13 08:11 UTC** (90-day retention). The local copies are deleted, so after that date no recorded copy remains and the final summary is the record |
 
-What each folder held (before the deletion):
+What each folder held before the deletion (none of these files exists any more):
 
 - `zips\`: the run's 328 artifacts exactly as downloaded (6.14 GB): 324 cells, the V3
-  picks, `v31-packs`, `v31-legacy-data` and `v31-status-attempt-1`. These are the
-  originals. Everything else can be rebuilt from them.
+  picks, `v31-packs`, `v31-legacy-data` and `v31-status-attempt-1`. These were the
+  originals. Everything else could be rebuilt from them.
 - `meta\`:
   - `artifacts.tsv`: GitHub's artifact listing;
   - `zips.json`: each zip's SHA-256 and GitHub digest;
@@ -57,16 +59,17 @@ What each folder held (before the deletion):
   - 132 report pages;
   - `DEVIATION.md`;
   - the wrapper `v31_aggregate_no_rebuild.py`.
-- `analysis\`: the read-only analysis of all 324 cells. Start with
-  `findings-2026-10-17.md` and `tables-w1.txt`; per-cell statistics are in `cells\*.json`.
+- `analysis\`: the read-only analysis of all 324 cells: `findings-2026-10-17.md`,
+  `tables-w1.txt`, and per-cell statistics in `cells\*.json`.
 - `scripts\`: every script used to download, verify, unpack, aggregate, spot-check,
-  analyse and back up. Each says in its docstring how to run it.
-- `cells\` (E: only): the unpacked artifacts in the layout the aggregate expects. To
-  rebuild it from `zips\`, run `python -I scripts/verify_extract.py <archive>`.
+  analyse and back up, each with a docstring on how it was run.
+- `cells\` (E: only): the unpacked artifacts in the layout the aggregate expected, rebuilt
+  from `zips\` by `scripts/verify_extract.py`.
 
-The code that produced the cells is the run's own: code pin
-`615b7a78fe71e5582ac87df32d50b28d9c091bc2`, main `d4a4f09` at dispatch. To rerun the
-aggregate the way the verdict was computed, see `summary-out-4\DEVIATION.md`.
+The code that produced the cells was the run's own: code pin
+`615b7a78fe71e5582ac87df32d50b28d9c091bc2`, main `d4a4f09` at dispatch. The way the verdict
+was computed was described in `summary-out-4\DEVIATION.md`, now deleted with the rest; the
+final summary records the results.
 
 ## V4 data run 39403004530 (step 2 packs)
 
