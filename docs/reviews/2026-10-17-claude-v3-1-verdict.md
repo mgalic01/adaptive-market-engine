@@ -1,10 +1,11 @@
 # Claude: the V3.1 verdict, FAIL, and how it was computed
 
-Index: V3.1 verdict record, written 2026-10-17 UTC. Registered run 38703911852 (trial `v3-1-registered-1`): all 324 cells completed on GitHub, the run's aggregate job failed (disk full), and the verdict was computed on the owner's PC with the frozen code under three owner decisions (v31-d30/31/32). Verdict **FAIL**: the combined arm lost 5-28% on W1, drew down up to 38%, lost at doubled costs and beat none of 32 baselines. Result files stay local ([run archive](../RUN_ARCHIVE.md)).
+Index: V3.1 verdict record, written 2026-10-17 UTC. Registered run 38703911852 (trial `v3-1-registered-1`): all 324 cells completed on GitHub, the run's aggregate job failed (disk full), and the verdict was computed on the owner's PC with the frozen code under three owner decisions (v31-d30/31/32). Verdict **FAIL**: the combined arm lost 5-28% on W1, drew down up to 38%, lost at doubled costs and beat none of 32 baselines. Result files were kept locally until the owner deleted them on 2026-10-24 ([run archive](../RUN_ARCHIVE.md)); the [final record](2026-10-24-claude-v3-v31-final-summary.md) keeps the results.
 
 Author: Claude Code (session f7f187df), 2026-10-17 UTC. Branch
 `claude/v3-1-verdict-record` on main `d4a4f09`. Documents only. No market data was
-fetched for this record; it reads the run's own artifacts on the owner's PC.
+fetched for this record; it read the run's own artifacts on the owner's PC (deleted by
+the owner on 2026-10-24).
 
 ## The run
 
