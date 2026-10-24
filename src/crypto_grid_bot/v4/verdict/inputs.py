@@ -48,6 +48,12 @@ and years as the summary spells them (strings for Decimals).
 it is still canonical with well-formed marks, so a file changed after its acceptance is refused
 rather than mis-read.
 
+**What a refusal carries.** A ``CellRefused`` is raised outside every ``except`` block (and
+``from None``), so it has no chained context: the traceback of an uncaught one, in a public log or
+a failing test in CI, holds what ``reason`` holds and nothing the parser, ``CellSpec`` or
+``read_receipt`` said about a value of the file. ``read_expected``'s ``ValueError`` and
+``facts_from_record``'s follow the same rule.
+
 **The expected file** (``read_expected``, written by step 4b's plan job) is canonical JSON with
 exactly the keys ``format`` (``v4-verdict-expected-1``), ``mode``, ``cells`` (the 48 ids of
 ``all_cells()`` in order, the 44 of the non-v3 arms for ``timing``), ``window``, ``data`` (the
@@ -214,7 +220,60 @@ class CellFacts:
 
 
 def _no(step: str, reason: str) -> NoReturn:
-    raise CellRefused(step, reason)
+    """Refuse. Never called inside an ``except`` block, so the refusal has no chained context;
+    the library errors that quote a value (a float, a key, a capital, a path) are caught by the
+    small helpers below, which return None, and dropped. ``from None`` is the second guard."""
+    raise CellRefused(step, reason) from None
+
+
+def _is_regular(path: Path) -> bool:
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _size_of(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _bytes_of(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _strict(raw: bytes) -> tuple[object, bytes] | None:
+    """The strict parse of ``raw`` (UTF-8, unique keys, no floats, NaN or infinity) and its
+    canonical bytes, or None if it is not strict JSON: the parser's messages quote values."""
+    try:
+        document = _loads(raw)
+        return document, _canonical(document)
+    except ValueError:
+        return None
+
+
+def _spec_of(arm: Any, capital: Any, multiple: Any) -> CellSpec | None:
+    """The cell of an arm, a capital and a cost multiple, or None if they are not the run's
+    (``CellSpec``'s own message quotes them)."""
+    try:
+        return CellSpec(arm, capital, multiple)
+    except ValueError:
+        return None
+
+
+def _receipt_digest(path: Path) -> str | None:
+    """The SHA-256 of a receipt file ``read_receipt`` accepts, else None (its messages quote the
+    file)."""
+    try:
+        read_receipt(path)
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except (ValueError, OSError):
+        return None
 
 
 # ---- exact values ---------------------------------------------------------------------------
@@ -309,26 +368,26 @@ def _named(folder: Path) -> str:
 
 def _summary_bytes(folder: Path) -> bytes:
     path = folder / SUMMARY_FILE
-    try:
-        if path.is_symlink() or not path.is_file():
-            _no("json", f"{SUMMARY_FILE} is missing or is not a file")
-        if path.stat().st_size > MAX_SUMMARY_BYTES:
-            _no("json", f"{SUMMARY_FILE} is too large to be a cell's summary")
-        return path.read_bytes()
-    except OSError:
+    if not _is_regular(path):
+        _no("json", f"{SUMMARY_FILE} is missing or is not a file")
+    size = _size_of(path)
+    if size is not None and size > MAX_SUMMARY_BYTES:
+        _no("json", f"{SUMMARY_FILE} is too large to be a cell's summary")
+    raw = _bytes_of(path)
+    if raw is None:
         _no("json", f"{SUMMARY_FILE} cannot be read")
+    return raw
 
 
 def _document(raw: bytes) -> dict[str, Any]:
     """Step 3: the summary, if its bytes are the canonical JSON of their own strict parse."""
-    try:
-        document = _loads(raw)
-        canonical = _canonical(document)
-    except ValueError:
+    parsed = _strict(raw)
+    if parsed is None:
         _no(
             "json",
             f"{SUMMARY_FILE} is not strict JSON (UTF-8, unique keys, no floats, NaN or infinity)",
         )
+    document, canonical = parsed
     if canonical != raw:
         _no("json", f"{SUMMARY_FILE} is not in canonical form (sorted keys, no spaces, no newline)")
     if not isinstance(document, dict):
@@ -349,9 +408,8 @@ def _check_cell(summary: Mapping[str, Any], cell_id: str, expected: Expected) ->
     cell = summary.get("cell")
     if not isinstance(cell, dict) or set(cell) != _CELL_KEYS:
         _no("cell", "the cell is not exactly an id, an arm, a capital and a cost multiple")
-    try:
-        spec = CellSpec(cell["arm"], cell["capital"], cell["cost_multiple"])
-    except ValueError:
+    spec = _spec_of(cell["arm"], cell["capital"], cell["cost_multiple"])
+    if spec is None:
         _no("cell", "the cell's arm, capital or cost multiple is not one of the run's")
     if not _exact(cell["id"], spec.cell_id):
         _no("cell", "the cell's id is not the one its arm, capital and cost multiple make")
@@ -539,10 +597,8 @@ def _check_receipt(folder: Path, summary: Mapping[str, Any]) -> None:
     path = folder / RECEIPT_FILE
     if path.is_symlink() or not path.is_file():
         _no("receipt", f"{RECEIPT_FILE} is missing or is not a file")
-    try:
-        read_receipt(path)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    except (ValueError, OSError):
+    digest = _receipt_digest(path)
+    if digest is None:
         _no("receipt", f"{RECEIPT_FILE} is not a receipt in its canonical form")
     if not _exact(summary["receipt_sha256"], digest):
         _no("receipt", f"the summary names another {RECEIPT_FILE} than the one beside it")
@@ -680,7 +736,8 @@ def facts_from_record(record: Mapping[str, object]) -> CellFacts:
     capital, multiple = record["capital"], record["cost_multiple"]
     if type(arm) is not str or type(capital) is not int or type(multiple) is not int:
         raise ValueError("a facts record's arm, capital and cost multiple are not str, int, int")
-    if CellSpec(arm, capital, multiple).cell_id != cell_id:
+    spec = _spec_of(arm, capital, multiple)
+    if spec is None or spec.cell_id != cell_id:
         raise ValueError("a facts record's cell id is not its arm, capital and cost multiple")
     outcome = record["outcome"]
     if type(outcome) is not str or outcome not in FULL_OUTCOMES | FAILURE_OUTCOMES:
@@ -757,17 +814,16 @@ def read_expected(path: Path) -> Expected:
     """Read the expected file, refusing anything that is not exactly what the module docstring
     describes (a ``ValueError`` that names what is wrong, never a value)."""
     path = Path(path)
-    try:
-        if path.stat().st_size > MAX_EXPECTED_BYTES:
-            raise ValueError("the expected file is too large")
-        raw = path.read_bytes()
-    except OSError:
-        raise ValueError("the expected file cannot be read") from None
-    try:
-        document = _loads(raw)
-        canonical = _canonical(document)
-    except ValueError:
-        raise ValueError("the expected file is not strict JSON") from None
+    size = _size_of(path)
+    if size is not None and size > MAX_EXPECTED_BYTES:
+        raise ValueError("the expected file is too large")
+    raw = _bytes_of(path)
+    if raw is None:
+        raise ValueError("the expected file cannot be read")
+    parsed = _strict(raw)
+    if parsed is None:
+        raise ValueError("the expected file is not strict JSON")
+    document, canonical = parsed
     if canonical != raw:
         raise ValueError("the expected file is not in canonical form")
     if not isinstance(document, dict) or set(document) != _EXPECTED_KEYS:

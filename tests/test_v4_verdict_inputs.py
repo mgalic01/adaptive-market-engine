@@ -21,6 +21,7 @@ import json
 import shutil
 import socket
 import sys
+import traceback
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -1141,6 +1142,7 @@ def test_a_refusal_never_quotes_a_value_of_the_file(tmp_path):
             ("window", {"start_ms": 8675309, "end_ms": 8675309}),
             ("data", {"config_sha256": SECRET}),
             ("cell", {"id": SECRET, "arm": SECRET, "capital": 1, "cost_multiple": 1}),
+            ("cell", {"id": CELL, "arm": "v4_main", "capital": 8675309, "cost_multiple": 1}),
             ("format", SECRET),
             ("outcome", SECRET),
             ("receipt_sha256", SECRET),
@@ -1154,13 +1156,135 @@ def test_a_refusal_never_quotes_a_value_of_the_file(tmp_path):
         edit_summary(folder, **{field: value})
         cases.append(folder)
     for folder in cases:
-        reason = refusal(folder, expected).reason
-        assert "8675309" not in reason, reason
-        assert "NaN" not in reason, reason
+        error = refusal(folder, expected)
+        assert "8675309" not in error.reason, error.reason
+        assert "NaN" not in error.reason, error.reason
+        assert_quotes_nothing(error)
     other = replace(expected, data={**expected.data, "daily_sha256": "f" * 64})
     folder, _ = put(tmp_path / "pins")
     assert DATA["config_sha256"] not in refusal(folder, other).reason
     assert "f" * 64 not in refusal(folder, other).reason
+
+
+def assert_quotes_nothing(error: BaseException) -> None:
+    """What an uncaught refusal prints is its traceback with every chained exception, not only
+    its message: none may hold the sentinel, and there is no chained context at all."""
+    printed = "".join(traceback.format_exception(error))
+    assert "8675309" not in printed, printed
+    assert error.__context__ is None and error.__cause__ is None
+
+
+QUOTING_BYTES = {
+    "a float": lambda raw: raw.replace(b'"liquidations":0', b'"liquidations":8675309.42', 1),
+    "a duplicate key": lambda raw: raw[:1] + b'"x8675309":1,"x8675309":2,' + raw[1:],
+    "a float in a mark": lambda raw: raw.replace(
+        b'"open_marks":[[', b'"open_marks":[[8675309.42,', 1
+    ),
+    "bad UTF-8": lambda raw: b"\xff8675309" + raw,
+}
+
+
+@pytest.mark.parametrize("name", QUOTING_BYTES)
+def test_an_uncaught_json_refusal_quotes_nothing_of_the_file(name, tmp_path):
+    """The parser's own messages quote a float or a duplicate key; the refusal that drops them
+    must not chain them either."""
+    folder, expected = put(tmp_path)
+    corrupt(folder, QUOTING_BYTES[name])
+    error = refusal(folder, expected)
+    assert error.step == "json"
+    assert_quotes_nothing(error)
+    with pytest.raises(CellRefused) as caught:
+        read_marks(folder)
+    assert caught.value.step == "json"
+    assert_quotes_nothing(caught.value)
+
+
+def test_an_uncaught_cell_refusal_quotes_nothing_of_the_file(tmp_path):
+    """``CellSpec``'s message ends with the capital or the arm it was given."""
+    for number, cell in enumerate(
+        [
+            {"id": CELL, "arm": "v4_main", "capital": 8675309, "cost_multiple": 1},
+            {"id": CELL, "arm": "8675309", "capital": 10000, "cost_multiple": 1},
+            {"id": CELL, "arm": "v4_main", "capital": 10000, "cost_multiple": 8675309},
+        ]
+    ):
+        folder, expected = put(tmp_path / str(number))
+        edit_summary(folder, cell=cell)
+        error = refusal(folder, expected)
+        assert error.step == "cell"
+        assert_quotes_nothing(error)
+
+
+def test_an_uncaught_receipt_refusal_quotes_nothing_of_the_file(tmp_path):
+    """``read_receipt``'s messages quote the schema and the keys it found."""
+    folder, expected = put(tmp_path)
+    receipt = json.loads((folder / "receipt.json").read_bytes())
+    receipt["schema"] = "8675309"
+    (folder / "receipt.json").write_bytes(_canonical(receipt))
+    error = refusal(folder, expected)
+    assert error.step == "receipt"
+    assert_quotes_nothing(error)
+
+
+def test_an_uncaught_read_error_quotes_nothing_of_the_file(tmp_path, monkeypatch):
+    folder, expected = put(tmp_path)
+
+    def unreadable(self):
+        raise PermissionError(13, "8675309", str(self))
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    error = refusal(folder, expected)
+    assert error.step == "json"
+    assert_quotes_nothing(error)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda document: document.update(open_marks=[[START_MS, "8675309.42x", True]]),
+        lambda document: document.update(open_marks=[[START_MS, "8675309", True]]),
+        lambda document: document.update(open_marks=[[START_MS, "10000", 8675309]]),
+        lambda document: document.update(cell={"capital": "8675309"}),
+    ],
+    ids=["a bad equity", "a first mark that is not the capital", "a bad flag", "a bad cell"],
+)
+def test_read_marks_refusals_quote_nothing_of_the_file(change, tmp_path):
+    folder, _ = put(tmp_path)
+    document = load_summary(folder)
+    change(document)
+    store_summary(folder, document)
+    with pytest.raises(CellRefused) as caught:
+        read_marks(folder)
+    assert_quotes_nothing(caught.value)
+
+
+@pytest.mark.parametrize(
+    "mangle",
+    [
+        lambda raw: raw.replace(b'"mode":"rehearsal"', b'"mode":8675309.42', 1),
+        lambda raw: raw[:1] + b'"x8675309":1,"x8675309":2,' + raw[1:],
+        lambda raw: b"\xff8675309" + raw,
+        lambda raw: raw.replace(b'"mode":"rehearsal"', b'"mode":"8675309"', 1),
+    ],
+    ids=["a float", "a duplicate key", "bad UTF-8", "a mode"],
+)
+def test_read_expected_refusals_quote_nothing_of_the_file(mangle, tmp_path):
+    path = write_expected(tmp_path / "expected.json", expected_for())
+    path.write_bytes(mangle(path.read_bytes()))
+    with pytest.raises(ValueError) as caught:
+        read_expected(path)
+    assert_quotes_nothing(caught.value)
+    with pytest.raises(ValueError) as missing:
+        read_expected(tmp_path / "missing.json")
+    assert_quotes_nothing(missing.value)
+
+
+def test_facts_from_record_refusals_quote_nothing_of_the_record(tmp_path):
+    record = facts_record(each_kind_of_facts(tmp_path)[0])
+    record["capital"] = 8675309
+    with pytest.raises(ValueError) as caught:
+        facts_from_record(record)
+    assert_quotes_nothing(caught.value)
 
 
 def test_a_refusal_carries_its_step_and_its_reason():
