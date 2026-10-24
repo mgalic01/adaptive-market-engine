@@ -40,7 +40,8 @@ stamps stay UTC.
   - Preparation and review: about one to two days.
   - Merge to archived results: about 7 to 8 hours (a data run of about 75 minutes, then the run
     itself, about 4.5 to 5.5 hours, then the download).
-  - Main is frozen from the start of step 5 until the run ends.
+  - Main is frozen from the start of step 5 until the dispatch. Every job of the run checks out
+    the dispatched commit, so main is free again once the run is dispatched.
 
 ## How V3.1 did it, and how V4 follows
 
@@ -91,12 +92,14 @@ main:  ... B ---------------------------------------------------- M  (merge comm
 3. **No PR can move main.**
    - No open PR touches `src/`, `scripts/`, `tests/`, `.github/`, `config/` or the V4 spec.
    - PR #300 (docs, which edits the V4 spec) is merged or closed first. The spec is pinned at
-     B, and from then on it may not change until the run ends.
-   - From B to the run's end nothing lands on main except the registration PR. That includes
-     docs PRs, Bob task PRs and Codex's PRs.
+     B, and from then on it may not change until the dispatch.
+   - From B to the dispatch nothing lands on main except the registration PR. That includes
+     docs PRs, Bob task PRs and Codex's PRs. Every job of the registered run checks out the
+     dispatched commit (`github.sha`), and a re-run keeps it, so main may move again after the
+     dispatch.
 4. **This plan is reviewed by the owner and merged before B.**
    - It lives under `docs/superpowers/plans/`, which may not change on main between B and the
-     run's end.
+     dispatch.
    - The same PR adds the owner's F: backup decision of 2026-10-24 to `docs/RUN_ARCHIVE.md`'s
      "V4 run" section. That section does not hold it yet.
 5. **Earlier artifacts are handled.** The rehearsal 40106774107 is downloaded
@@ -292,7 +295,7 @@ the whole history. Recommended content, as V3.1's ruling TC-5 had it:
 - the spec must still hash to its pin there.
 
 So `tests/`, `.github/`, the rest of `config/`, the spec and every other doc are frozen until the
-run ends.
+dispatch.
 
 **Check:**
 - `git diff --name-only R P` lists the test alone;
@@ -405,8 +408,7 @@ Each check, and what it must give:
 
 **The review bar:**
 - an independent review, by a fresh reviewer given the files, not this plan's conclusions;
-- Bob's deep review, NO ISSUES. If the owner still has Bob out (owner, 2026-10-24), Codex's
-  deep review with Bob's questions stands in, per the owner's rule (open question 3);
+- Bob's deep review, NO ISSUES (the owner brought Bob back on 2026-10-24);
 - Codex: no open P1, and every thread answered. If no 👀 appears within 5 minutes of a push,
   post `@codex review`;
 - claude[bot]: APPROVE. The diff is small: two register lines, two JSON files, a test and a
@@ -445,8 +447,8 @@ docs-only commit:
 - the owner's exact words and any conditions.
 
 Then Claude re-reads the whole PR thread and checks CI and the reviewers at that head, right
-before merging. The go must be in the PR: after the merge, nothing may land on main until the run
-ends.
+before merging. The go must be in the PR: after the merge, nothing may land on main until the
+dispatch.
 
 **Stops if:** there is no go, or its conditions are not met.
 
@@ -564,13 +566,13 @@ a GitHub outage; not a code bug):
   archive.
 - Tell the owner the verdict in chat.
 - Nothing from the results goes into a log, a PR comment or a commit beyond what the owner
-  allows (open question 7).
+  allows (open question 6).
 
-**e. A post-run PR, once the run has ended** (main is free again), under the normal review bar:
+**e. A post-run PR, once the run has ended,** under the normal review bar:
 - **the result event** `v4-0-registered-1-result`, in V3.1's line-230 shape:
   - `completion_id`, and `run_id` (the run's id);
   - `status`: pass `success`, fail `failed`, incomplete or no verdict `invalid` (open question
-    8);
+    7);
   - `provenance`, a JSON string: the archive, the digest check, P, M as `dispatched_from`, S,
     the manifest's SHA-256, the data run's id and `verdict.json`'s SHA-256;
   - `report`, the verdict record;
@@ -598,7 +600,7 @@ a false pass.
 - **The verdict job fails** (memory, disk, a crash, its 180 minutes). There is no verdict until
   the one verdict-only re-run (step 12a). If that fails too, the run is used up with no verdict.
   Computing the verdict on the owner's PC instead would be a deviation, needing the owner's
-  decision beforehand (open question 6), as V3.1's v31-d30 to v31-d32 were.
+  decision beforehand (open question 5), as V3.1's v31-d30 to v31-d32 were.
 - **The verdict's dispatch check cannot read GitHub within its 55 minutes.** The verdict is
   incomplete.
 - **A cancel, any re-run other than the verdict-only one, or a third attempt.** The verdict is
@@ -641,7 +643,7 @@ Zagreb morning, so that the same-day download is certain.
 
 The code does not enforce these. The people who merge and dispatch must follow them.
 1. **Merge with a merge commit only.**
-2. **Nothing else lands on main** from B until the run ends. If main moved before the merge,
+2. **Nothing else lands on main** from B until the dispatch. If main moved before the merge,
    rebuild; never rebase.
 3. **Review fixes touch only `docs/reviews/**` or `docs/tasks/**`.** Anything else means a
    rebuild, on the owner's word: the same trial id before the merge, a new one after.
@@ -679,7 +681,7 @@ The code does not enforce these. The people who merge and dispatch must follow t
    refuses it.
 8. **A narrower public record.** V3.1's verdict record and result event gave aggregated results.
    v4-d10 keeps V4's results on the owner's PC, so the owner decides what is published (open
-   question 7).
+   question 6).
 
 ## Open questions for the owner
 
@@ -688,15 +690,13 @@ The code does not enforce these. The people who merge and dispatch must follow t
    allows.
 2. **The code pin's content:** the committed-registration test (recommended, as V3.1's TC-5), so
    that CI checks the registration before the merge; or an empty commit.
-3. **Reviewers:** if Bob is still out when the PR opens, does Codex's deep review stand in for
-   Bob's on the registration PR, or does the registration wait for Bob?
-4. **The main freeze:** from B to the run's end, about two days, nothing else lands on main.
-   Other PRs wait, Codex's and Bob's included. Is that acceptable?
-5. **The go and the dispatch time:**
+3. **The main freeze:** from B to the dispatch, about one to two days, nothing else lands on
+   main. Other PRs wait, Codex's and Bob's included. Is that acceptable?
+4. **The go and the dispatch time:**
    - should the go cover the merge, step 9's data run, the one dispatch, the download to E: and
      the backup on F:?
    - at what Zagreb time should the run be dispatched?
-6. **If the verdict job and its one re-run both fail:**
+5. **If the verdict job and its one re-run both fail:**
    - should the run stop with no verdict;
    - or may the verdict be computed on the owner's PC from the downloaded summaries, with the
      same code (V3.1's v31-d30 precedent)?
@@ -704,8 +704,8 @@ The code does not enforce these. The people who merge and dispatch must follow t
    Deciding now, before any result, keeps it unbiased. In the same vein: may the analysis job,
    which decides nothing, also be re-run once after an infrastructure failure? The code allows
    it (`RERUN_JOBS`), but the spec names only the verdict job.
-7. **The public record after the run** (v4-d10):
+6. **The public record after the run** (v4-d10):
    - the verdict word and fingerprints only;
    - or also aggregated numbers, as V3.1's record gave?
-8. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
+7. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
    `invalid`. Is that acceptable?
