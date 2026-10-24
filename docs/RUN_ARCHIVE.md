@@ -27,18 +27,19 @@ repository.
 
 Verdict **FAIL**. Record: [the verdict review](reviews/2026-10-17-claude-v3-1-verdict.md).
 
-**To be deleted.** The owner is to delete these run files (both copies below, and
-`E:\v31-diag\`) after the final summary. See
+**Deleted on 2026-10-24.** The owner deleted these run files (both local copies below, and
+`E:\v31-diag\`) after the final summary was merged (PR #297). At 15:49 UTC the folders were
+gone and both drives' Recycle Bins empty. See
 [the V3.0 and V3.1 final summary](reviews/2026-10-24-claude-v3-v31-final-summary.md): what
 each folder held, the results and the fingerprints that keep any copy checkable.
 
 | Copy | Drive | Contents | Status |
 | --- | --- | --- | --- |
-| Working copy | `E:\v31-run-38703911852\` (WD 750 GB hard disk, label BACKUPS) | everything below, plus `cells\`: the 325 artifacts unpacked (107 GB) | verified 2026-10-15 |
-| Backup | `F:\v31-run-38703911852-backup\` (Kingston 960 GB SSD, a separate physical disk) | `zips\`, `meta\`, `summary-out-4\`, `analysis\`, `scripts\` and `SHA256SUMS.txt` (957 files, about 38 GB) | verified 2026-10-17: every file equals the E: copy, and the 328 zips equal GitHub's digests |
-| GitHub | the run's artifacts on Actions | the 328 artifact zips | deleted automatically by GitHub on **2027-01-13 08:11 UTC** (90-day retention). After that only the two local copies remain |
+| Working copy | `E:\v31-run-38703911852\` (WD 750 GB hard disk, label BACKUPS) | everything below, plus `cells\`: the 325 artifacts unpacked (107 GB) | verified 2026-10-15; deleted by the owner 2026-10-24 |
+| Backup | `F:\v31-run-38703911852-backup\` (Kingston 960 GB SSD, a separate physical disk) | `zips\`, `meta\`, `summary-out-4\`, `analysis\`, `scripts\` and `SHA256SUMS.txt` (957 files, about 38 GB) | verified 2026-10-17: every file equals the E: copy, and the 328 zips equal GitHub's digests; deleted by the owner 2026-10-24 |
+| GitHub | the run's artifacts on Actions | the 328 artifact zips | deleted automatically by GitHub on **2027-01-13 08:11 UTC** (90-day retention). The local copies are deleted, so after that date no copy remains and the final summary is the record |
 
-What each folder holds:
+What each folder held (before the deletion):
 
 - `zips\`: the run's 328 artifacts exactly as downloaded (6.14 GB): 324 cells, the V3
   picks, `v31-packs`, `v31-legacy-data` and `v31-status-attempt-1`. These are the
@@ -185,10 +186,10 @@ both.
 
 Earlier trials in [the trial register](trials/register.jsonl) name their own local
 sources in each event's `sources` field. For example, the V3 replay of 2026-10-09 names
-`E:/adaptive-market-engine/v3/replay-20261009-01`. Those locations are as recorded by the
+`E:/adaptive-market-engine/v3/replay-20261009-01` (deleted 2026-10-24). Those locations are as recorded by the
 agent that ran them. They were not re-verified when this page was written.
 
 The run files of the V3 replay and of the cross-version diagnosis of 2026-10-10
-(`E:\adaptive-market-engine\`) are to be deleted by the owner after
+(`E:\adaptive-market-engine\`) were deleted by the owner on 2026-10-24, after
 [the V3.0 and V3.1 final summary](reviews/2026-10-24-claude-v3-v31-final-summary.md),
 which records what they held.
