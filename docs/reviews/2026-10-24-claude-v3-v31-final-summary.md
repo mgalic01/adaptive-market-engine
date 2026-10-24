@@ -6,7 +6,7 @@ Author: Claude Code (session f7f187df), 2026-10-24 UTC. Branch `claude/v3-v31-su
 main `184be44`. Documents only. Nothing was run, re-aggregated or fetched. On the owner's
 PC only small summary, verdict and log files were opened, read-only.
 
-The owner is about to delete the run files of V3.0 and V3.1 from his PC (section 7). This
+The owner is about to delete the run files of V3.0 and V3.1 from the owner's PC (section 7). This
 file is meant to keep everything worth keeping once they are gone. The repository is
 public, so it holds only aggregated numbers and SHA-256 fingerprints, as
 [the run archive's rules](../RUN_ARCHIVE.md) allow.
