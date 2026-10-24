@@ -95,9 +95,14 @@ last. The verdict step (``scripts/v4_verdict.py``) then judges each ``X/<name>/`
 ``V/<name>/``.
 
 ``check --scenarios X --verdicts V`` reads ``X/scenarios.json``, which must be ``SCENARIOS``, and
-each scenario's ``V/<name>/verdict.json``, and compares the verdict's outcome with the expected
-one; for ``base`` it also requires no missing and no refused cell. A verdict file that cannot be
-read, or is not a rehearsal's verdict, is not as expected.
+each scenario's ``V/<name>/verdict.json``. A scenario is as expected only if the verdict's outcome
+is the expected one and its ``missing`` cells and refused ``(folder, step)`` pairs are exactly
+those the scenario's change implies (``implied``, from the same table): none for ``base`` and for
+a forced cell (which must therefore be accepted), the cell for a removal, the cell and its
+``-attempt-2`` folder at step ``rerun`` for a re-run, the target cell and its folder at step
+``cell`` for a relabelling, and the union for a combination. So an ``incomplete`` reached
+through another refusal (a forced cell refused, say) is not as expected. A verdict file that
+cannot be read, or is not a rehearsal's verdict, is not as expected either.
 
 **Exit status**: 0 once the world (or the picks, the forced cell, the scenarios) is written, and
 for ``check`` when every scenario is as expected; 1 otherwise; 2 for bad arguments (argparse's
@@ -907,14 +912,57 @@ def scenarios_command(args: argparse.Namespace) -> int:
 # ---- check ---------------------------------------------------------------------------------------
 
 
+def implied(changes: Sequence[_Change]) -> tuple[list[str], list[tuple[str, str]]]:
+    """The cells a scenario's ``changes`` leave missing, and the folders they leave refused with
+    the step that refuses them, both sorted (Rulings V2, V3): a forced cell in place of a base
+    cell leaves neither, so it must be accepted; a removed cell is missing; a re-run cell is
+    missing and its ``-attempt-2`` folder refused at ``rerun``; a relabelled cell is missing and
+    its folder refused at ``cell``; several changes leave the union of theirs."""
+    missing: list[str] = []
+    refused: list[tuple[str, str]] = []
+    for change in changes:
+        match change:
+            case _Swap():
+                pass
+            case _Drop(cell):
+                missing.append(cell)
+            case _Rerun(cell):
+                missing.append(cell)
+                refused.append((_folder(cell, 2), "rerun"))
+            case _Relabel(_, target):
+                missing.append(target)
+                refused.append((_folder(target), "cell"))
+    return sorted(missing), sorted(refused)
+
+
 def _note(name: str, scenario: str, why: str) -> None:
     print(f"{name}: {scenario}: {why}", file=sys.stderr, flush=True)
 
 
-def _as_expected(name: str, scenario: str, path: Path, expected: str) -> bool:
-    """Whether the verdict at ``path`` is ``expected`` (for ``BASE_EXPECTED``, a pass or a fail
-    with no cell missing or refused). A file that cannot be read, or that is not a rehearsal's
-    verdict, is not; why is one line on standard error, naming no outcome."""
+def _refused_pairs(value: object) -> list[tuple[str, str]] | None:
+    """A verdict's ``refused`` as sorted ``(folder, step)`` pairs, or None if it is not a list of
+    objects with a string folder and step."""
+    if not isinstance(value, list):
+        return None
+    pairs: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        folder, step = item.get("folder"), item.get("step")
+        if not isinstance(folder, str) or not isinstance(step, str):
+            return None
+        pairs.append((folder, step))
+    return sorted(pairs)
+
+
+def _as_expected(
+    name: str, scenario: str, path: Path, expected: str, changes: Sequence[_Change]
+) -> bool:
+    """Whether the verdict at ``path`` is ``expected`` (for ``BASE_EXPECTED``, a pass or a fail)
+    for the scenario's own reason: its missing cells and its refused folders and steps are exactly
+    those its ``changes`` imply (``implied``), so an outcome reached through another refusal is
+    not as expected. A file that cannot be read, that is not a rehearsal's verdict, or whose cells
+    are not the scenario's, is not; why is one line on standard error, naming no outcome."""
     try:
         document = read_canonical_json(path, _MAX_VERDICT_BYTES, VERDICT_FILE)
     except ValueError as exc:
@@ -922,20 +970,27 @@ def _as_expected(name: str, scenario: str, path: Path, expected: str) -> bool:
         return False
     verdict = document.get("verdict") if isinstance(document, dict) else None
     judged = document.get("expected") if isinstance(document, dict) else None
+    missing = document.get("missing") if isinstance(document, dict) else None
+    refused = _refused_pairs(document.get("refused")) if isinstance(document, dict) else None
     if (
         not isinstance(document, dict)
         or document.get("format") != VERDICT_FORMAT
         or not isinstance(verdict, dict)
         or not isinstance(judged, dict)
         or judged.get("mode") != "rehearsal"
+        or not isinstance(missing, list)
+        or not all(isinstance(cell, str) for cell in missing)
+        or refused is None
     ):
         _note(name, scenario, f"{VERDICT_FILE} is not a rehearsal's verdict")
         return False
+    if (sorted(missing), refused) != implied(changes):
+        _note(name, scenario, "the missing and refused cells are not the scenario's")
+        return False
     outcome = verdict.get("outcome")
-    if expected != BASE_EXPECTED:
-        return outcome == expected
-    clean = document.get("missing") == [] and document.get("refused") == []
-    return outcome in ("pass", "fail") and clean
+    if expected == BASE_EXPECTED:
+        return outcome in ("pass", "fail")
+    return outcome == expected
 
 
 def check_command(args: argparse.Namespace) -> int:
@@ -951,9 +1006,9 @@ def check_command(args: argparse.Namespace) -> int:
     if table != dict(SCENARIOS):
         return _fail(name, f"refused: {SCENARIOS_FILE} is not this script's table")
     wrong = 0
-    for scenario, expected in SCENARIOS.items():
+    for scenario, (expected, changes) in _TABLE.items():
         path = Path(args.verdicts) / scenario / VERDICT_FILE
-        right = _as_expected(name, scenario, path, expected)
+        right = _as_expected(name, scenario, path, expected, changes)
         _say(f"{scenario}: {'as expected' if right else 'NOT as expected'}")
         wrong += not right
     return 1 if wrong else 0

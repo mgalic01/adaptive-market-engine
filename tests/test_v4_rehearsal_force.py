@@ -582,6 +582,10 @@ class Judged:
         return self.root / "forced"
 
     @property
+    def expected_file(self) -> Path:
+        return self.root / "expected.json"
+
+    @property
     def scenarios(self) -> Path:
         return self.root / "scenarios"
 
@@ -632,6 +636,25 @@ def folder_of(cell: str, attempt: int = 1) -> str:
     return f"v4-summary-{cell}-attempt-{attempt}"
 
 
+HOLD = "hold_universe-10000-1x"
+RERUN = "v4_main-10000-2x"
+# Each scenario's missing cells and refused (folder, step) pairs, by hand (the controller's
+# ruling): a forced cell is accepted, so it leaves neither.
+IMPLIED: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
+    "base": ([], []),
+    "main_liquidated": ([], []),
+    "main_limit": ([], []),
+    "main_accounting": ([], []),
+    "main_engine_error": ([], []),
+    "hold_missing": ([HOLD], []),
+    "v3_stop": ([], []),
+    "v3_accounting": ([], []),
+    "rerun": ([RERUN], [(folder_of(RERUN, 2), "rerun")]),
+    "relabelled": ([HOLD], [(folder_of(HOLD), "cell")]),
+    "liquidated_and_missing": ([HOLD], []),
+}
+
+
 def test_scenarios_layout_and_expectations(judged):
     assert judged.stdout == (
         f"v4_rehearsal scenarios: {len(SCENARIOS)} scenarios of 48 base folders and "
@@ -670,13 +693,17 @@ def test_scenarios_layout_and_expectations(judged):
             with_forced(layout, "liquidated")
             del layout[folder_of("hold_universe-10000-1x")]
         assert tree(judged.scenarios / name) == layout, name
-    # The verdict step's own verdict on each scenario is the expected one.
+    # The verdict step's own verdict on each scenario is the expected one, for the scenario's own
+    # reason: exactly the missing cells and refused folders its change makes (V2, V3).
     for name, wanted in SCENARIOS.items():
         verdict = load(judged.verdicts / name / "verdict.json")
         outcome = verdict["verdict"]["outcome"]
         assert outcome == ("pass" if name == "base" else wanted), name
-    base_verdict = load(judged.verdicts / "base" / "verdict.json")
-    assert (base_verdict["missing"], base_verdict["refused"]) == ([], [])
+        refused = sorted((item["folder"], item["step"]) for item in verdict["refused"])
+        assert (sorted(verdict["missing"]), refused) == IMPLIED[name], name
+    # check derives the same from the script's own table.
+    for name, (_, changes) in v4_rehearsal._TABLE.items():
+        assert v4_rehearsal.implied(changes) == IMPLIED[name], name
     # ... and check agrees, scenario by scenario.
     argv = ["check", "--scenarios", str(judged.scenarios), "--verdicts", str(judged.verdicts)]
     code, stdout, stderr = run_cli(argv)
@@ -688,10 +715,19 @@ def test_check_flags_a_scenario_not_as_expected(judged, tmp_path):
     verdicts = tmp_path / "verdicts"
     shutil.copytree(judged.verdicts, verdicts)
     argv = ["check", "--scenarios", str(judged.scenarios), "--verdicts", str(verdicts)]
-    # A liquidated v4_main that the verdict did not fail.
-    shutil.copyfile(
-        verdicts / "hold_missing" / "verdict.json", verdicts / "main_liquidated" / "verdict.json"
-    )
+
+    def judged_as(scenario: str, other: str) -> None:
+        """``scenario``'s verdict replaced by ``other``'s."""
+        shutil.copyfile(
+            judged.verdicts / other / "verdict.json", verdicts / scenario / "verdict.json"
+        )
+
+    # A liquidated v4_main that the verdict did not fail (and with another cell missing).
+    judged_as("main_liquidated", "hold_missing")
+    # A ceiling stop judged incomplete, with no cell missing or refused: the outcome alone.
+    judged_as("main_limit", "main_engine_error")
+    # An incomplete reached through another change: a cell missing but no folder refused.
+    judged_as("relabelled", "hold_missing")
     # A base that passes with a missing cell is not the base asked for.
     base = load(verdicts / "base" / "verdict.json")
     (verdicts / "base" / "verdict.json").write_bytes(_canonical(base | {"missing": [MAIN]}))
@@ -699,25 +735,38 @@ def test_check_flags_a_scenario_not_as_expected(judged, tmp_path):
     (verdicts / "rerun" / "verdict.json").unlink()
     code, stdout, stderr = run_cli(argv)
     assert code == 1
-    flagged = {"base", "main_liquidated", "rerun"}
+    flagged = {"base", "main_liquidated", "main_limit", "rerun", "relabelled"}
     assert stdout == "".join(
         f"{name}: {'NOT as expected' if name in flagged else 'as expected'}\n" for name in SCENARIOS
     )
     assert OUTCOME_WORDS.search(stdout) is None  # scenario names and the two phrases only
-    assert stderr == "v4_rehearsal check: rerun: verdict.json cannot be read\n"
-    # A refused cell in the base is not the base asked for either.
+    cells = "the missing and refused cells are not the scenario's"
+    assert stderr == (
+        f"v4_rehearsal check: base: {cells}\n"
+        f"v4_rehearsal check: main_liquidated: {cells}\n"
+        "v4_rehearsal check: rerun: verdict.json cannot be read\n"
+        f"v4_rehearsal check: relabelled: {cells}\n"
+    )
+    assert OUTCOME_WORDS.search(stderr) is None
+    # A refused cell in the base is not the base asked for either, nor is a refused list of
+    # another shape.
     (verdicts / "base" / "verdict.json").write_bytes(
         _canonical(base | {"refused": [{"folder": "x", "step": "json", "reason": "r"}]})
     )
-    shutil.copyfile(judged.verdicts / "rerun" / "verdict.json", verdicts / "rerun" / "verdict.json")
-    shutil.copyfile(
-        judged.verdicts / "main_liquidated" / "verdict.json",
-        verdicts / "main_liquidated" / "verdict.json",
-    )
-    code, stdout, _ = run_cli(argv)
+    hold = load(judged.verdicts / "hold_missing" / "verdict.json")
+    (verdicts / "hold_missing" / "verdict.json").write_bytes(_canonical(hold | {"refused": ["x"]}))
+    for scenario in ("rerun", "main_liquidated", "main_limit", "relabelled"):
+        judged_as(scenario, scenario)
+    code, stdout, stderr = run_cli(argv)
     assert code == 1
-    assert stdout.splitlines()[0] == "base: NOT as expected"
-    assert stdout.count("NOT as expected") == 1
+    flagged = {"base", "hold_missing"}
+    assert stdout == "".join(
+        f"{name}: {'NOT as expected' if name in flagged else 'as expected'}\n" for name in SCENARIOS
+    )
+    assert stderr == (
+        f"v4_rehearsal check: base: {cells}\n"
+        "v4_rehearsal check: hold_missing: verdict.json is not a rehearsal's verdict\n"
+    )
     # A scenarios file that is not this script's is refused: nothing is judged.
     changed = tmp_path / "scenarios"
     changed.mkdir()
@@ -727,6 +776,45 @@ def test_check_flags_a_scenario_not_as_expected(judged, tmp_path):
     )
     assert (code, stdout) == (1, "")
     assert stderr == "v4_rehearsal check: refused: scenarios.json is not this script's table\n"
+
+
+def test_check_flags_a_forced_cell_the_verdict_refused(judged, tmp_path):
+    """A forced V3Stop written with other picks than the run's is refused (step ``data``), so its
+    scenario is incomplete through that refusal, not through the stop: not as expected, although
+    its outcome alone is the expected one."""
+    forced = tmp_path / "forced"
+    shutil.copytree(judged.forced, forced)
+    cell = forced / "v3_stop" / V3_CELL
+    summary = load(cell / "summary.json")
+    other = summary["data"] | {"picks_sha256": "0" * 64}
+    (cell / "summary.json").write_bytes(_canonical(summary | {"data": other}))
+    scenarios = tmp_path / "scenarios"
+    argv = ["scenarios", "--base", str(judged.base), "--forced", str(forced)]
+    assert run_cli([*argv, "--out", str(scenarios)])[0] == 0
+    verdicts = tmp_path / "verdicts"
+    shutil.copytree(judged.verdicts, verdicts)
+    shutil.rmtree(verdicts / "v3_stop")
+    step = ["--summaries", str(scenarios / "v3_stop"), "--expected", str(judged.expected_file)]
+    step += ["--progress", str(tmp_path / "progress"), "--out", str(verdicts / "v3_stop")]
+    with short_v3_period(), contextlib.redirect_stdout(io.StringIO()):
+        assert v4_verdict.main(step) == 0
+    verdict = load(verdicts / "v3_stop" / "verdict.json")
+    assert verdict["verdict"]["outcome"] == SCENARIOS["v3_stop"]  # the outcome alone would pass
+    assert verdict["missing"] == [V3_CELL]
+    assert [(item["folder"], item["step"]) for item in verdict["refused"]] == [
+        (folder_of(V3_CELL), "data")
+    ]
+    code, stdout, stderr = run_cli(
+        ["check", "--scenarios", str(scenarios), "--verdicts", str(verdicts)]
+    )
+    assert code == 1
+    assert stdout == "".join(
+        f"{name}: {'NOT as expected' if name == 'v3_stop' else 'as expected'}\n"
+        for name in SCENARIOS
+    )
+    assert stderr == (
+        "v4_rehearsal check: v3_stop: the missing and refused cells are not the scenario's\n"
+    )
 
 
 def test_scenarios_refuses_what_it_cannot_alter(judged, tmp_path):
