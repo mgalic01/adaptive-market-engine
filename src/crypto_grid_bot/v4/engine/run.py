@@ -261,7 +261,7 @@ from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 
-from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
+from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.combined.decisions import Costs
 from crypto_grid_bot.combined.execution import VenueRules
 from crypto_grid_bot.trend.sizing import DailyReturn
@@ -274,6 +274,7 @@ from crypto_grid_bot.v4.engine.allocation import (
 )
 from crypto_grid_bot.v4.engine.arms import (
     ARMS,
+    BTC,
     COVARIANCE_DAYS,
     DEAD_MARKET_HOURS,
     INITIAL_MARGIN_DIVISOR,
@@ -295,7 +296,7 @@ from crypto_grid_bot.v4.engine.market import (
     Perpetual,
     SeriesStore,
 )
-from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
+from crypto_grid_bot.v4.engine.numbers import CONTEXT, sign, to_decimal, to_fraction
 from crypto_grid_bot.v4.engine.orders import LegPlan, Order, fee, fill_price, plan_leg
 from crypto_grid_bot.v4.engine.pending import Decided, Exit, Pending, PendingBook
 from crypto_grid_bot.v4.engine.records import Receipt, RecordWriter, write_receipt
@@ -309,7 +310,7 @@ from crypto_grid_bot.v4.engine.safety import (
     liquidated,
     penalised_price,
 )
-from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading
+from crypto_grid_bot.v4.engine.signals import CoinSignals, DailyFeed, SignalReading
 from crypto_grid_bot.v4.engine.sizing import (
     CoinSizing,
     SizingResult,
@@ -337,8 +338,6 @@ MARGIN_CUT = "margin cut"
 CEILING_CUT = "ceiling cut"
 # The reason of the cancels of a waiting coin whose spot market has died without a close.
 DEAD_MARKET = "dead market"
-# The coin whose slow vote an arm's ``short_filter`` reads (ruling R1 of step 4a).
-SHORT_FILTER_COIN = "BTCUSDT"
 
 # The outcomes of a stop and the reasons of ``limit_unrestorable`` (spec "Reports").
 LIQUIDATED = "liquidated"
@@ -398,8 +397,8 @@ class CellResult:
 
 def run_v4_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     """Replay one V4 cell over ``market`` into ``out_dir`` (module docstring) and return its
-    result. A hold arm, or an ``out_dir`` that already holds a cell's files, is a ValueError and
-    nothing is written."""
+    result. A hold or V3 arm, or an ``out_dir`` that already holds a cell's files, is a ValueError
+    and nothing is written."""
     if not isinstance(market, Market):
         raise ValueError(f"a Market is required, got {market!r:.60}")
     if not isinstance(cell, CellSpec):
@@ -1448,10 +1447,10 @@ class _Confirm:
         signal at once (a size change within one direction follows at once); one in another
         direction becomes it only once its run reaches ``needed``, and until then the effective
         signal keeps its value."""
-        direction = _sign(s)
+        direction = sign(s)
         self.run = self.run + 1 if direction == self.direction else 1
         self.direction = direction
-        if direction == _sign(self.effective) or self.run >= needed:
+        if direction == sign(self.effective) or self.run >= needed:
             self.effective = s
 
 
@@ -1520,20 +1519,16 @@ class _V4Cell(_CellState):
         self._vol_target = vol_target
         self._lookbacks = lookbacks
         self._universe: tuple[str, ...] = ()
-        # Per coin, built on its first decision: daily bars, signal state, returns, cursors.
-        self._daily: dict[str, tuple[Kline, ...]] = {}
-        self._fed: dict[str, int] = {}  # how many daily bars the signal state has seen
-        self._signals: dict[str, CoinSignals] = {}
-        self._readings: dict[str, SignalReading] = {}
+        # Per coin, built on its first decision: the feed of its daily bars to its signal
+        # state, and its returns with their days.
+        self._feeds: dict[str, DailyFeed] = {}
         self._returns: dict[str, tuple[DailyReturn, ...]] = {}
         self._return_days: dict[str, list[int]] = {}
-        # An arm with ``short_filter`` (ruling R1 of step 4a): BTC's own signal state under the
-        # main lookbacks, fed at every decision whether BTC is decided or not. It is never BTC's
-        # trading state, which ``_feed`` keeps under the arm's lookbacks.
-        self._btc_daily: tuple[Kline, ...] | None = None  # loaded at the first decision
-        self._btc_fed = 0
-        self._btc_signals = CoinSignals(MAIN_LOOKBACKS)
-        self._btc_reading: SignalReading | None = None
+        # An arm with ``short_filter`` (ruling R1 of step 4a): the feed of BTC's own signal
+        # state under the main lookbacks, built at the first decision and fed at every decision
+        # whether BTC is decided or not. It is never BTC's trading state, which ``_feed`` keeps
+        # under the arm's lookbacks.
+        self._btc_feed: DailyFeed | None = None
         # An arm with ``confirm_readings`` (ruling R1 of step 4a): each decided coin's
         # confirmation state, built on its first decision and updated per bar by ``_feed``.
         self._confirm: dict[str, _Confirm] = {}
@@ -1669,25 +1664,21 @@ class _V4Cell(_CellState):
         catch-up of many bars counts every one and a day without a bar counts none (ruling R1
         of step 4a)."""
         needed = self.arm.confirm_readings
-        if coin not in self._signals:
+        feed = self._feeds.get(coin)
+        if feed is None:
             bars = self.market.daily(coin)
             returns = daily_returns(bars)
-            self._daily[coin] = bars
-            self._fed[coin] = 0
-            self._signals[coin] = CoinSignals(self._lookbacks)
+            feed = self._feeds[coin] = DailyFeed(bars, CoinSignals(self._lookbacks))
             self._returns[coin] = returns
             self._return_days[coin] = [row.day_ms for row in returns]
             if needed is not None:
                 self._confirm[coin] = _Confirm(_ZERO, 0, 0)
-        bars, index, signals = self._daily[coin], self._fed[coin], self._signals[coin]
-        while index < len(bars) and bars[index].open_ms <= day:
-            reading = signals.update(bars[index])
-            self._readings[coin] = reading
-            if needed is not None:
-                self._confirm[coin].read(reading.s, needed)
-            index += 1
-        self._fed[coin] = index
-        return self._readings.get(coin)
+        readings = feed.feed_through(day)
+        if needed is not None:
+            confirm = self._confirm[coin]
+            for reading in readings:
+                confirm.read(reading.s, needed)
+        return feed.reading
 
     def _feed_btc(self, day: int) -> None:
         """Ruling R1 of step 4a, the filter's input: feed BTC's own signal state every BTC daily
@@ -1695,24 +1686,33 @@ class _V4Cell(_CellState):
         ``self._btc_reading`` (None before BTC's first bar). BTC's trading signal, when it is
         decided, is ``_feed``'s. A market without BTCUSDT is a ValueError (``Market.coin``), so
         the cell ends as ``engine_error``, as hold_btc's does."""
-        if self._btc_daily is None:
-            self._btc_daily = self.market.daily(SHORT_FILTER_COIN)
-        bars, index = self._btc_daily, self._btc_fed
-        while index < len(bars) and bars[index].open_ms <= day:
-            self._btc_reading = self._btc_signals.update(bars[index])
-            index += 1
-        self._btc_fed = index
+        if self._btc_feed is None:
+            self._btc_feed = DailyFeed(self.market.daily(BTC), CoinSignals(MAIN_LOOKBACKS))
+        self._btc_feed.feed_through(day)
+
+    @property
+    def _btc_reading(self) -> SignalReading | None:
+        """BTC's latest reading for the filter (``_feed_btc``), None before BTC's first bar."""
+        return None if self._btc_feed is None else self._btc_feed.reading
 
     def _btc_shorts_allowed(self, day: int) -> bool | None:
         """Ruling R1 of step 4a: whether the decision closing ``day`` allows shorts, for an arm
         with ``short_filter``; None for any other arm. Shorts are allowed only while BTC's latest
         reading at or before ``day`` (``_feed_btc``, at this decision) has its slow vote at -1,
         its close below its SMA(200). Above, an exact tie, warming, or no BTC bar yet all mean
-        not allowed, and a day without a BTC bar keeps the reading before it."""
+        not allowed, and a day without a BTC bar keeps the reading before it. The reading is
+        never later than ``day``: ``_decide`` feeds BTC only up to ``day``, before any coin's
+        view, so a later one is an engine fault, asserted and never read as a vote."""
         if self.arm.short_filter is None:
             return None
         reading = self._btc_reading
-        return reading is not None and reading.day_ms <= day and reading.slow == -1
+        if reading is None:
+            return False
+        # An invariant of the feed, not a rule: it holds by construction (bandit B101 accepted).
+        assert reading.day_ms <= day, (  # nosec B101
+            f"BTC's filter reading of {reading.day_ms} is later than the decided day {day}"
+        )
+        return reading.slow == -1
 
     def _short_filter_record(self, day: int) -> dict[str, object] | None:
         """The ``daily_coin`` records' ``short_filter`` at the decision closing ``day``: BTC's
@@ -2132,10 +2132,6 @@ def _month_of(ms: int) -> str:
     return f"{moment.year:04d}-{moment.month:02d}"
 
 
-def _sign(value: Decimal) -> int:
-    return (value > 0) - (value < 0)
-
-
 def _cut_quantity(held: Decimal, factor: Decimal, step: Decimal) -> Decimal:
     """A cut leg's new quantity (spec "Safety": the tradable positions are cut pro rata by k or
     k'): ``|held| x factor`` computed exactly in Fractions, never under the 60-digit context,
@@ -2270,8 +2266,9 @@ def _order_record(
     the order placed, or the reason none was). ``decision_ms`` is the decision hour of the
     target used: the order's, or for a replacement buy that of the coin's latest target. The
     ``source`` and ``target`` are those of ``trading`` when the coin trades (``signal``, a
-    ``replacement buy``, or a hold arm's ``rebalance``), else ``signal`` and the order's target
-    for a band-kept order, and ``exit`` with no target for a coin with only exits due."""
+    ``replacement buy``, or a hold arm's ``rebalance``, which is ``signal`` for hold_btc_trend),
+    else ``signal`` and the order's target for a band-kept order, and ``exit`` with no target for
+    a coin with only exits due."""
     if trading is not None:
         source, target = trading[2], trading[0]
     elif order is not None:

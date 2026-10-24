@@ -3318,6 +3318,117 @@ def test_btc200_shorts_without_btcusdt_is_an_engine_error(tmp_path):
     assert of_kind(rows, "daily_coin") == [] and of_kind(rows, "fill") == []
 
 
+def test_a_btc_filter_reading_later_than_the_decided_day_is_an_engine_fault(tmp_path):
+    """Step 4a's review: the filter's BTC reading is never later than the day its decision
+    closes, since ``_decide`` feeds BTC only up to that day before any coin's view. That is an
+    assertion, not a rule: asked about an earlier day than its feed reached, the filter fails,
+    where it once answered "not allowed"."""
+    market = load(tmp_path, alt_only(btc_crossing()))
+    arm = ARMS["v4_btc200_shorts"]
+    assert arm.vol_target is not None and arm.lookbacks is not None
+    state = run._V4Cell(market, BTC200, arm, arm.vol_target, arm.lookbacks)
+    state._feed_btc(BTC_UP)
+    assert state._btc_shorts_allowed(BTC_UP) is False  # BTC_UP's bar votes +1
+
+    with pytest.raises(AssertionError, match="later than the decided day"):
+        state._btc_shorts_allowed(BTC_UP - DAY)
+
+
+def test_btc_decided_and_crossing_its_sma_on_the_same_day(tmp_path):
+    """Ruling R1, deferred from step 4a's review: BTCUSDT is in January's universe beside
+    ALTUSDT, so it is decided at every decision while its own bars also feed the filter, and it
+    crosses its SMA(200) inside the window (``btc_crossing``: below it on BTC_DOWN, above it on
+    BTC_UP). The filter keeps a signal state of its own, under the main lookbacks, apart from
+    BTC's trading state, which v4_btc200_shorts also keeps under the main lookbacks; both are fed
+    the same bars up to the day a decision closes. So at every decision BTC's own record is the
+    plain pass's reading of that day, and its slow vote is the filter's ``btc_slow_vote``: the
+    decision closing the crossing day BTC_DOWN already allows shorts, and ALTUSDT takes v4_main's
+    short target there, and the one closing BTC_UP blocks them as BTC's own vote turns up."""
+    world = World("2025-01", (btc_crossing(), falling_alt()), {"2025-01": ("BTCUSDT", "ALTUSDT")})
+    market = load(tmp_path, world)
+
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, BTC200, name="btc200")
+
+    assert result.outcome == "complete"
+    assert ARMS["v4_btc200_shorts"].lookbacks == ARMS["v4_main"].lookbacks
+    btc_readings = readings_by_day(market, "BTCUSDT", ARMS["v4_btc200_shorts"])
+    daily, main = daily_by(rows), daily_by(main_rows)
+    decisions = list(range(T0, FEB, DAY))
+    assert sorted(daily) == [(h, coin) for h in decisions for coin in ("ALTUSDT", "BTCUSDT")]
+    for h in decisions:
+        btc, alt = daily[(h, "BTCUSDT")], daily[(h, "ALTUSDT")]
+        reading = latest(btc_readings, h - DAY)
+        assert reading is not None and reading.day_ms == h - DAY  # a bar every day
+        check_reading(btc, reading)
+        allowed = BTC_DOWN < h <= BTC_UP
+        assert btc["short_filter"] == alt["short_filter"]
+        assert btc["short_filter"] == {"btc_slow_vote": reading.slow, "allowed": allowed}
+        assert btc["speeds"]["slow"]["vote"] == btc["short_filter"]["btc_slow_vote"]
+        assert D(btc["signal"]) >= 0  # BTCUSDT has no perpetual
+        if allowed:
+            assert alt["target"] == main[(h, "ALTUSDT")]["target"] and D(alt["target"]) < 0
+        else:
+            assert D(alt["target"]) == 0 < -D(main[(h, "ALTUSDT")]["target"])
+    crossed, recovered = BTC_DOWN + DAY, BTC_UP + DAY  # the decisions closing the crossing days
+    assert daily[(crossed, "BTCUSDT")]["reading_day_ms"] == BTC_DOWN
+    assert daily[(crossed, "ALTUSDT")]["short_filter"] == {"btc_slow_vote": -1, "allowed": True}
+    assert daily[(crossed - DAY, "ALTUSDT")]["short_filter"]["allowed"] is False
+    assert daily[(recovered, "BTCUSDT")]["speeds"]["slow"]["vote"] == 1
+    assert daily[(recovered, "ALTUSDT")]["short_filter"] == {"btc_slow_vote": 1, "allowed": False}
+    entry, exit_ = crossed + HOUR, recovered + HOUR
+    (short,) = [r for r in of_kind(rows, "lifecycle") if r["coin"] == "ALTUSDT"]
+    assert (short["side"], short["entry_ms"], short["exit_ms"]) == ("short", entry, exit_)
+    assert short["exit_reason"] == "signal"
+
+
+def test_the_no_bar_held_short_keeps_its_position_until_its_next_bar(tmp_path):
+    """Step 4a's ruling 5 (Task 2), deferred to a test by its review: ALTUSDT's spot hours 00:00
+    to 05:59 of BTC_UP are masked, so it has no daily bar for the day BTCUSDT closes back above
+    its SMA(200). The decision closing BTC_UP no longer allows shorts and clamps ALTUSDT's
+    signal to 0, but ALTUSDT takes no target there (V4's no-bar rule, as for any signal change),
+    so its held short keeps its position unchanged through that day. The next decision reads its
+    bar of the day after and gives it 0, and the short closes at the 01:00 after it: a day later
+    than on the unmasked world, a lifecycle ended by ``signal``."""
+    alt = one_coin(
+        "ALTUSDT",
+        "2000",
+        "-0.0003",
+        51,
+        perpetual=PerpetualSpec(funding_rate="0"),
+        spot_masked=day_hours(BTC_UP, range(6)),
+    )
+    market = load(tmp_path, World("2025-01", (btc_crossing(), alt), {"2025-01": ("ALTUSDT",)}))
+    alt_days = {bar.open_ms for bar in market.daily("ALTUSDT")}
+    assert BTC_UP - DAY in alt_days and BTC_UP not in alt_days and BTC_UP + DAY in alt_days
+
+    result, rows = cell_run(market, tmp_path, BTC200)
+
+    assert result.outcome == "complete"
+    daily = daily_by(rows)
+    before, kept, after = (daily[(h, "ALTUSDT")] for h in (BTC_UP, BTC_UP + DAY, BTC_UP + 2 * DAY))
+    assert before["short_filter"] == {"btc_slow_vote": -1, "allowed": True}
+    assert D(before["target"]) < 0
+    assert kept["short_filter"] == {"btc_slow_vote": 1, "allowed": False}
+    assert kept["no_bar"] and (kept["target"], kept["no_target"]) == (None, "no_bar")
+    assert D(kept["s"]) < 0 and kept["signal"] == "0"  # the clamp acted, on no target
+    assert after["short_filter"] == kept["short_filter"] and not after["no_bar"]
+    assert D(after["target"]) == 0
+    exit_ = BTC_UP + 2 * DAY + HOUR
+    held = holdings(rows, BTC_UP + DAY)
+    assert set(held) == {("futures", "ALTUSDT")} and held[("futures", "ALTUSDT")] < 0
+    assert not [f for f in of_kind(rows, "fill") if BTC_UP + DAY <= f["timestamp_ms"] < exit_]
+    assert holdings(rows, exit_ - 1) == held
+    (closing,) = fills_at(rows, exit_)
+    assert (closing["coin"], closing["venue"], closing["side"]) == ("ALTUSDT", "futures", 1)
+    assert (
+        closing["reason"] == "signal" and F(D(closing["quantity"])) == -held[("futures", "ALTUSDT")]
+    )
+    assert holdings(rows, exit_) == {}
+    (short,) = of_kind(rows, "lifecycle")
+    assert (short["side"], short["exit_ms"], short["exit_reason"]) == ("short", exit_, "signal")
+
+
 # ---- step 4a: v4_confirm3, a new direction only after 3 readings in a row -----------------
 
 CONFIRM3 = CellSpec("v4_confirm3", CAPITAL, 1)
@@ -3628,6 +3739,59 @@ def test_a_dead_market_is_not_delayed_by_the_confirmation(tmp_path):
         for each in (rows, main_rows)
     ]
     assert len(delisted[0]) == 1 and delisted[0] == delisted[1]
+
+
+def test_confirm3_on_a_spot_only_coin(tmp_path):
+    """Ruling R1 on a coin without a perpetual, deferred from step 4a's review: the confirmation
+    counts the raw ``s``, shorts included, and the spot-only clamp then acts on e, at once.
+    BTCUSDT has ``flip_world``'s closes on spot alone, so its readings are those of the flip
+    test above: long, then short from F. v4_main's signal is max(s, 0), so it sells its whole
+    spot leg after the decision closing F. v4_confirm3 keeps e long at the decisions closing F
+    and F + 1 day (direction -1, runs 1 and 2) and sells after the one closing F + 2 days, where
+    e takes the short reading's s and the clamp makes its signal 0. From there on its records
+    show the short e beside a signal and a target of 0, and the coin never trades futures."""
+    world = flip_world()
+    (btc,) = world.coins
+    market = load(tmp_path, replace(world, coins=(replace(btc, perpetual=None),)))
+    _, main_rows = cell_run(market, tmp_path, MAIN, name="main")
+    result, rows = cell_run(market, tmp_path, CONFIRM3, name="confirm3")
+
+    assert result.outcome == "complete"
+    readings = readings_by_day(market, "BTCUSDT", ARMS["v4_confirm3"])
+    flip = T0 + 16 * DAY  # F, as in flip_world
+    assert min(day for day in readings if readings[day].s < 0) == flip
+    assert readings[flip - DAY].s == THIRD and readings[flip].s == D("-0.5")
+    plain = plain_confirm(readings)
+    daily, main = daily_by(rows), daily_by(main_rows)
+    decisions = range(T0, month_start("2025-03"), DAY)
+    assert sorted(daily) == sorted(main) == [(h, "BTCUSDT") for h in decisions]
+    for h in decisions:
+        record, plain_record = daily[(h, "BTCUSDT")], main[(h, "BTCUSDT")]
+        assert record["perpetual"] is None and record["eligible"] is False
+        assert record["confirm"] == expected_confirm(plain, h - DAY)
+        assert D(record["signal"]) == max(D(record["confirm"]["effective"]), D(0))
+        assert D(plain_record["signal"]) == max(D(plain_record["s"]), D(0))
+    held = {flip + DAY: 1, flip + 2 * DAY: 2}  # the decisions closing F and F + 1 day: their runs
+    for h, streak in held.items():
+        record = daily[(h, "BTCUSDT")]
+        assert record["confirm"] == {"direction": -1, "run": streak, "effective": text(THIRD)}
+        assert D(record["target"]) > 0 == D(main[(h, "BTCUSDT")]["target"])
+    taken = daily[(flip + 3 * DAY, "BTCUSDT")]
+    assert taken["confirm"] == {"direction": -1, "run": 3, "effective": "-0.5"}
+    assert taken["signal"] == "0" and D(taken["target"]) == 0
+    differ = [
+        h for h in decisions if daily[(h, "BTCUSDT")]["target"] != main[(h, "BTCUSDT")]["target"]
+    ]
+    assert differ == list(held)
+    assert {f["venue"] for f in of_kind(rows, "fill")} == {"spot"}
+    (long,) = of_kind(rows, "lifecycle")
+    (main_long,) = of_kind(main_rows, "lifecycle")
+    assert (main_long["side"], main_long["exit_ms"]) == ("long", flip + DAY + HOUR)
+    assert (long["side"], long["exit_ms"], long["exit_reason"]) == (
+        "long",
+        flip + 3 * DAY + HOUR,
+        "signal",
+    )
 
 
 # ---- outputs ------------------------------------------------------------------------------

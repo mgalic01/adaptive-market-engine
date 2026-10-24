@@ -107,11 +107,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def check_data_run(run: object, run_id: str, head_sha: str) -> None:
+def check_data_run(run: object, run_id: str, head_sha: str, *, title: str = DATA_RUN_TITLE) -> None:
     """Accept only the diagnostic data run: ``run`` is the GitHub API's JSON object of workflow
     run ``run_id``, a successful run of the v4-data workflow's full stage with the pre-2025
     config, made from commit ``head_sha``. Anything else is a ``ValueError`` whose message names
-    no field's value."""
+    no field's value. ``title`` is the run name the run must carry: ``scripts/v4_run_guard.py``
+    passes the full config's, for the registered run's data; every call of this script passes
+    none."""
     if _RUN_ID.fullmatch(run_id) is None:
         raise ValueError("the run id is not 1 to 20 digits with no leading zero")
     if _COMMIT.fullmatch(head_sha) is None:
@@ -122,8 +124,8 @@ def check_data_run(run: object, run_id: str, head_sha: str) -> None:
         raise ValueError("the API's answer is of another run")
     if run.get("path") != DATA_WORKFLOW_PATH:
         raise ValueError(f"it is not a run of {DATA_WORKFLOW_PATH}")
-    if run.get("display_title") != DATA_RUN_TITLE:
-        raise ValueError(f"it is not the run named {DATA_RUN_TITLE!r}")
+    if run.get("display_title") != title:
+        raise ValueError(f"it is not the run named {title!r}")
     if run.get("conclusion") != "success":
         raise ValueError("it did not finish with the conclusion success")
     if run.get("head_sha") != head_sha:

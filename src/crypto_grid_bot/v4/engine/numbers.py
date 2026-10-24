@@ -1,9 +1,11 @@
-"""The one Decimal context of the V4 engine and the exact Decimal/Fraction converters.
+"""The one Decimal context of the V4 engine, the exact Decimal/Fraction converters and the
+engine's one sign function.
 
 All Decimal arithmetic runs under ``CONTEXT`` (60 digits, round half to even), as V3 section
 4 to 6 compute. The ledger keeps exact ``Fraction`` amounts, so the two converters never
 round: ``to_fraction`` reads a Decimal's exact value, and ``to_decimal`` returns a Fraction
-as a Decimal only when that Decimal is the same number.
+as a Decimal only when that Decimal is the same number. ``sign`` compares an exact value with 0
+and never rounds either.
 """
 
 from __future__ import annotations
@@ -44,3 +46,10 @@ def to_decimal(value: Fraction) -> Decimal:
     places = max(twos, fives)
     scaled = value.numerator * (10**places // denominator)
     return Decimal(f"{scaled}E-{places}")
+
+
+def sign(value: Decimal | Fraction) -> int:
+    """+1 for a value above 0, -1 for one below it and 0 for 0: an exact comparison of a
+    Decimal or a Fraction (the sizing band, the order planner and the confirmation of
+    ``v4_confirm3`` all use it)."""
+    return (value > 0) - (value < 0)

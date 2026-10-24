@@ -584,6 +584,9 @@ def write_cell_outputs(out_dir: Path, summary: dict[str, object], page: str) -> 
 
 # ---- the page -------------------------------------------------------------------------------
 
+# The page's Content-Security-Policy: nothing is fetched, only the inline style applies. The
+# ``v3_as_built`` page imports it, with ``_STYLE``, rather than copying either.
+_CSP = "default-src 'none'; style-src 'unsafe-inline'"
 _STYLE = """
 :root{color-scheme:light dark}
 body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:56rem;
@@ -626,8 +629,7 @@ def render_page(summary: dict[str, object]) -> str:
             '<html lang="en">',
             "<head>",
             '<meta charset="utf-8">',
-            '<meta http-equiv="Content-Security-Policy" '
-            "content=\"default-src 'none'; style-src 'unsafe-inline'\">",
+            f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             f"<title>V4 cell {_e(ident)}</title>",
             f"<style>{_STYLE}</style>",

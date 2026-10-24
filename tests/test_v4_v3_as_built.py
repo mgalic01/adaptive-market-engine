@@ -15,7 +15,8 @@ every test, and nothing else of V3:
 
 The cells run V3's frozen replay unchanged, through ``replay_v3_baseline``; a test that needs a
 V3 stop makes it as V3.1's own tests do (a price spike for a real liquidation, a patched
-``execute_hour`` for the untradable stops). The network is not used: nothing here opens a socket.
+``execute_hour`` for the untradable stops). The network is not used: the autouse fixture
+``network_blocked`` makes any attempt to resolve a name or open a socket fail.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import hashlib
 import io
 import json
 import re
+import socket
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -37,6 +39,7 @@ from typing import Any
 
 import pytest
 from test_combined_baseline_v3 import DAY, END, HOUR, PIN, START, SYMBOLS, _daily, inputs
+from test_v4_engine_summary import fake_cell
 
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.combined import baseline_v3
@@ -47,6 +50,7 @@ from crypto_grid_bot.combined.driver.v3_pack import V3PackFields, read_v3_pack, 
 from crypto_grid_bot.trend import replay as v3_replay
 from crypto_grid_bot.trend import runner as v3_runner
 from crypto_grid_bot.trend.metrics import maximum_drawdown
+from crypto_grid_bot.v4.engine import summary as summary_module
 from crypto_grid_bot.v4.engine import v3_as_built
 from crypto_grid_bot.v4.engine.arms import CellSpec
 from crypto_grid_bot.v4.engine.numbers import CONTEXT
@@ -72,7 +76,7 @@ REAL_WINDOW = (v3_as_built.V3_START_MS, v3_as_built.V3_END_MS)  # before any fix
 RECORDS = "records.jsonl"
 RECEIPT = "receipt.json"
 OUTPUT_FILES = (RECORDS, RECEIPT, "summary.json", "report.html")
-OTHER_PIN = "0" * 64
+OTHER_PIN = "0" * 64  # not a digest of anything: a well-formed pin that no file hashes to
 ADAPTER = "v3_capital_adapter_sets_only_starting_capital"
 # The keys of a full summary of summary.py (its module docstring).
 FULL_KEYS = {
@@ -98,6 +102,36 @@ FULL_KEYS = {
 }
 # A full v3 summary has them and one more: V3's own disclosures (the adapter's, at 1,000 USDT).
 V3_FULL_KEYS = FULL_KEYS | {"disclosures"}
+
+
+class NetworkBlocked(OSError):
+    """What every attempt to open a connection raises while a test runs."""
+
+
+def _refuse(*args: object, **kwargs: object) -> None:
+    raise NetworkBlocked("the network is blocked in tests")
+
+
+_SOCKET_CALLS = [
+    (socket, "getaddrinfo"),
+    (socket, "create_connection"),
+    (socket.socket, "connect"),
+    (socket.socket, "connect_ex"),
+]
+
+
+@pytest.fixture(autouse=True)
+def network_blocked(monkeypatch):
+    """No test in this file may resolve a name or open a socket (as ``test_v4_cell_cli.py``)."""
+    for owner, name in _SOCKET_CALLS:
+        monkeypatch.setattr(owner, name, _refuse)
+
+
+def test_the_network_is_blocked_here():
+    with pytest.raises(NetworkBlocked):
+        socket.getaddrinfo("data.binance.vision", 443)
+    with pytest.raises(NetworkBlocked):
+        socket.create_connection(("data.binance.vision", 443))
 
 
 @pytest.fixture(autouse=True)
@@ -563,6 +597,140 @@ def test_a_v3_cell_without_a_pick_before_its_window_is_an_engine_error(tmp_path,
     }
 
 
+def test_a_v3_stop_that_marked_a_terminal_keeps_it_as_an_event(tmp_path, monkeypatch):
+    """V3's unavailable exclusion close (``replay_window``) finishes the account at the stop's
+    decision, so the stop has V3's terminal mark. The cell keeps it as the one ``event`` of type
+    ``terminal``, at the stop's time, and the ``V3Stop`` engine error takes its equity as the
+    final equity and its hour as ``hour_ms``; the open marks run to the hour before. A stop is
+    incomplete whatever it marked, so the summary is the short failure summary. The stop is made
+    as V3 makes it: the real replay over the hours before the stop, relabelled with V3's reason.
+    Records with a second terminal event are refused."""
+    stop = START + 2 * DAY  # the replay's end is a midnight
+    w = world(tmp_path, monkeypatch)
+    real = baseline_v3.replay_window
+
+    def closing(*args: Any, **kwargs: Any) -> Any:
+        result = real(*args[:5], stop, *args[6:], **kwargs)  # args[5] is the window's end
+        return replace(result, reason="unavailable_exclusion_close")
+
+    monkeypatch.setattr(baseline_v3, "replay_window", closing)
+    folder, receipt = run_cell(w)
+    monkeypatch.setattr(baseline_v3, "replay_window", real)
+    marks = open_marks(reference(w))[:48]  # V3's own marks of the hours before the stop
+    found = rows(folder, receipt)
+
+    (outcome,) = of_kind(found, "outcome")
+    (event,) = of_kind(found, "event")
+    assert [name for name, _ in found] == ["hourly"] * 48 + ["event", "outcome"]
+    assert [(r["open_ms"], r["open_equity"]) for r in of_kind(found, "hourly")] == marks
+    assert marks[-1][0] == stop - HOUR
+    assert event["type"] == "terminal" and event["coin"] is None
+    assert event["timestamp_ms"] == event["hour_ms"] == stop
+    assert (outcome["outcome"], outcome["reason"], outcome["stop_ms"]) == (
+        "engine_error",
+        "V3Stop: unavailable_exclusion_close",
+        None,
+    )
+    assert (outcome["type"], outcome["message"]) == ("V3Stop", "unavailable_exclusion_close")
+    assert outcome["final_equity"] == event["equity"] and outcome["hour_ms"] == stop
+    assert (outcome["hours"], outcome["liquidations"]) == (48, 0)
+    summary = summary_of(folder, receipt)
+    verify_v3_summary(summary, folder / RECORDS, receipt)
+    assert summary == {
+        "format": V3_SUMMARY_FORMAT,
+        "cell": cell_json(),
+        "window": {"start_ms": START, "end_ms": END - HOUR},
+        "data": pins(w),
+        "outcome": "engine_error",
+        "type": "V3Stop",
+        "message": "unavailable_exclusion_close",
+        "hour_ms": stop,
+    }
+    assert "V3 stopped before its window's end" in render_v3_page(summary)
+
+    def twice(found: Rows) -> Rows:
+        return [*found[:-1], ("event", event), found[-1]]
+
+    forged = rewrite_rows(folder, receipt, tmp_path / "two_terminals", twice)
+    with pytest.raises(ValueError, match="not one of a v3 cell's records"):
+        summary_of(tmp_path / "two_terminals", forged)
+
+
+def test_a_v3_engine_failure_is_a_v3_stop_with_the_partial_marks(tmp_path, monkeypatch):
+    """V3's replay catches an engine failure as a ``ReplayExecutionError`` and keeps the
+    unfinished account (``replay_window``, ``replay_v3_baseline``). The cell is an
+    ``engine_error`` of type ``V3Stop`` and message ``engine_failure``, with the open marks of the
+    hours before the failure, no terminal event and the last mark as the final equity. A failure
+    that kept no account (a partial result without a runner) is the same stop with no hour at
+    all, as for a missing pick. The failure's own message is nowhere in the records."""
+    failing_hour = START + 30 * HOUR
+    original = v3_runner.execute_hour
+
+    def failing(account: Any, hour_ms: int, *args: Any, **kwargs: Any) -> Any:
+        if hour_ms == failing_hour:
+            raise RuntimeError("engine stopped at 10234.56")
+        return original(account, hour_ms, *args, **kwargs)
+
+    w = world(tmp_path / "account", monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(v3_runner, "execute_hour", failing)
+        evidence = reference(w)
+        folder, receipt = run_cell(w)
+    assert evidence.status == "engine_failure"
+    found = rows(folder, receipt)
+    (outcome,) = of_kind(found, "outcome")
+    hourly = of_kind(found, "hourly")
+    assert [(r["open_ms"], r["open_equity"]) for r in hourly] == open_marks(evidence)
+    assert 0 < len(hourly) < 72 and hourly[-1]["open_ms"] < failing_hour
+    assert of_kind(found, "event") == []
+    last = evidence.native[-1]
+    assert (outcome["outcome"], outcome["reason"], outcome["stop_ms"]) == (
+        "engine_error",
+        "V3Stop: engine_failure",
+        None,
+    )
+    assert outcome["final_equity"] == str(last.equity)
+    assert outcome["hour_ms"] == last.timestamp_ms - last.timestamp_ms % HOUR
+    assert (outcome["hours"], outcome["liquidations"]) == (len(hourly), 0)
+    summary = summary_of(folder, receipt)
+    verify_v3_summary(summary, folder / RECORDS, receipt)
+    assert summary == {
+        "format": V3_SUMMARY_FORMAT,
+        "cell": cell_json(),
+        "window": {"start_ms": START, "end_ms": END - HOUR},
+        "data": pins(w),
+        "outcome": "engine_error",
+        "type": "V3Stop",
+        "message": "engine_failure",
+        "hour_ms": outcome["hour_ms"],
+    }
+    assert "10234.56" not in (folder / RECORDS).read_text("utf-8")
+
+    def lost(*args: Any, **kwargs: Any) -> Any:
+        partial = v3_replay.ReplayResult(None, "engine_failure", ())
+        raise v3_replay.ReplayExecutionError(RuntimeError("no account"), partial)
+
+    bare = world(tmp_path / "bare", monkeypatch)
+    monkeypatch.setattr(baseline_v3, "replay_window", lost)
+    bare_folder, bare_receipt = run_cell(bare)
+    bare_found = rows(bare_folder, bare_receipt)
+    assert [kind for kind, _ in bare_found] == ["outcome"]
+    (bare_outcome,) = of_kind(bare_found, "outcome")
+    assert {key: bare_outcome[key] for key in ("reason", "hours", "final_equity", "hour_ms")} == {
+        "reason": "V3Stop: engine_failure",
+        "hours": 0,
+        "final_equity": "10000",
+        "hour_ms": None,
+    }
+    bare_summary = summary_of(bare_folder, bare_receipt)
+    verify_v3_summary(bare_summary, bare_folder / RECORDS, bare_receipt)
+    assert (bare_summary["type"], bare_summary["message"], bare_summary["hour_ms"]) == (
+        "V3Stop",
+        "engine_failure",
+        None,
+    )
+
+
 def unreconciled(monkeypatch: pytest.MonkeyPatch) -> None:
     """V3.1's ``test_a_missing_residual_is_not_explained`` patch: V3's comparison report without
     a reconciliation residual, so V3's own ``accounting_explained`` is false."""
@@ -908,6 +1076,160 @@ def test_v3_summary_verifies_and_refuses_another_cell_window_pack_or_picks(tmp_p
         verify_v3_summary({**summary, "format": "v4-summary-1"}, records, receipt)
 
 
+# ---- the summary agrees with summary.py -----------------------------------------------------
+
+Y2021 = month_bounds_ms("2021-01")[0]
+Y2025 = month_bounds_ms("2025-01")[0]
+V4_CELL = CellSpec("v4_main", 10000, 1)  # summary.py's cell at the same capital and costs
+# What differs by design is left out: the format, the cell, the window, the data and the receipt,
+# and ``final_after_close`` (V4 closes every position at the window's end; V3 trades no close).
+SHARED_KEYS = FULL_KEYS - {
+    "format",
+    "cell",
+    "window",
+    "data",
+    "receipt_sha256",
+    "final_after_close",
+}
+
+
+def one_path(count: int) -> list[str]:
+    """``count`` open marks: the capital, a climb of 13.25 an hour, and one dip midway."""
+    marks = [f"{10000 + 13 * index}.25" for index in range(count)]
+    marks[0] = "10000"
+    marks[count // 2] = "9001.5"
+    return marks
+
+
+def summaries_of_one_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_ms: int, count: int, stopped: bool
+) -> tuple[dict[str, Any], dict[str, Any], list[str], str]:
+    """The same ``count`` open marks from ``first_ms``, and one final equity below all of them,
+    as a v3 cell's records and as a V4 cell's (hand-written, in each format's shape), and the
+    summary each builder makes of them: ``(v3, v4, marks, final)``. A stopped cell is a
+    liquidation at its last mark, ten hours before its window's end."""
+    equities, final = one_path(count), "8000.75"
+    window_hours = count + 10 if stopped else count
+    monkeypatch.setattr(v3_as_built, "V3_START_MS", first_ms)
+    monkeypatch.setattr(v3_as_built, "V3_END_MS", first_ms + window_hours * HOUR)
+    last = first_ms + (count - 1) * HOUR
+    rows_v3: Rows = [
+        ("hourly", {"open_ms": first_ms + i * HOUR, "open_equity": D(e), "complete": True})
+        for i, e in enumerate(equities)
+    ]
+    if not stopped:
+        end = last + HOUR
+        terminal = {"type": "terminal", "hour_ms": end, "coin": None, "timestamp_ms": end}
+        rows_v3.append(("event", {**terminal, "equity": D(final)}))
+    rows_v3.append(
+        (
+            "outcome",
+            {
+                "outcome": "liquidated" if stopped else "complete",
+                "reason": None,
+                "stop_ms": last if stopped else None,
+                "final_equity": D(final),
+                "hours": count,
+                "equity_2025": None,
+                "final_after_close": None,
+                "liquidations": 1 if stopped else 0,
+                "accounting_residual": D(0),
+                "accounting_explained": True,
+                "wallet_quantity_exact": True,
+                "disclosures": [],
+                "coins": ["BTCUSDT"],
+                "cell": cell_json(),
+                "window": v3_as_built.v3_window(),
+                "data": {"v3_pack_sha256": OTHER_PIN, "picks_sha256": OTHER_PIN},
+            },
+        )
+    )
+    v3_dir = tmp_path / "v3"
+    v3_dir.mkdir()
+    with RecordWriter(v3_dir / RECORDS) as writer:
+        for kind, record in rows_v3:
+            writer.append(kind, record)
+        v3_receipt = writer.close()
+    write_receipt_file(v3_dir / RECEIPT, v3_receipt)
+    built_v3 = build_v3_summary(CellSpec(ARM, 10000, 1), v3_dir / RECORDS, v3_receipt)
+    verify_v3_summary(built_v3, v3_dir / RECORDS, v3_receipt)
+
+    outcome = "liquidated" if stopped else "complete"
+    result = fake_cell(tmp_path / "v4", first_ms, equities, final, outcome=outcome, cell=V4_CELL)
+    built_v4 = summary_module.build_summary(V4_CELL, result, tmp_path / "v4" / RECORDS)
+    summary_module.verify_summary(built_v4, tmp_path / "v4" / RECORDS, result.receipt)
+    return built_v3, built_v4, equities, final
+
+
+@pytest.mark.parametrize(
+    ("first_ms", "count", "stopped", "years"),
+    [
+        (Y2021 - 30 * HOUR, 60, False, [2020, 2021]),
+        (Y2021 - 30 * HOUR, 60, True, [2020, 2021]),
+        (Y2025 - 50 * HOUR, 50, False, [2024]),  # V3's shape: the terminal mark at 2025-01-01
+        (Y2025 - 60 * HOUR, 50, True, [2024]),
+    ],
+    ids=["complete over 2021", "liquidated over 2021", "complete to 2025", "liquidated in 2024"],
+)
+def test_full_agrees_with_summary_py_on_one_path(
+    first_ms, count, stopped, years, tmp_path, monkeypatch
+):
+    """``v3_as_built._full`` repeats the period, drawdown and return rules of ``summary.py``'s
+    (a review finding of step 4a). One set of open marks and one final equity, as a v3 cell's
+    records and as a V4 cell's, give the same drawdown (the open marks, then the final equity),
+    compounded return, eras and years, open marks and stop, and each equals the rule worked out
+    here from the marks. The final equity is below every mark, so a drawdown that left it out
+    would differ; the two paths cover a complete cell ending at the window's end, a stop, and the
+    era boundaries of 2021-01-01 and 2025-01-01."""
+    built_v3, built_v4, equities, final = summaries_of_one_path(
+        tmp_path, monkeypatch, first_ms, count, stopped
+    )
+    marks = [D(equity) for equity in equities]
+    drawdown = maximum_drawdown([*marks, D(final)])
+    assert drawdown > maximum_drawdown(marks)  # the final equity matters
+    with localcontext(CONTEXT):
+        change = D(final) / D(10000) - 1
+
+    assert {key: built_v3[key] for key in SHARED_KEYS} == {
+        key: built_v4[key] for key in SHARED_KEYS
+    }
+    assert built_v3["max_drawdown"] == str(drawdown)
+    assert built_v3["compounded_return"] == str(change)
+    assert [item["year"] for item in built_v3["years"]] == years
+    assert [item["name"] for item in built_v3["eras"]] == [
+        "start-2020",
+        "2021-2024",
+        "2025-end",
+    ]
+    assert any(item["return"] is not None for item in built_v3["eras"])
+    assert (built_v3["outcome"], built_v3["stop_ms"] is not None) == (
+        "liquidated" if stopped else "complete",
+        stopped,
+    )
+
+
+def head_of(page: str) -> str:
+    """A page's ``<head>`` but its title."""
+    lines = page.split("\n")
+    head = lines[lines.index("<head>") + 1 : lines.index("</head>")]
+    return "\n".join(line for line in head if not line.startswith("<title>"))
+
+
+def test_the_v3_page_head_is_summary_pys_by_import(tmp_path, monkeypatch):
+    """The page head (the Content-Security-Policy, the viewport and the style) is ``summary.py``'s
+    by import, not a copy: the names are the same objects, and a v3 page and a V4 page, built from
+    one path, have the same head but for the title."""
+    built_v3, built_v4, _, _ = summaries_of_one_path(
+        tmp_path, monkeypatch, Y2025 - 50 * HOUR, 50, False
+    )
+    assert v3_as_built._STYLE is summary_module._STYLE
+    assert v3_as_built._CSP is summary_module._CSP
+    v3_head = head_of(render_v3_page(built_v3))
+    assert v3_head == head_of(summary_module.render_page(built_v4))
+    assert f'content="{summary_module._CSP}"' in v3_head
+    assert f"<style>{summary_module._STYLE}</style>" in v3_head
+
+
 # ---- the picks ------------------------------------------------------------------------------
 
 
@@ -968,6 +1290,168 @@ def test_v3_picks_are_pinned_and_a_cell_refuses_other_picks(tmp_path, monkeypatc
     assert sorted(item.name for item in cell_dir.iterdir()) == [RECEIPT, RECORDS]
     with pytest.raises(ValueError, match="already"):
         run_v3_cell(pack, pack_sha256, path, digest, cell, cell_dir)
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new folder", "existing folder"])
+@pytest.mark.parametrize(
+    ("failure", "allowed", "error"),
+    [
+        ("the first record", 0, OSError("disk full")),
+        ("a record among the hours", 10, OSError("disk full")),
+        ("the outcome record", 73, OSError("disk full")),  # 72 hours and the terminal event first
+        ("the receipt", None, OSError("disk full")),
+        ("an interrupt", 10, KeyboardInterrupt()),
+    ],
+)
+def test_a_failed_write_leaves_no_partial_records(
+    failure, allowed, error, existing, tmp_path, monkeypatch
+):
+    """A write that raises after the cell's first write (a record or the receipt, an error or an
+    interrupt) must not leave a partial ``records.jsonl``, nor a receipt: the folder the cell
+    created is removed, and a folder that was there before keeps only what it held. The cell then
+    runs into the same folder, as a re-run does."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+    if existing:
+        folder.mkdir(parents=True)
+        (folder / "notes.txt").write_text("not the cell's", "utf-8")
+    appended: list[str] = []
+
+    class Failing(RecordWriter):
+        def append(self, kind: str, record: Mapping[str, object]) -> str:
+            if len(appended) >= (allowed or 0):
+                raise error
+            appended.append(kind)
+            return super().append(kind, record)
+
+    def no_receipt(path: Path, receipt: Receipt) -> str:
+        raise error
+
+    with monkeypatch.context() as patch:
+        if allowed is None:
+            patch.setattr(v3_as_built, "write_receipt", no_receipt)
+        else:
+            patch.setattr(v3_as_built, "RecordWriter", Failing)
+        with pytest.raises(type(error)):
+            run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    if allowed is not None:
+        assert len(appended) == allowed  # the write failed where it was made to
+    if existing:
+        assert [item.name for item in folder.iterdir()] == ["notes.txt"]
+    else:
+        assert not folder.exists()
+
+    receipt = run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    assert sorted(item.name for item in folder.iterdir()) == sorted(
+        [RECEIPT, RECORDS, *(["notes.txt"] if existing else [])]
+    )
+    assert summary_of(folder, receipt)["outcome"] == "complete"
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new folder", "existing folder"])
+def test_an_exception_in_the_replay_leaves_nothing_behind(existing, tmp_path, monkeypatch):
+    """An exception outside V3's own loop is not an outcome: it propagates before anything is
+    written, so the cell's folder is not even created (and one that was there is untouched)."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+    if existing:
+        folder.mkdir(parents=True)
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("the replay broke")
+
+    monkeypatch.setattr(v3_as_built, "replay_v3_baseline", broken)
+    with pytest.raises(RuntimeError, match="the replay broke"):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    assert folder.exists() is existing
+    assert not existing or list(folder.iterdir()) == []
+
+
+ANOTHER_RUN = b"the finished file of another run of the same cell"
+
+
+@pytest.mark.parametrize("appears", ["records", "receipt", "records link"])
+def test_a_file_that_appears_during_the_replay_survives_the_refusal(appears, tmp_path, monkeypatch):
+    """The existing-file check runs before the long replay, so a second run of the same cell
+    into one folder passes it too. The records are opened exclusively, so the later run is
+    refused (``FileExistsError``), and its cleanup removes only what it created: another run's
+    ``records.jsonl`` (or a link at its path, here a dangling symbolic link) is never touched,
+    and nor is another run's ``receipt.json`` (the later run removes only its own records, which
+    would have no receipt of their own)."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+    target = folder / (RECEIPT if appears == "receipt" else RECORDS)
+    if appears == "records link":  # a dangling link does not exist, so the check passes it
+        folder.mkdir(parents=True)
+        try:
+            target.symlink_to(tmp_path / "nowhere")
+        except (OSError, NotImplementedError):
+            pytest.skip("this platform cannot make symbolic links here")
+    real = v3_as_built.replay_v3_baseline
+
+    def late(*args: Any, **kwargs: Any) -> Any:
+        evidence = real(*args, **kwargs)
+        if appears != "records link":  # the other run finishes while this one replays
+            folder.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(ANOTHER_RUN)
+        return evidence
+
+    monkeypatch.setattr(v3_as_built, "replay_v3_baseline", late)
+    with pytest.raises(FileExistsError):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    assert [item.name for item in folder.iterdir()] == [target.name]
+    if appears == "records link":
+        assert target.is_symlink() and not (tmp_path / "nowhere").exists()
+    else:
+        assert target.read_bytes() == ANOTHER_RUN
+
+
+def test_a_receipt_that_appears_before_ours_is_not_removed_nor_is_its_folder(tmp_path, monkeypatch):
+    """The folder is this call's, but another run's receipt lands in it before this call's own
+    receipt is written (the exclusive open of the receipt refuses). The call removes its own
+    records only; the folder is not empty, so it stays (the cleanup never removes recursively)."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+
+    def raced(path: Path, receipt: Receipt) -> str:
+        path.write_bytes(ANOTHER_RUN)  # the other run's receipt, created first
+        raise FileExistsError(str(path))
+
+    monkeypatch.setattr(v3_as_built, "write_receipt", raced)
+    with pytest.raises(FileExistsError):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    assert [item.name for item in folder.iterdir()] == [RECEIPT]
+    assert (folder / RECEIPT).read_bytes() == ANOTHER_RUN
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new folder", "existing folder"])
+def test_a_failed_open_removes_at_most_the_empty_folder_the_call_made(
+    existing, tmp_path, monkeypatch
+):
+    """When the exclusive open of ``records.jsonl`` itself fails nothing of this call's exists
+    but, if it made the folder, the empty folder: that goes, and a folder that was there before
+    keeps what it held."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+    if existing:
+        folder.mkdir(parents=True)
+        (folder / "notes.txt").write_text("not the cell's", "utf-8")
+
+    def denied(path: Path) -> RecordWriter:
+        raise PermissionError("the open was denied")
+
+    monkeypatch.setattr(v3_as_built, "RecordWriter", denied)
+    with pytest.raises(PermissionError, match="denied"):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    if existing:
+        assert [item.name for item in folder.iterdir()] == ["notes.txt"]
+    else:
+        assert not folder.exists()
 
 
 # ---- the CLI and the page -------------------------------------------------------------------

@@ -47,6 +47,8 @@ COST_RESERVE = Decimal("0.02")
 DEAD_MARKET_HOURS = 168
 DEAD_MARKET_PENALTY = Decimal("0.10")
 HOLD_INVESTED = Decimal("0.99")
+# The one coin of hold_btc and hold_btc_trend, and the coin whose slow vote ``short_filter`` reads.
+BTC = "BTCUSDT"
 
 CAPITALS = (1000, 10000)
 COST_MULTIPLES = (1, 2)
@@ -86,6 +88,11 @@ class ArmSpec:
       (its close below its slow SMA); None puts no condition on shorts.
     * ``confirm_readings``: the number of consecutive daily readings in one direction needed
       before a coin's signal changes direction; None acts on the first reading.
+
+    A long-only arm takes neither rule; one with either is a ValueError. The confirmation reads
+    each reading's raw ``s`` and gives the arm its effective signal in place of ``s``, so on a
+    long-only arm it would replace ``L`` with a signal that can be short; and a long-only arm has
+    no short for the filter to allow or block.
     """
 
     name: str
@@ -95,6 +102,16 @@ class ArmSpec:
     lookbacks: Lookbacks | None
     short_filter: Literal["btc_sma200"] | None = None
     confirm_readings: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.long_only and self.confirm_readings is not None:
+            raise ValueError(
+                f"{self.name}: a long-only arm cannot take confirm_readings, which reads the raw s"
+            )
+        if self.long_only and self.short_filter is not None:
+            raise ValueError(
+                f"{self.name}: a long-only arm has no short for short_filter to allow or block"
+            )
 
 
 _ARM_LIST = (

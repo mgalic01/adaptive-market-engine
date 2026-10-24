@@ -6,7 +6,9 @@ that file and the cell's ``records.jsonl`` into ``out/<cell>/timing.json``: the 
 peak resident memory in MB and the records file's size in bytes. These are the numbers the spec's
 timing run needs. The diagnose job times its diagnosis the same way into
 ``diagnosis/diagnose-timing.json``, with the exit status, since a diagnosis that refused a cell
-exits 1 after writing the others'. Nothing here reads market data.
+exits 1 after writing the others'; v4-run's verdict job times its verdict step and its expected
+step into ``verdict/verdict-timing.json`` and ``verdict/expected-timing.json``. Nothing here reads
+market data.
 """
 
 from __future__ import annotations
@@ -89,6 +91,9 @@ REALISTIC = (
 REALISTIC_FAILED = "\tCommand exited with non-zero status 1\n" + REALISTIC.replace(
     "Exit status: 0", "Exit status: 1"
 )
+# The same command killed by a signal (9: the kernel's out-of-memory kill): GNU time adds a first
+# line, and prints "Exit status: 0", the status of a killed command being undefined.
+REALISTIC_KILLED = "Command terminated by signal 9\n" + REALISTIC
 
 
 def test_parse_reads_the_wall_seconds_and_the_peak_resident_kilobytes():
@@ -153,6 +158,7 @@ REFUSED = [
     (gnu_time(kilobytes=0), "the maximum resident set size is not positive"),
     (gnu_time(exit_status=1), "the timed command exited with status 1"),
     (REALISTIC_FAILED, "the timed command exited with status 1"),
+    (REALISTIC_KILLED, "the timed command was terminated by signal 9"),
     (  # two values: ambiguous
         gnu_time() + "\tMaximum resident set size (kbytes): 99\n",
         "2 maximum resident set size lines, expected one: not GNU time -v output",
@@ -418,3 +424,180 @@ def test_cell_dir_and_diagnosis_dir_are_one_or_the_other():
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)
+
+
+# ---- the verdict step's own timing (v4-run.yml's verdict job) ----
+
+
+def test_verdict_dir_writes_verdict_timing(tmp_path, capsys):
+    """``--verdict-dir`` times the v4-run verdict job's verdict step as ``--diagnosis-dir`` times
+    the diagnosis: ``<verdict dir>/verdict-timing.json`` with the step, the wall seconds, the
+    peak memory and the exit status, in the folder the verdict made, never replacing a file. It
+    is one of the three targets, never with another."""
+
+    def verdict(text: str | None) -> tuple[int, str, str]:
+        if text is not None:
+            (tmp_path / "verdict.time").write_text(text, encoding="ascii")
+        argv = ["--time-file", str(tmp_path / "verdict.time")]
+        code = v4_cells_timing.main([*argv, "--verdict-dir", str(tmp_path / "verdict")])
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    # The folder must exist: the verdict made it (a verdict that failed leaves none).
+    code, out, err = verdict(REALISTIC)
+    assert code == 1 and out == "" and "verdict-timing.json" in err
+    assert not (tmp_path / "verdict").exists()
+
+    (tmp_path / "verdict").mkdir()
+    (tmp_path / "verdict" / "verdict.json").write_bytes(b"{}")  # the verdict's own files stay
+    code, out, err = verdict(REALISTIC)
+    assert (code, err) == (0, "")
+    text = (tmp_path / "verdict" / v4_cells_timing.VERDICT_TIMING_FILE).read_text(encoding="ascii")
+    assert v4_cells_timing.VERDICT_TIMING_FILE == "verdict-timing.json"
+    assert json.loads(text) == {
+        "step": "verdict",
+        "wall_seconds": 5025.0,
+        "peak_rss_mb": 2103.8,
+        "exit_status": 0,
+    }
+    assert text.endswith("\n") and text.count("\n") == 1  # one canonical line
+    # Times only: never a count of cells, an outcome or the verdict.
+    assert out == "v4_cells_timing: verdict: 5025.00 s, 2103.8 MB peak, exit status 0\n"
+    assert sorted(p.name for p in (tmp_path / "verdict").iterdir()) == [
+        "verdict-timing.json",
+        "verdict.json",
+    ]
+
+    # Never replaced.
+    code, out, err = verdict(gnu_time())
+    assert code == 1 and out == "" and "verdict-timing.json" in err
+    assert (tmp_path / "verdict" / "verdict-timing.json").read_text(encoding="ascii") == text
+
+    # A time file that is missing or not GNU time's writes nothing.
+    (tmp_path / "verdict" / "verdict-timing.json").unlink()
+    (tmp_path / "verdict.time").unlink()
+    for bad in (None, "real\t0m 3.47s\n"):
+        code, out, err = verdict(bad)
+        assert code == 1 and out == "" and "::error::" in err, bad
+        assert not (tmp_path / "verdict" / "verdict-timing.json").exists(), bad
+
+    # One target of the three, never two.
+    parser = v4_cells_timing.build_parser()
+    args = parser.parse_args(["--time-file", "t", "--verdict-dir", "v"])
+    assert (args.verdict_dir, args.diagnosis_dir, args.cell_dir) == (Path("v"), None, None)
+    for other in (["--cell-dir", "c"], ["--diagnosis-dir", "d"], ["--expected-dir", "e"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--time-file", "t", "--verdict-dir", "v", *other])
+    capsys.readouterr()
+
+
+# ---- the expected step's own timing (v4-run.yml's verdict job) ----
+
+
+def test_expected_dir_writes_expected_timing_beside_the_verdicts(tmp_path, capsys):
+    """``--expected-dir`` times the verdict job's ``expected`` step (``v4_run_plan.py expected``,
+    which loads the whole data pack) as ``--verdict-dir`` times the verdict:
+    ``<verdict dir>/expected-timing.json`` with the step, the wall seconds, the peak memory and
+    the exit status, beside ``verdict-timing.json`` in the same folder, never replacing a file.
+    It is one of the four targets, never with another."""
+
+    def expected(text: str | None) -> tuple[int, str, str]:
+        if text is not None:
+            (tmp_path / "expected.time").write_text(text, encoding="ascii")
+        argv = ["--time-file", str(tmp_path / "expected.time")]
+        code = v4_cells_timing.main([*argv, "--expected-dir", str(tmp_path / "verdict")])
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    # The folder must exist: the workflow makes it.
+    code, out, err = expected(REALISTIC)
+    assert code == 1 and out == "" and "expected-timing.json" in err
+    assert not (tmp_path / "verdict").exists()
+
+    (tmp_path / "verdict").mkdir()
+    (tmp_path / "verdict" / "verdict-timing.json").write_bytes(b"{}\n")  # the verdict's stays
+    code, out, err = expected(REALISTIC)
+    assert (code, err) == (0, "")
+    path = tmp_path / "verdict" / v4_cells_timing.EXPECTED_TIMING_FILE
+    assert v4_cells_timing.EXPECTED_TIMING_FILE == "expected-timing.json"
+    text = path.read_text(encoding="ascii")
+    assert json.loads(text) == {
+        "step": "expected",
+        "wall_seconds": 5025.0,
+        "peak_rss_mb": 2103.8,
+        "exit_status": 0,
+    }
+    assert text.endswith("\n") and text.count("\n") == 1
+    assert out == "v4_cells_timing: expected: 5025.00 s, 2103.8 MB peak, exit status 0\n"
+    assert sorted(p.name for p in (tmp_path / "verdict").iterdir()) == [
+        "expected-timing.json",
+        "verdict-timing.json",
+    ]
+    assert (tmp_path / "verdict" / "verdict-timing.json").read_bytes() == b"{}\n"
+
+    # Never replaced.
+    code, out, err = expected(gnu_time())
+    assert code == 1 and out == "" and "expected-timing.json" in err
+    assert path.read_text(encoding="ascii") == text
+
+    # One target of the four, never two.
+    parser = v4_cells_timing.build_parser()
+    args = parser.parse_args(["--time-file", "t", "--expected-dir", "v"])
+    assert (args.expected_dir, args.verdict_dir, args.diagnosis_dir, args.cell_dir) == (
+        Path("v"),
+        None,
+        None,
+        None,
+    )
+    for other in (["--cell-dir", "c"], ["--diagnosis-dir", "d"], ["--verdict-dir", "v"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--time-file", "t", "--expected-dir", "v", *other])
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("flag", "file_name", "step"),
+    [
+        ("--verdict-dir", "verdict-timing.json", "verdict"),
+        ("--diagnosis-dir", "diagnose-timing.json", "diagnose"),
+        ("--expected-dir", "expected-timing.json", "expected"),
+    ],
+)
+def test_a_step_that_failed_or_was_killed_is_timed_with_its_status(
+    tmp_path, capsys, flag, file_name, step
+):
+    """A timing run must not lose the run that failed (Ruling W2): a verdict, a diagnosis or an
+    expected step that exited 1, or that was killed (out of memory: GNU time says "Exit status:
+    0" then), is timed with its peak memory and a status that says so, 128 + the signal for a
+    killed one (the status GNU time itself exits with)."""
+    for text, status in ((REALISTIC_FAILED, 1), (REALISTIC_KILLED, 128 + 9)):
+        folder = tmp_path / str(status)
+        folder.mkdir()
+        (tmp_path / "step.time").write_text(text, encoding="ascii")
+        code = v4_cells_timing.main(["--time-file", str(tmp_path / "step.time"), flag, str(folder)])
+        captured = capsys.readouterr()
+        assert (code, captured.err) == (0, ""), status
+        assert json.loads((folder / file_name).read_text(encoding="ascii")) == {
+            "step": step,
+            "wall_seconds": 5025.0,
+            "peak_rss_mb": 2103.8,
+            "exit_status": status,
+        }
+        assert captured.out == (
+            f"v4_cells_timing: {step}: 5025.00 s, 2103.8 MB peak, exit status {status}\n"
+        )
+
+
+def test_signal_lines_are_read_once_and_refused_for_a_cell(tmp_path, capsys):
+    killed = v4_cells_timing.parse_time_output(REALISTIC_KILLED, allow_failure=True)
+    assert killed == v4_cells_timing.Timing(Decimal(5025), 2154308, 137)
+    with pytest.raises(ValueError, match="2 terminating signal lines"):
+        v4_cells_timing.parse_time_output(
+            "Command terminated by signal 9\n" + REALISTIC_KILLED, allow_failure=True
+        )
+    # A cell's timing refuses a killed command, as a failed one, and writes nothing.
+    folder = cell_folder(tmp_path)
+    time_file(tmp_path, REALISTIC_KILLED)
+    code, out, err = run(tmp_path, capsys)
+    assert code == 1 and out == "" and "terminated by signal 9" in err
+    assert not (folder / "timing.json").exists()

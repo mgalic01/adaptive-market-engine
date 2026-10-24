@@ -12,7 +12,8 @@ cell's ``records.jsonl``, which is about 135 MB for a V4 cell).
 
 It refuses, writing nothing and exiting 1: a time file that is missing (the runner has no
 ``/usr/bin/time``), one that is not the report of GNU ``time -v`` (exactly one elapsed line and
-one peak-memory line, a clean exit status), a cell folder without ``records.jsonl``, and a
+one peak-memory line, a clean exit status, no terminating signal), a cell folder without
+``records.jsonl``, and a
 ``timing.json`` that already exists (a cell's files are never replaced); a ``timing.json`` whose
 write fails is removed again, so no partial file is left. Standard output carries the cell's id,
 seconds, megabytes and bytes: times and sizes only, never a price.
@@ -23,6 +24,26 @@ same way, as the proxy for the registered run's verdict step and its 2 GB memory
 ``wall_seconds``, ``peak_rss_mb`` and ``exit_status``. The diagnosis exits 1 when it refused a
 cell but wrote the diagnosis of the others, so here a report of a command that exited 1 is
 timed too, with its status; the folder must exist (the diagnosis made it) and the file must not.
+The ``analysis`` job of ``.github/workflows/v4-run.yml`` times its diagnosis the same way.
+
+``--time-file verdict.time --verdict-dir verdict`` times the verdict step of v4-run.yml's
+``verdict`` job (``scripts/v4_verdict.py``) the same way: it writes
+``<verdict dir>/verdict-timing.json`` with ``step`` (``verdict``), ``wall_seconds``,
+``peak_rss_mb`` and ``exit_status``, in a folder that must exist, and never over a file. A
+verdict that failed (it exits 1 having written nothing, or is killed) is timed too, with its
+status: that is the run a timing run must not lose, and the workflow makes the folder for it.
+
+``--time-file expected.time --expected-dir verdict`` times the same job's ``expected`` step
+(``scripts/v4_run_plan.py expected``, which loads the whole data pack with ``Market.load``) the
+same way: it writes ``<expected dir>/expected-timing.json`` with ``step`` (``expected``),
+``wall_seconds``, ``peak_rss_mb`` and ``exit_status``, beside ``verdict-timing.json`` in the
+verdict folder, which must exist (the workflow makes it), and never over a file; a step that
+failed is timed too, with its status.
+
+For these three steps, a command killed by a signal N (out of memory, say), whose exit status GNU
+time leaves undefined, is timed with 128 + N, the status GNU time then exits with. The four
+targets exclude each other. Standard output carries the step's seconds, megabytes and exit status:
+times only, never a count of cells, an outcome or the verdict.
 """
 
 from __future__ import annotations
@@ -40,6 +61,8 @@ from crypto_grid_bot.v4.engine.run import RECORDS_FILE
 
 TIMING_FILE = "timing.json"
 DIAGNOSE_TIMING_FILE = "diagnose-timing.json"
+VERDICT_TIMING_FILE = "verdict-timing.json"
+EXPECTED_TIMING_FILE = "expected-timing.json"
 
 # GNU time -v prints "h:mm:ss" from one hour on, and "m:ss.ss" below it.
 _ELAPSED_LINE = re.compile(
@@ -49,6 +72,9 @@ _PEAK_LINE = re.compile(
     r"^[ \t]*Maximum resident set size \(kbytes\): (?P<value>[0-9]+)[ \t]*$", re.MULTILINE
 )
 _EXIT_LINE = re.compile(r"^[ \t]*Exit status: (?P<value>[0-9]+)[ \t]*$", re.MULTILINE)
+_SIGNAL_LINE = re.compile(
+    r"^[ \t]*Command terminated by signal (?P<value>[0-9]+)[ \t]*$", re.MULTILINE
+)
 _CLOCK = re.compile(
     r"(?:(?P<hours>[0-9]+):)?(?P<minutes>[0-9]{1,2}):(?P<seconds>[0-9]{2}(?:\.[0-9]+)?)"
 )
@@ -82,16 +108,28 @@ def _wall_seconds(clock: str) -> Decimal:
 def parse_time_output(text: str, *, allow_failure: bool = False) -> Timing:
     """The wall seconds and peak resident kilobytes of one ``/usr/bin/time -v`` report of a
     command that exited 0; anything else is a ``ValueError``. With ``allow_failure`` a command
-    that exited with another status is timed too, with that status (one exit line at most)."""
+    that exited with another status is timed too, with that status (one exit line at most).
+
+    A command killed by a signal (the kernel's out-of-memory kill, say) is reported by GNU time as
+    ``Command terminated by signal N`` with ``Exit status: 0``, its exit status being undefined:
+    with ``allow_failure`` it is timed with the status GNU time itself then exits with, 128 + N;
+    without, it is refused, as a failed command is."""
     wall = _wall_seconds(_one(_ELAPSED_LINE, text, "elapsed wall clock"))
     peak = int(_one(_PEAK_LINE, text, "maximum resident set size"))
     if peak <= 0:
         raise ValueError("the maximum resident set size is not positive")
     statuses = [int(status) for status in _EXIT_LINE.findall(text)]
+    signals = [int(signal) for signal in _SIGNAL_LINE.findall(text)]
+    if len(signals) > 1:
+        raise ValueError(f"{len(signals)} terminating signal lines, expected one at most")
     if allow_failure:
         if len(statuses) > 1:
             raise ValueError(f"{len(statuses)} exit status lines, expected one at most")
+        if signals:
+            return Timing(wall, peak, 128 + signals[0])
         return Timing(wall, peak, statuses[0] if statuses else 0)
+    if signals:
+        raise ValueError(f"the timed command was terminated by signal {signals[0]}")
     for status in statuses:
         if status != 0:
             raise ValueError(f"the timed command exited with status {status}")
@@ -105,6 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--cell-dir", type=Path, help="out/<cell id>, with records")
     target.add_argument(
         "--diagnosis-dir", type=Path, help="the diagnosis folder, for diagnose-timing.json"
+    )
+    target.add_argument(
+        "--verdict-dir", type=Path, help="the verdict folder, for verdict-timing.json"
+    )
+    target.add_argument(
+        "--expected-dir", type=Path, help="the verdict folder, for expected-timing.json"
     )
     return parser
 
@@ -139,8 +183,10 @@ def _create(path: Path, document: dict[str, object]) -> None:
         raise
 
 
-def _diagnose_timing(time_file: Path, folder: Path) -> int:
-    """``--diagnosis-dir``: the diagnosis step's ``diagnose-timing.json`` (module docstring)."""
+def _step_timing(step: str, file_name: str, time_file: Path, folder: Path) -> int:
+    """``--diagnosis-dir``, ``--verdict-dir`` and ``--expected-dir``: one step's ``file_name`` in
+    ``folder``, with ``step`` (``diagnose``, ``verdict`` or ``expected``) and its exit status
+    (module docstring)."""
     text = _read_time_file(time_file)
     if text is None:
         return 1
@@ -151,18 +197,18 @@ def _diagnose_timing(time_file: Path, folder: Path) -> int:
     seconds = timing.wall_seconds.quantize(Decimal("0.01"))
     megabytes = (Decimal(timing.peak_rss_kb) / 1024).quantize(Decimal("0.1"))
     document = {
-        "step": "diagnose",
+        "step": step,
         "wall_seconds": float(seconds),
         "peak_rss_mb": float(megabytes),
         "exit_status": timing.exit_status,
     }
     try:
-        # In a folder that must exist: the diagnosis's own files are never replaced.
-        _create(folder / DIAGNOSE_TIMING_FILE, document)
+        # In a folder that must exist: the step's own files are never replaced.
+        _create(folder / file_name, document)
     except OSError as exc:
-        return _fail(f"cannot create {DIAGNOSE_TIMING_FILE} ({type(exc).__name__})")
+        return _fail(f"cannot create {file_name} ({type(exc).__name__})")
     print(
-        f"v4_cells_timing: diagnose: {seconds} s, {megabytes} MB peak, "
+        f"v4_cells_timing: {step}: {seconds} s, {megabytes} MB peak, "
         f"exit status {timing.exit_status}",
         flush=True,
     )
@@ -172,7 +218,11 @@ def _diagnose_timing(time_file: Path, folder: Path) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.diagnosis_dir is not None:
-        return _diagnose_timing(args.time_file, args.diagnosis_dir)
+        return _step_timing("diagnose", DIAGNOSE_TIMING_FILE, args.time_file, args.diagnosis_dir)
+    if args.verdict_dir is not None:
+        return _step_timing("verdict", VERDICT_TIMING_FILE, args.time_file, args.verdict_dir)
+    if args.expected_dir is not None:
+        return _step_timing("expected", EXPECTED_TIMING_FILE, args.time_file, args.expected_dir)
     cell = args.cell_dir.name
     text = _read_time_file(args.time_file)
     if text is None:
