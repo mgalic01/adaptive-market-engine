@@ -1,11 +1,12 @@
 """V4 engine task 15: the one-cell CLI (``scripts/v4_cell.py``) end to end, on a synthetic world.
 
-The module's world (``cli_world``) is small enough for all eight arms to run in well under two
-minutes (owner rule: no heavy work on the owner's PC). The loop simulates only the window's hours,
-three months from 2024-12-01 to 2025-02-28, so the summaries hold an equity at 2025-01-01 and both
-the 2021-2024 and the 2025-end eras. History from 2024-02-01 feeds the signals through daily bars:
-304 days before the window, more than every warm-up needs (SMA 250 for ``v4_slower``, 60 returns
-and the covariance's 60 days). Four coins, each with one job, selected in this rank order:
+The module's world (``cli_world``) is small enough for the eight diagnostic arms, and step 4a's
+three engine arms, to run in about two minutes (owner rule: no heavy work on the owner's PC). The
+loop simulates only the window's hours, three months from 2024-12-01 to 2025-02-28, so the
+summaries hold an equity at 2025-01-01 and both the 2021-2024 and the 2025-end eras. History from
+2024-02-01 feeds the signals through daily bars: 304 days before the window, more than every
+warm-up needs (SMA 250 for ``v4_slower``, 60 returns and the covariance's 60 days). Four coins,
+each with one job, selected in this rank order:
 
 * BTCUSDT falls (shorted on its perpetual) and is the crash at 3x: its close at 12:00 on
   2025-02-15 is four times the open, a short squeeze. At the next open the gross exposure of the
@@ -381,6 +382,62 @@ def test_cli_runs_every_arm_on_the_synthetic_world(world_dir, cells):
         assert not fills(cells[arm].rows, venue="futures"), arm
     assert fills(cells["v4_main"].rows, venue="futures")
     assert {f["coin"] for f in of_kind(cells["hold_btc"].rows, "fill")} == {"BTCUSDT"}
+
+
+# Step 4a's three engine arms beyond the diagnostic eight (v3_as_built has its own CLI).
+NEW_ARMS = ("v4_btc200_shorts", "v4_confirm3", "hold_btc_trend")
+
+
+def test_cli_runs_the_step_4a_engine_arms_on_the_synthetic_world(world_dir, tmp_path):
+    """Deferred from step 4a's review (4b's rehearsal runs all 48 cells through both CLIs):
+    v4_btc200_shorts, v4_confirm3 and hold_btc_trend through the CLI on the module's world. Each
+    exits 0 with its one line and no error, writes its cell's four files, and its summary
+    verifies against its records and receipt (rebuilt here as well as by the CLI), naming its
+    cell, the world's data and the window. Their outcomes are not pinned. Each arm's own fields
+    are in its records: the filter's on every v4_btc200_shorts daily record and the
+    confirmation's on every v4_confirm3 one, and no daily record for the hold arm."""
+    beyond = [name for name, spec in ARMS.items() if name not in DIAGNOSTIC_ARMS]
+    assert beyond == [*NEW_ARMS, "v3_as_built"]
+    pins = read_data_json(world_dir)["packs"]
+    data = {
+        "config_sha256": CONFIG_SHA256,
+        "end_month": LAST,
+        "daily_sha256": pins["daily"]["sha256"],
+        "index_sha256": pins["hourly_index"]["sha256"],
+    }
+    window = list(range(WINDOW_START, LAST_HOUR + HOUR, HOUR))
+    for arm in NEW_ARMS:
+        spec = CellSpec(arm, CAPITAL, COSTS)
+        code, stdout, stderr = run_cli(cell_argv(world_dir, tmp_path / "out", arm))
+        assert (code, stderr) == (0, ""), arm
+        cell = read_cell(code, stdout, stderr, tmp_path / "out" / spec.cell_id)
+        assert sorted(item.name for item in cell.folder.iterdir()) == sorted(OUTPUT_FILES)
+        verify_summary(cell.summary, cell.folder / "records.jsonl", cell.receipt)
+        summary = cell.summary
+        assert summary["cell"] == {
+            "id": spec.cell_id,
+            "arm": arm,
+            "capital": CAPITAL,
+            "cost_multiple": COSTS,
+        }
+        assert (summary["data"], summary["window"]) == (
+            data,
+            {"start_ms": WINDOW_START, "end_ms": LAST_HOUR},
+        )
+        marks = [mark[0] for mark in summary["open_marks"]]
+        assert marks == window[: len(marks)] and marks, arm
+        digest = hashlib.sha256((cell.folder / SUMMARY_FILE).read_bytes()).hexdigest()
+        assert cell.stdout == (
+            f"v4_cell run: {spec.cell_id}: outcome {summary['outcome']}, "
+            f"{cell.receipt.record_count} records, {len(marks)} hours, summary sha256 {digest}\n"
+        )
+        daily = of_kind(cell.rows, "daily_coin")
+        if arm == "hold_btc_trend":
+            assert daily == [] and not fills(cell.rows, venue="futures")
+        else:
+            field = "short_filter" if arm == "v4_btc200_shorts" else "confirm"
+            other = "confirm" if field == "short_filter" else "short_filter"
+            assert daily and all(r[field] is not None and r[other] is None for r in daily), arm
 
 
 def test_cli_output_prints_no_prices(cells):

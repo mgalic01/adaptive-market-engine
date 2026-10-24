@@ -54,8 +54,9 @@ the close ties it exactly, is cash. A day without a BTC bar adds no reading, so 
 state stay as they were. Only a change of state makes an order, BTCUSDT 0.99 (n = 1) when the
 account becomes invested and 0 when it becomes cash, which supersedes an order still deferred.
 An order that never fills (a buy the filters refuse, or one a dead market cancels) is not made
-again: the state stays what the vote made it until the vote changes. A market without BTCUSDT is
-a ValueError at the first decision, as for hold_btc.
+again: the state stays what the vote made it until the vote changes. A dead-market close of the
+holding does not change the state either, so the account is in cash until the vote turns to cash
+and back. A market without BTCUSDT is a ValueError at the first decision, as for hold_btc.
 
 **The fills.** From the decision's next hour, a coin's order waits for its own first hour with a
 spot bar when the coin holds spot or its target is above 0 (V4's deferral rule; a flat coin with
@@ -107,7 +108,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from crypto_grid_bot.v4.engine.allocation import LegTargets, to_venue_quantity
-from crypto_grid_bot.v4.engine.arms import ARMS, HOLD_INVESTED, MAIN_LOOKBACKS, CellSpec
+from crypto_grid_bot.v4.engine.arms import ARMS, BTC, HOLD_INVESTED, MAIN_LOOKBACKS, CellSpec
 from crypto_grid_bot.v4.engine.market import Market
 from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
 from crypto_grid_bot.v4.engine.orders import plan_leg
@@ -125,11 +126,10 @@ from crypto_grid_bot.v4.engine.run import (
     _order_record,
     _run,
 )
-from crypto_grid_bot.v4.engine.signals import CoinSignals, SignalReading
+from crypto_grid_bot.v4.engine.signals import CoinSignals, DailyFeed
 
 HOLD_BTC = "hold_btc"
 HOLD_BTC_TREND = "hold_btc_trend"
-HOLD_BTC_COIN = "BTCUSDT"
 # The reason of a hold order's fills with a target above 0, and the source of its order event.
 REBALANCE = "rebalance"
 
@@ -140,39 +140,34 @@ _TRUNCATE = Context(prec=CONTEXT.prec, rounding=ROUND_DOWN)
 
 def run_hold_cell(market: Market, cell: CellSpec, out_dir: Path) -> CellResult:
     """Replay one hold cell over ``market`` into ``out_dir`` (module docstring) and return its
-    result, as ``run_v4_cell`` does for a V4 cell. A V4 arm, or an ``out_dir`` that already holds a
-    cell's files, is a ValueError and nothing is written."""
+    result, as ``run_v4_cell`` does for a V4 cell. A V4 or V3 arm, or an ``out_dir`` that already
+    holds a cell's files, is a ValueError and nothing is written."""
     if not isinstance(market, Market):
         raise ValueError(f"a Market is required, got {market!r:.60}")
     if not isinstance(cell, CellSpec):
         raise ValueError(f"a CellSpec is required, got {cell!r:.60}")
     if ARMS[cell.arm].family != "hold":
         raise ValueError(f"{cell.arm} is not a hold arm; the V4 arms run in run.py")
-    only = HOLD_BTC_COIN if cell.arm in (HOLD_BTC, HOLD_BTC_TREND) else None
+    only = BTC if cell.arm in (HOLD_BTC, HOLD_BTC_TREND) else None
     return _run(_HoldCell(market, cell, only), Path(out_dir))
 
 
 class _BtcVote:
     """BTCUSDT's slow vote for hold_btc_trend: V4's own signal state under the main lookbacks,
-    fed from the market's BTC daily bars as ``_V4Cell._feed_btc`` feeds its filter's."""
+    fed the market's BTC daily bars by a ``DailyFeed``, as ``_V4Cell._feed_btc`` feeds the short
+    filter's."""
 
     def __init__(self, market: Market) -> None:
-        self._bars = market.daily(HOLD_BTC_COIN)
-        self._fed = 0
-        self._signals = CoinSignals(MAIN_LOOKBACKS)
-        self._reading: SignalReading | None = None
+        self._feed = DailyFeed(market.daily(BTC), CoinSignals(MAIN_LOOKBACKS))
 
     def above_sma(self, day: int) -> bool:
         """Feed every daily bar that opens at or before ``day`` and has not been seen, never a
         later one, and say whether the latest reading's slow vote is +1. No reading yet, a
         warming SMA and an exact tie are all False, and a day without a bar adds no reading, so
         the latest one stays."""
-        bars, index = self._bars, self._fed
-        while index < len(bars) and bars[index].open_ms <= day:
-            self._reading = self._signals.update(bars[index])
-            index += 1
-        self._fed = index
-        return self._reading is not None and self._reading.slow == 1
+        self._feed.feed_through(day)
+        reading = self._feed.reading
+        return reading is not None and reading.slow == 1
 
 
 class _HoldCell(_CellState):
@@ -258,13 +253,11 @@ class _HoldCell(_CellState):
             return
         self._invested = invested
         weight = _share(HOLD_INVESTED, 1) if invested else _ZERO
-        self._place(h, {HOLD_BTC_COIN: weight}, 1)
+        self._place(h, {BTC: weight}, 1)
 
     def _require_btc(self) -> None:
-        if HOLD_BTC_COIN not in self.market.symbols:
-            raise ValueError(
-                f"{self.cell.arm} holds {HOLD_BTC_COIN}, which the market does not have"
-            )
+        if BTC not in self.market.symbols:
+            raise ValueError(f"{self.cell.arm} holds {BTC}, which the market does not have")
 
     def _place(self, h: int, targets: Mapping[str, Decimal], n: int) -> None:
         """Make the decision's orders, sized from ``n`` coins at their fill hours: the targets go
@@ -345,8 +338,9 @@ class _HoldCell(_CellState):
         self, h: int, coin: str, closed: Mapping[_Key, tuple[str, Decimal]]
     ) -> None:
         """A dead-market close cancels the coin's pending order (spec "Pending orders are
-        cancelled"): the coin comes back only through a later month's decision, and never for
-        hold_btc, which decides once."""
+        cancelled"): the coin comes back only through a later decision. For hold_universe that is
+        a later month's; hold_btc decides once, so it never comes back; hold_btc_trend's state
+        stays invested, so it comes back only once its vote has turned to cash and back."""
         self._cancel(h, coin, DELISTING)
 
 

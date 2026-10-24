@@ -60,7 +60,7 @@ from typing import get_args
 from crypto_grid_bot.combined.decisions import Costs
 from crypto_grid_bot.combined.execution import VenueRules, floor_quantity
 from crypto_grid_bot.v4.engine.ledger import Venue
-from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_decimal, to_fraction
+from crypto_grid_bot.v4.engine.numbers import CONTEXT, sign, to_decimal, to_fraction
 
 _VENUES: tuple[str, ...] = get_args(Venue)
 _REFUSALS = (None, "min_qty", "min_notional")
@@ -177,17 +177,17 @@ def _plan_futures(held: Fraction, target: Fraction, price: Fraction, rules: Venu
     orders: list[Order] = []
     refusal: str | None = None
     base = abs(held)  # what the leg already holds on the target's side
-    if held != 0 and _sign(target) != _sign(held):
+    if held != 0 and sign(target) != sign(held):
         # A close, or the first half of a flip: exactly the position, whatever the filters say.
-        orders.extend(_pieces(-_sign(held), abs(held), True, rules))
+        orders.extend(_pieces(-sign(held), abs(held), True, rules))
         base = _ZERO
     elif abs(target) < abs(held):
         quantity = _reduction(abs(held), abs(target), rules)
-        orders.extend(_pieces(-_sign(held), quantity, True, rules))
+        orders.extend(_pieces(-sign(held), quantity, True, rules))
         return LegPlan(tuple(orders), None, Decimal(0))
     if target != 0:
         quantity, refusal = _increase(abs(target), base, price, rules)
-        orders.extend(_pieces(_sign(target), quantity, False, rules))
+        orders.extend(_pieces(sign(target), quantity, False, rules))
     return LegPlan(tuple(orders), refusal, Decimal(0))
 
 
@@ -259,10 +259,6 @@ def _floor(amount: Fraction, rules: VenueRules) -> Fraction:
     if floored % step or not 0 <= amount - floored < step:
         raise ValueError(f"{to_decimal(amount)} did not round to the step {rules.step}")
     return floored
-
-
-def _sign(value: Fraction) -> int:
-    return (value > 0) - (value < 0)
 
 
 def _venue(value: object) -> Venue:

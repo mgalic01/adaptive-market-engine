@@ -28,11 +28,16 @@ down. The downtrend is ``None`` while any of its parts is warming; ``None`` and 
 mean "not confirmed" for S.
 
 ``update`` is O(window) per bar: bounded deques and running sums, never the whole history.
+
+``DailyFeed`` is the engine's one way of feeding a coin's daily bars to its state: in order, each
+bar once, up to a decision's day and never past it. Each V4 coin's trading state, the BTC state
+of ``short_filter`` and hold_btc_trend's vote are all fed by one.
 """
 
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from decimal import Decimal, localcontext
 from itertools import islice
@@ -387,3 +392,37 @@ class CoinSignals:
                 s=-short if short > 0 else long,
                 s_long_only=long,
             )
+
+
+class DailyFeed:
+    """One coin's daily bars, fed to its signal state in order, each bar once, up to a
+    decision's day and never past it. ``bars`` are the coin's daily bars, oldest first
+    (``Market.daily``), and ``signals`` its ``CoinSignals``, made by the caller. A day without a
+    bar adds no reading, so ``reading`` stays the one before it."""
+
+    __slots__ = ("_bars", "_fed", "_reading", "_signals")
+
+    def __init__(self, bars: Sequence[Kline], signals: CoinSignals) -> None:
+        self._bars = bars
+        self._signals = signals
+        self._fed = 0  # how many of the bars the state has seen
+        self._reading: SignalReading | None = None
+
+    @property
+    def reading(self) -> SignalReading | None:
+        """The latest reading, None before the first bar is fed."""
+        return self._reading
+
+    def feed_through(self, day_ms: int) -> tuple[SignalReading, ...]:
+        """Feed every bar not fed yet that opens at or before ``day_ms``, oldest first, and
+        return their readings in that order: none for a day without a new bar, every one of a
+        catch-up's. ``reading`` is then the last of them."""
+        bars, index = self._bars, self._fed
+        readings: list[SignalReading] = []
+        while index < len(bars) and bars[index].open_ms <= day_ms:
+            readings.append(self._signals.update(bars[index]))
+            index += 1
+        self._fed = index
+        if readings:
+            self._reading = readings[-1]
+        return tuple(readings)

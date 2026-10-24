@@ -87,6 +87,32 @@ def test_the_new_trend_arms_are_the_main_arm_plus_one_rule() -> None:
             assert (spec.short_filter, spec.confirm_readings) == (None, None), name
 
 
+def test_btc_is_the_one_coin_of_both_btc_rules() -> None:
+    """``BTC`` is hold_btc's and hold_btc_trend's coin and the coin of ``short_filter``'s vote,
+    one name for both (step 4a's review)."""
+    assert arms.BTC == "BTCUSDT"
+
+
+def test_an_arm_spec_refuses_a_confirmation_on_a_long_only_arm() -> None:
+    """Step 4a's review: the confirmation reads each reading's raw ``s`` and gives the arm its
+    effective signal in place of ``s``, so on a long-only arm it would replace ``L`` with a
+    signal that can be short. Such an arm is refused when it is made, whatever its name."""
+    with pytest.raises(ValueError, match="confirm_readings"):
+        replace(ARMS["v4_confirm3"], long_only=True)
+    with pytest.raises(ValueError, match="confirm_readings"):
+        replace(ARMS["v4_long_only"], name="v4_extra", confirm_readings=3)
+    assert replace(ARMS["v4_long_only"], confirm_readings=None) == ARMS["v4_long_only"]
+
+
+def test_an_arm_spec_refuses_a_short_filter_on_a_long_only_arm() -> None:
+    """Step 4a's review: a long-only arm has no short for ``short_filter`` to allow or block, so
+    an arm with both is refused when it is made."""
+    with pytest.raises(ValueError, match="short_filter"):
+        replace(ARMS["v4_btc200_shorts"], long_only=True)
+    with pytest.raises(ValueError, match="short_filter"):
+        replace(ARMS["v4_long_only"], short_filter="btc_sma200")
+
+
 def test_hold_btc_trend_is_a_hold_arm() -> None:
     spec = ARMS["hold_btc_trend"]
     assert spec.family == "hold"

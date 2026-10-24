@@ -1092,6 +1092,104 @@ def test_hold_btc_trend_without_btcusdt_is_an_engine_error(tmp_path):
     assert rows[-1][1]["hour_ms"] == T0
 
 
+def test_hold_btc_trend_after_a_dead_market_close(tmp_path):
+    """Deferred from step 4a's review: hold_btc_trend is invested when BTCUSDT's spot goes dark
+    from 00:00 on January 13 to 00:00 on January 23. 168 hours after the first dark hour, at
+    00:00 on January 20, the dead-market close sells the whole holding at its last close less 10%,
+    as for the other hold arms, and ends its lifecycle as ``delisting``. The account's state is
+    the vote's, and the vote has no new bar, so it stays invested: that hour's own decision makes
+    no order, nor does any decision once the data is back with BTC still above its SMA(200). So
+    the account stays in cash until the vote changes (ruling 7 of step 4a): the decision after
+    BTC's close below the average on DIPS turns it to cash, an order of 0 on a flat coin that
+    fills with no leg, and the one after its close above it again on RISES buys at the next
+    01:00."""
+    dark, back = T0 + 12 * DAY, T0 + 22 * DAY
+    dips, rises = T0 + 30 * DAY, T0 + 40 * DAY
+    levels = ((BTC_START, "100"), (BTC_UP, "120"), (dips, "90"), (rises, "130"))
+    market = load(tmp_path, crossing_world(btc_crossing(levels, range(dark, back, HOUR))))
+    assert trend_changes(market) == [(BTC_UP + DAY, True), (dips + DAY, False), (rises + DAY, True)]
+    close_h = dark + 168 * HOUR
+    buy_h, again_h = BTC_UP + DAY + HOUR, rises + DAY + HOUR
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    buy, close, rebuy, end = of_kind(rows, "fill")  # these four fills and no other
+    quantity = floor_step(INVESTED * CAPITAL / 120)
+    assert (buy["hour_ms"], buy["reason"]) == (buy_h, "signal")
+    check_fill(buy, 1, quantity, D(120), SPOT)
+    assert (close["hour_ms"], close["side"], close["reason"]) == (close_h, -1, "delisting")
+    assert F(D(close["quantity"])) == quantity
+    assert F(D(close["price"])) == F(D(close["unslipped_price"])) == 108  # 120 less 10%
+    (batch,) = events(rows, "synthetic_closes")
+    assert batch["hour_ms"] == close_h and market.coin("BTCUSDT").spot.bar(close_h) is None
+    assert events(rows, "order_cancelled") == []  # nothing was waiting
+    # In cash, and no order, from the close to the buy after the vote's own change back.
+    cash = cash_after(rows, close_h)
+    for stamp, equity, _ in result.open_marks:
+        if close_h < stamp <= again_h:
+            assert F(equity) == cash, stamp
+    orders = events(rows, "order")
+    assert [(e["decision_ms"], e["hour_ms"]) for e in orders] == [
+        (BTC_UP + DAY, buy_h),
+        (dips + DAY, dips + DAY + HOUR),
+        (rises + DAY, again_h),
+    ]
+    to_cash = orders[1]
+    assert D(to_cash["target"]) == 0 and to_cash["source"] == "signal" and to_cash["legs"] == []
+    assert F(D(orders[2]["target"])) == INVESTED
+    assert (rebuy["hour_ms"], rebuy["reason"]) == (again_h, "signal")
+    bought = floor_step(INVESTED * open_equity(result, again_h) / 130)
+    check_fill(rebuy, 1, bought, D(130), SPOT)
+    assert (end["hour_ms"], end["side"], end["reason"]) == (MAR - HOUR, -1, "window end")
+    first, second = lifecycles_of(rows, "BTCUSDT")
+    assert (first["entry_ms"], first["exit_ms"], first["exit_reason"]) == (
+        buy_h,
+        close_h,
+        "delisting",
+    )
+    assert (second["entry_ms"], second["exit_reason"]) == (again_h, "window end")
+
+
+def test_hold_btc_trend_deferred_buy_superseded_by_a_sale(monkeypatch, tmp_path):
+    """Deferred from step 4a's review: hold_btc_trend's decision to cash supersedes its buy still
+    deferred (``PendingBook.decide``, recorded as ``order_superseded``). No data can make this
+    case: the vote changes only on a day with a daily bar, at least 20 usable spot hours, and the
+    deferred buy fills at the first of them. So the test holds the buy back by stubbing
+    ``_HoldCell._ready``, not ready before the sale's decision, as the case would look if it
+    could happen: the decision after BTC_DOWN replaces the buy with an order of 0, which fills
+    with no leg on the flat coin at the next 01:00. Nothing is ever bought, so nothing is sold or
+    held, and every open mark is the capital."""
+    market = load(tmp_path, crossing_world(btc_crossing()))
+    buy_decision, sale_decision = BTC_UP + DAY, BTC_DOWN + DAY
+    assert trend_changes(market) == [(buy_decision, True), (sale_decision, False)]
+    ready = hold._HoldCell._ready
+
+    def held_back(self: Any, coin: str) -> bool:
+        return self._hour_ms > sale_decision and ready(self, coin)
+
+    monkeypatch.setattr(hold._HoldCell, "_ready", held_back)
+
+    result, rows = cell_run(market, tmp_path, TREND)
+
+    assert result.outcome == "complete" and residuals_hold(rows)
+    assert [e["type"] for e in of_kind(rows, "event")] == ["order_superseded", "order"]
+    (superseded,) = events(rows, "order_superseded")
+    assert superseded == {
+        "type": "order_superseded",
+        "hour_ms": sale_decision,
+        "coin": "BTCUSDT",
+        "decision_ms": buy_decision,
+        "target": "0.99",
+    }
+    (order,) = events(rows, "order")
+    assert (order["hour_ms"], order["decision_ms"]) == (sale_decision + HOUR, sale_decision)
+    assert D(order["target"]) == 0 and order["source"] == "signal" and order["legs"] == []
+    assert of_kind(rows, "fill") == [] and of_kind(rows, "lifecycle") == []
+    assert all(F(equity) == CAPITAL for _, equity, _ in result.open_marks)
+    assert F(result.final_after_close) == CAPITAL
+
+
 # ---- both arms ----------------------------------------------------------------------------
 
 

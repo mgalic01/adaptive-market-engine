@@ -34,7 +34,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
-from fractions import Fraction
 from types import MappingProxyType
 
 from crypto_grid_bot.backtest.klines import INTERVAL_MS, Kline
@@ -48,7 +47,7 @@ from crypto_grid_bot.v4.engine.arms import (
     SIGMA_RETURNS,
     TOTAL_CAP,
 )
-from crypto_grid_bot.v4.engine.numbers import CONTEXT, to_fraction
+from crypto_grid_bot.v4.engine.numbers import CONTEXT, sign, to_fraction
 
 DAY_MS = INTERVAL_MS["1d"]
 
@@ -304,10 +303,6 @@ def size_book(
         return _result(names, sigma, raw, full, steps, scale, len(days), None)
 
 
-def _sign(value: Fraction) -> int:
-    return (value > 0) - (value < 0)
-
-
 def band_trades(target: Decimal, current: Decimal) -> bool:
     """Whether a coin trades to ``target`` from ``current``, both weights (fractions of equity).
 
@@ -318,6 +313,6 @@ def band_trades(target: Decimal, current: Decimal) -> bool:
     """
     want = to_fraction(target)
     held = to_fraction(current)
-    if _sign(want) != _sign(held):
+    if sign(want) != sign(held):
         return True
     return abs(want - held) > max(_BAND_RELATIVE * abs(want), _BAND_ABSOLUTE)
