@@ -58,13 +58,15 @@ from v31_v3_pack import build_v3_pack
 from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.trend.filters import MAX_SNAPSHOT_BYTES
 
-# V3's inventory manifest, as committed, and the SHA-256 of its bytes (V3's registered pin).
+# V3's inventory manifest, as committed, and the SHA-256 of its bytes (V3's registered pin;
+# recompute it with ``sha256sum config/datasets/v3-20261009/inventory.manifest.json``).
 COLLECTION_DIR = "config/datasets/v3-20261009"
 MANIFEST_PATH = f"{COLLECTION_DIR}/inventory.manifest.json"
 MANIFEST_SHA256 = "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a"
 # The calendar V3's run was registered with (``first_months``).
 CONFIG_PATH = "config/v3-development-run.json"
-# The pack V3.1's registered prepare built: ``v3_pack_sha256`` of config/v3_1_run_manifest.json.
+# The pack V3.1's registered prepare built: ``v3_pack_sha256`` of config/v3_1_run_manifest.json
+# (read it there; ``.github/workflows/v4-v3.yml``'s pack job prints the pin of the pack it builds).
 EXPECTED_PACK_SHA256 = "8a4780009bfe580995396b60fd30e52bbc21888a470e49eedb84910087a55dee"
 PACK_FILE = V3_PACK_FILE
 SNAPSHOT_MARKETS = ("spot", "futures")

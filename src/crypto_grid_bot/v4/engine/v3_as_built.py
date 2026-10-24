@@ -20,7 +20,9 @@ part of "Pass rule" condition 2. Nothing of V3 is re-implemented: V3.1's reviewe
   capital other than 10,000, ``v3_capital``, with V3's disclosure
   ``v3_capital_adapter_sets_only_starting_capital``. The pins, the cell and an existing output
   are all checked, the picks and the pack read through their pins and the replay run, before
-  anything is written: a refusal or an exception leaves nothing behind, not even the folder.
+  anything is written: a refusal or an exception leaves nothing behind, not even the folder. A
+  failure once writing has begun (an error or an interrupt) removes the cell's folder, if the
+  cell created it, or else its two files, so no partial ``records.jsonl`` remains.
 * **Open marks.** An hour's open mark is V3's ``open`` native mark. It is complete iff every one
   of V3's coins (``v3_coins``: the symbols of the pack's futures hourly bars, the bars V3 trades
   on; 10 in V3's pack) has its hourly bar that hour. This is conservative: V3 holds a subset.
@@ -83,14 +85,17 @@ of another cell, window, pack or picks do not verify.
 **The page** (``render_v3_page``) follows ruling F2: ``summary.render_page`` and
 ``write_cell_outputs`` take only V4's summary format (and the page's "every position was closed"
 does not hold for V3), so this module renders its own minimal page with ``summary.py``'s escaping,
-tables, sparkline and style, and writes the two files with ``write_v3_outputs``. A full page lists
-the disclosures. The outcome line of a ``V3Accounting`` is worded by case: a completed run (its
-hour is ``V3_END_MS``) "ran to its window's end", a liquidation's was liquidated.
+tables, sparkline, style and Content-Security-Policy (the last two imported, not copied), and
+writes the two files with ``write_v3_outputs``. A full page lists the disclosures. The outcome
+line of a ``V3Accounting`` is worded by case: a completed run (its hour is ``V3_END_MS``) "ran to
+its window's end", a liquidation's was liquidated.
 """
 
 from __future__ import annotations
 
+import contextlib
 import re
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
@@ -127,6 +132,7 @@ from crypto_grid_bot.v4.engine.run import (
     cell_record,
 )
 from crypto_grid_bot.v4.engine.summary import (
+    _CSP,
     _STYLE,
     ERAS,
     PAGE_FILE,
@@ -297,7 +303,10 @@ def run_v3_cell(
 ) -> Receipt:
     """Replay the v3 cell ``cell`` into ``out_dir`` (its own folder): ``records.jsonl`` and
     ``receipt.json`` (module docstring); return the receipt. Everything is checked and the
-    replay run before anything is written, and the folder's existing files are never replaced."""
+    replay run before anything is written, and the folder's existing files are never replaced.
+    A write that fails (an error or an interrupt) leaves no partial records: the folder this call
+    created is removed, and in a folder that was already there only the cell's own two files
+    are."""
     _require_cell(cell)
     data = {
         "v3_pack_sha256": _require_pin("the V3 pack's sha256", pack_sha256),
@@ -325,47 +334,64 @@ def run_v3_cell(
     opens = [mark for mark in evidence.native if mark.kind == "open"]
     outcome = _outcome(evidence, cell, opens)
     present = {coin: frozenset(bar.open_ms for bar in inputs.hourly[coin]) for coin in coins}
+    created = not folder.exists()
     folder.mkdir(parents=True, exist_ok=True)
-    with RecordWriter(records) as writer:
-        for mark in opens:
-            hour = mark.timestamp_ms
-            complete = all(hour in present[coin] for coin in coins)
+    try:
+        with RecordWriter(records) as writer:
+            for mark in opens:
+                hour = mark.timestamp_ms
+                complete = all(hour in present[coin] for coin in coins)
+                writer.append(
+                    "hourly", {"open_ms": hour, "open_equity": mark.equity, "complete": complete}
+                )
+            if outcome.terminal is not None:
+                stamp = outcome.terminal.timestamp_ms
+                writer.append(
+                    "event",
+                    {
+                        "type": TERMINAL,
+                        "hour_ms": stamp - stamp % HOUR_MS,
+                        "coin": None,
+                        "timestamp_ms": stamp,
+                        "equity": outcome.terminal.equity,
+                    },
+                )
             writer.append(
-                "hourly", {"open_ms": hour, "open_equity": mark.equity, "complete": complete}
-            )
-        if outcome.terminal is not None:
-            stamp = outcome.terminal.timestamp_ms
-            writer.append(
-                "event",
+                "outcome",
                 {
-                    "type": TERMINAL,
-                    "hour_ms": stamp - stamp % HOUR_MS,
-                    "coin": None,
-                    "timestamp_ms": stamp,
-                    "equity": outcome.terminal.equity,
+                    **outcome.fields,
+                    "hours": len(opens),
+                    "equity_2025": None,
+                    "final_after_close": None,
+                    "liquidations": evidence.liquidations,
+                    "accounting_residual": evidence.accounting_residual,
+                    "accounting_explained": evidence.accounting_explained,
+                    "wallet_quantity_exact": evidence.wallet_quantity_exact,
+                    "disclosures": list(evidence.disclosures),
+                    "coins": list(coins),
+                    "cell": cell_record(cell),
+                    "window": v3_window(),
+                    "data": data,
                 },
             )
-        writer.append(
-            "outcome",
-            {
-                **outcome.fields,
-                "hours": len(opens),
-                "equity_2025": None,
-                "final_after_close": None,
-                "liquidations": evidence.liquidations,
-                "accounting_residual": evidence.accounting_residual,
-                "accounting_explained": evidence.accounting_explained,
-                "wallet_quantity_exact": evidence.wallet_quantity_exact,
-                "disclosures": list(evidence.disclosures),
-                "coins": list(coins),
-                "cell": cell_record(cell),
-                "window": v3_window(),
-                "data": data,
-            },
-        )
-        receipt = writer.close()
-    write_receipt(receipt_file, receipt)
+            receipt = writer.close()
+        write_receipt(receipt_file, receipt)
+    except BaseException:  # a partial records.jsonl is never evidence: nothing of the cell stays
+        _remove_partial(folder, created, (records, receipt_file))
+        raise
     return receipt
+
+
+def _remove_partial(folder: Path, created: bool, files: Sequence[Path]) -> None:
+    """Undo a cell's failed write: the folder if the cell created it, else its own ``files``
+    (neither existed before the cell, which checked). Errors of the cleanup itself are
+    ignored: the failure that led here is the one to report."""
+    if created:
+        shutil.rmtree(folder, ignore_errors=True)
+        return
+    for file in files:
+        with contextlib.suppress(OSError):
+            file.unlink(missing_ok=True)
 
 
 def _outcome(evidence: BaselineEvidence, cell: CellSpec, opens: Sequence[NativeMark]) -> _Outcome:
@@ -741,8 +767,7 @@ def render_v3_page(summary: Mapping[str, object]) -> str:
             '<html lang="en">',
             "<head>",
             '<meta charset="utf-8">',
-            '<meta http-equiv="Content-Security-Policy" '
-            "content=\"default-src 'none'; style-src 'unsafe-inline'\">",
+            f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             f"<title>V4 cell {_e(ident)}</title>",
             f"<style>{_STYLE}</style>",

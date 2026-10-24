@@ -31,11 +31,13 @@ import v4_v3_pack  # noqa: E402
 from fetch_v3_data import archive_path  # noqa: E402
 
 MANIFEST_PATH = "config/datasets/v3-20261009/inventory.manifest.json"
+# Recompute: `sha256sum config/datasets/v3-20261009/inventory.manifest.json` (V3's registered pin).
 MANIFEST_SHA256 = "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a"
+# Recompute: `v3_pack_sha256` in config/v3_1_run_manifest.json; the v4-v3.yml pack job prints it.
 V31_PACK_SHA256 = "8a4780009bfe580995396b60fd30e52bbc21888a470e49eedb84910087a55dee"
 PACK_FILE = "v3-input.pack.json.gz"
 FIRST_MONTHS = {"BTCUSDT": "2020-01", "ETHUSDT": "2020-02"}
-OTHER_PIN = "0123456789abcdef" * 4
+OTHER_PIN = "0123456789abcdef" * 4  # not a digest of anything: a well-formed pin, not V3.1's
 
 
 class NetworkBlocked(OSError):
@@ -202,6 +204,20 @@ def files_under(folder: Path) -> list[Path]:
     return sorted(path for path in folder.rglob("*") if path.is_file()) if folder.exists() else []
 
 
+def fetch_order(world: World) -> list[str]:
+    """The archive paths in the order the script fetches them: the manifest's present entries as
+    V3.1's ``present_entries`` selects and orders them."""
+    entries = v4_v3_pack.present_entries(
+        json.loads(world.manifest), MANIFEST_PATH, v4_v3_pack.INVENTORY_KINDS
+    )
+    return [str(entry["path"]) for entry in entries]
+
+
+def cached(path: str) -> Path:
+    """Where the work folder keeps the archive at host path ``path``, under the test's folder."""
+    return Path("work") / "inventory" / "archives" / path.lstrip("/")
+
+
 # ---- the job -----------------------------------------------------------------------------------
 
 
@@ -365,6 +381,160 @@ def test_v3_pack_needs_a_work_and_an_out_folder():
     with pytest.raises(SystemExit) as raised:
         v4_v3_pack.main(["--work", "w"])
     assert raised.value.code == 2
+
+
+def test_v3_pack_refuses_an_archive_the_host_no_longer_has(tmp_path, monkeypatch, capsys):
+    """The manifest lists the archive as present and the host answers 404: a refusal naming the
+    archive, with no retry (a 404 is not a transport failure), nothing built, no pack and no
+    count line on standard output. The archive fetched before it stays in the work folder."""
+    world = make_world(tmp_path)
+    first, gone = fetch_order(world)
+    code, transport, builder = run(
+        tmp_path, world, monkeypatch, archives={first: world.archives[first]}
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "HTTP 404" in captured.err and gone in captured.err
+    assert transport.requests == [first, gone]  # one request each, the 404 not retried
+    assert builder.calls == [] and files_under(tmp_path / "out") == []
+    assert captured.out == ""
+    assert (tmp_path / cached(first)).read_bytes() == world.archives[first]
+    assert not (tmp_path / cached(gone)).exists()
+
+
+def test_v3_pack_rerun_over_its_work_folder_fetches_only_what_is_missing(
+    tmp_path, monkeypatch, capsys
+):
+    """A second run in the same work folder, after the 404 is over, uses the verified archive it
+    kept and requests only the one it lacks; the builder then gets the whole collection."""
+    world = make_world(tmp_path)
+    first, gone = fetch_order(world)
+    code, _, _ = run(tmp_path, world, monkeypatch, archives={first: world.archives[first]})
+    assert code == 1
+    capsys.readouterr()
+
+    code, transport, builder = run(tmp_path, world, monkeypatch)
+    captured = capsys.readouterr()
+
+    assert code == 0, captured.err
+    assert transport.requests == [gone]
+    assert builder.layout["archives" + first] == world.archives[first]
+    assert builder.layout["archives" + gone] == world.archives[gone]
+    assert (tmp_path / "out" / PACK_FILE).read_bytes() == b"a pack, or half of one"
+    assert "2 archives" in captured.out.splitlines()[0]
+
+
+def test_v3_pack_rerun_fetches_a_damaged_cached_archive_again(tmp_path, monkeypatch, capsys):
+    """A cached archive is used only while it hashes to its entry's pin: one damaged on disk is
+    logged and fetched again, verified and stored in its place; the intact one is not requested."""
+    world = make_world(tmp_path)
+    first, damaged = fetch_order(world)
+    code, _, _ = run(tmp_path, world, monkeypatch, builder=Builder(pin=OTHER_PIN))
+    assert code == 1 and files_under(tmp_path / "out") == []  # built, refused, pack removed
+    (tmp_path / cached(damaged)).write_bytes(b"damaged on disk")
+    capsys.readouterr()
+
+    code, transport, _ = run(tmp_path, world, monkeypatch)
+    captured = capsys.readouterr()
+
+    assert code == 0, captured.err
+    assert transport.requests == [damaged]
+    assert (tmp_path / cached(damaged)).read_bytes() == world.archives[damaged]
+    assert (tmp_path / cached(first)).read_bytes() == world.archives[first]
+    assert f"CACHE {damaged}" in captured.err
+
+
+def test_v3_pack_rerun_refuses_a_work_folder_whose_placed_file_was_changed(
+    tmp_path, monkeypatch, capsys
+):
+    """The layout's files are placed once: a snapshot in the work folder that is not the
+    manifest's bytes is a refusal that leaves it as it is, before any request or build."""
+    world = make_world(tmp_path)
+    code, _, _ = run(tmp_path, world, monkeypatch, builder=Builder(pin=OTHER_PIN))
+    assert code == 1
+    changed = tmp_path / "work" / "inventory" / "snapshots" / "spot.json"
+    changed.write_bytes(b'{"fake": "edited by hand"}')
+    capsys.readouterr()
+
+    code, transport, builder = run(tmp_path, world, monkeypatch)
+
+    assert code == 1
+    assert "exists with other bytes" in capsys.readouterr().err
+    assert transport.requests == [] and builder.calls == []
+    assert changed.read_bytes() == b'{"fake": "edited by hand"}'
+    assert files_under(tmp_path / "out") == []
+
+
+def test_v3_pack_does_not_run_again_over_its_own_pack(tmp_path, monkeypatch, capsys):
+    """After a successful run the pack is there: a second run is refused at once (nothing
+    requested, nothing built) and leaves the pack as it was."""
+    world = make_world(tmp_path)
+    code, _, _ = run(tmp_path, world, monkeypatch)
+    assert code == 0
+    pack = tmp_path / "out" / PACK_FILE
+    before = pack.read_bytes()
+    capsys.readouterr()
+
+    code, transport, builder = run(tmp_path, world, monkeypatch)
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert PACK_FILE in captured.err and "left alone" in captured.err
+    assert transport.requests == [] and builder.calls == []
+    assert pack.read_bytes() == before
+    assert captured.out == ""
+
+
+def test_v3_pack_refuses_a_link_at_the_pack_path_even_if_it_leads_nowhere(
+    tmp_path, monkeypatch, capsys
+):
+    """A dangling symbolic link at the pack's path does not ``exist``, but it is not free either:
+    the run is refused before any request and the link is not written through."""
+    world = make_world(tmp_path)
+    (tmp_path / "out").mkdir()
+    link = tmp_path / "out" / PACK_FILE
+    try:
+        link.symlink_to(tmp_path / "nowhere")
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform cannot make symbolic links here")
+
+    code, transport, builder = run(tmp_path, world, monkeypatch)
+
+    assert code == 1
+    assert PACK_FILE in capsys.readouterr().err
+    assert link.is_symlink() and not (tmp_path / "nowhere").exists()
+    assert transport.requests == [] and builder.calls == []
+
+
+@pytest.mark.parametrize("shape", ["legacy files", "entries and files", "no entries", "a list"])
+def test_v3_pack_refuses_a_manifest_that_is_not_the_inventory_layout(
+    shape, tmp_path, monkeypatch, capsys
+):
+    """The manifest layout assertion: V3's inventory manifest has ``entries`` and no legacy
+    ``files``. A manifest of another layout is refused even when it is the pinned one (here the
+    pin is its own), before any request, any file placed or any pack built."""
+    world = make_world(tmp_path)
+    document = json.loads(world.manifest)
+    other = {
+        "legacy files": {"files": []},
+        "entries and files": {**document, "files": []},
+        "no entries": {"snapshots": document["snapshots"]},
+        "a list": [],
+    }[shape]
+    raw = json.dumps(other, sort_keys=True).encode()
+    (world.repo / MANIFEST_PATH).write_bytes(raw)
+
+    code, transport, builder = run(
+        tmp_path, world, monkeypatch, pinned=hashlib.sha256(raw).hexdigest()
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "inventory manifest (entries) required" in captured.err
+    assert transport.requests == [] and builder.calls == []
+    assert not (tmp_path / "work").exists() and not (tmp_path / "out").exists()
+    assert captured.out == ""
 
 
 # ---- the pins are the committed ones -----------------------------------------------------------
