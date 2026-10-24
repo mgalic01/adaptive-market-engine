@@ -27,6 +27,11 @@ repository.
 
 Verdict **FAIL**. Record: [the verdict review](reviews/2026-10-17-claude-v3-1-verdict.md).
 
+**To be deleted.** The owner is to delete these run files (both copies below, and
+`E:\v31-diag\`) after the final summary. See
+[the V3.0 and V3.1 final summary](reviews/2026-10-24-claude-v3-v31-final-summary.md): what
+each folder held, the results and the fingerprints that keep any copy checkable.
+
 | Copy | Drive | Contents | Status |
 | --- | --- | --- | --- |
 | Working copy | `E:\v31-run-38703911852\` (WD 750 GB hard disk, label BACKUPS) | everything below, plus `cells\`: the 325 artifacts unpacked (107 GB) | verified 2026-10-15 |
@@ -124,3 +129,8 @@ Earlier trials in [the trial register](trials/register.jsonl) name their own loc
 sources in each event's `sources` field. For example, the V3 replay of 2026-10-09 names
 `E:/adaptive-market-engine/v3/replay-20261009-01`. Those locations are as recorded by the
 agent that ran them. They were not re-verified when this page was written.
+
+The run files of the V3 replay and of the cross-version diagnosis of 2026-10-10
+(`E:\adaptive-market-engine\`) are to be deleted by the owner after
+[the V3.0 and V3.1 final summary](reviews/2026-10-24-claude-v3-v31-final-summary.md),
+which records what they held.
