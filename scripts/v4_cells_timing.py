@@ -23,6 +23,14 @@ same way, as the proxy for the registered run's verdict step and its 2 GB memory
 ``wall_seconds``, ``peak_rss_mb`` and ``exit_status``. The diagnosis exits 1 when it refused a
 cell but wrote the diagnosis of the others, so here a report of a command that exited 1 is
 timed too, with its status; the folder must exist (the diagnosis made it) and the file must not.
+The ``analysis`` job of ``.github/workflows/v4-run.yml`` times its diagnosis the same way.
+
+``--time-file verdict.time --verdict-dir verdict`` times the verdict step of v4-run.yml's
+``verdict`` job (``scripts/v4_verdict.py``) the same way: it writes
+``<verdict dir>/verdict-timing.json`` with ``step`` (``verdict``), ``wall_seconds``,
+``peak_rss_mb`` and ``exit_status``, in the folder the verdict made, which must exist, and never
+over a file. The three targets exclude each other. Standard output carries the step's seconds,
+megabytes and exit status: times only, never a count of cells, an outcome or the verdict.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from crypto_grid_bot.v4.engine.run import RECORDS_FILE
 
 TIMING_FILE = "timing.json"
 DIAGNOSE_TIMING_FILE = "diagnose-timing.json"
+VERDICT_TIMING_FILE = "verdict-timing.json"
 
 # GNU time -v prints "h:mm:ss" from one hour on, and "m:ss.ss" below it.
 _ELAPSED_LINE = re.compile(
@@ -106,6 +115,9 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument(
         "--diagnosis-dir", type=Path, help="the diagnosis folder, for diagnose-timing.json"
     )
+    target.add_argument(
+        "--verdict-dir", type=Path, help="the verdict folder, for verdict-timing.json"
+    )
     return parser
 
 
@@ -139,8 +151,9 @@ def _create(path: Path, document: dict[str, object]) -> None:
         raise
 
 
-def _diagnose_timing(time_file: Path, folder: Path) -> int:
-    """``--diagnosis-dir``: the diagnosis step's ``diagnose-timing.json`` (module docstring)."""
+def _step_timing(step: str, file_name: str, time_file: Path, folder: Path) -> int:
+    """``--diagnosis-dir`` and ``--verdict-dir``: one step's ``file_name`` in ``folder``, with
+    ``step`` (``diagnose`` or ``verdict``) and its exit status (module docstring)."""
     text = _read_time_file(time_file)
     if text is None:
         return 1
@@ -151,18 +164,18 @@ def _diagnose_timing(time_file: Path, folder: Path) -> int:
     seconds = timing.wall_seconds.quantize(Decimal("0.01"))
     megabytes = (Decimal(timing.peak_rss_kb) / 1024).quantize(Decimal("0.1"))
     document = {
-        "step": "diagnose",
+        "step": step,
         "wall_seconds": float(seconds),
         "peak_rss_mb": float(megabytes),
         "exit_status": timing.exit_status,
     }
     try:
-        # In a folder that must exist: the diagnosis's own files are never replaced.
-        _create(folder / DIAGNOSE_TIMING_FILE, document)
+        # In a folder that must exist: the step's own files are never replaced.
+        _create(folder / file_name, document)
     except OSError as exc:
-        return _fail(f"cannot create {DIAGNOSE_TIMING_FILE} ({type(exc).__name__})")
+        return _fail(f"cannot create {file_name} ({type(exc).__name__})")
     print(
-        f"v4_cells_timing: diagnose: {seconds} s, {megabytes} MB peak, "
+        f"v4_cells_timing: {step}: {seconds} s, {megabytes} MB peak, "
         f"exit status {timing.exit_status}",
         flush=True,
     )
@@ -172,7 +185,9 @@ def _diagnose_timing(time_file: Path, folder: Path) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.diagnosis_dir is not None:
-        return _diagnose_timing(args.time_file, args.diagnosis_dir)
+        return _step_timing("diagnose", DIAGNOSE_TIMING_FILE, args.time_file, args.diagnosis_dir)
+    if args.verdict_dir is not None:
+        return _step_timing("verdict", VERDICT_TIMING_FILE, args.time_file, args.verdict_dir)
     cell = args.cell_dir.name
     text = _read_time_file(args.time_file)
     if text is None:

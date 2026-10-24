@@ -418,3 +418,68 @@ def test_cell_dir_and_diagnosis_dir_are_one_or_the_other():
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)
+
+
+# ---- the verdict step's own timing (v4-run.yml's verdict job) ----
+
+
+def test_verdict_dir_writes_verdict_timing(tmp_path, capsys):
+    """``--verdict-dir`` times the v4-run verdict job's verdict step as ``--diagnosis-dir`` times
+    the diagnosis: ``<verdict dir>/verdict-timing.json`` with the step, the wall seconds, the
+    peak memory and the exit status, in the folder the verdict made, never replacing a file. It
+    is one of the three targets, never with another."""
+
+    def verdict(text: str | None) -> tuple[int, str, str]:
+        if text is not None:
+            (tmp_path / "verdict.time").write_text(text, encoding="ascii")
+        argv = ["--time-file", str(tmp_path / "verdict.time")]
+        code = v4_cells_timing.main([*argv, "--verdict-dir", str(tmp_path / "verdict")])
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    # The folder must exist: the verdict made it (a verdict that failed leaves none).
+    code, out, err = verdict(REALISTIC)
+    assert code == 1 and out == "" and "verdict-timing.json" in err
+    assert not (tmp_path / "verdict").exists()
+
+    (tmp_path / "verdict").mkdir()
+    (tmp_path / "verdict" / "verdict.json").write_bytes(b"{}")  # the verdict's own files stay
+    code, out, err = verdict(REALISTIC)
+    assert (code, err) == (0, "")
+    text = (tmp_path / "verdict" / v4_cells_timing.VERDICT_TIMING_FILE).read_text(encoding="ascii")
+    assert v4_cells_timing.VERDICT_TIMING_FILE == "verdict-timing.json"
+    assert json.loads(text) == {
+        "step": "verdict",
+        "wall_seconds": 5025.0,
+        "peak_rss_mb": 2103.8,
+        "exit_status": 0,
+    }
+    assert text.endswith("\n") and text.count("\n") == 1  # one canonical line
+    # Times only: never a count of cells, an outcome or the verdict.
+    assert out == "v4_cells_timing: verdict: 5025.00 s, 2103.8 MB peak, exit status 0\n"
+    assert sorted(p.name for p in (tmp_path / "verdict").iterdir()) == [
+        "verdict-timing.json",
+        "verdict.json",
+    ]
+
+    # Never replaced.
+    code, out, err = verdict(gnu_time())
+    assert code == 1 and out == "" and "verdict-timing.json" in err
+    assert (tmp_path / "verdict" / "verdict-timing.json").read_text(encoding="ascii") == text
+
+    # A time file that is missing or not GNU time's writes nothing.
+    (tmp_path / "verdict" / "verdict-timing.json").unlink()
+    (tmp_path / "verdict.time").unlink()
+    for bad in (None, "real\t0m 3.47s\n"):
+        code, out, err = verdict(bad)
+        assert code == 1 and out == "" and "::error::" in err, bad
+        assert not (tmp_path / "verdict" / "verdict-timing.json").exists(), bad
+
+    # One target of the three, never two.
+    parser = v4_cells_timing.build_parser()
+    args = parser.parse_args(["--time-file", "t", "--verdict-dir", "v"])
+    assert (args.verdict_dir, args.diagnosis_dir, args.cell_dir) == (Path("v"), None, None)
+    for other in (["--cell-dir", "c"], ["--diagnosis-dir", "d"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--time-file", "t", "--verdict-dir", "v", *other])
+    capsys.readouterr()

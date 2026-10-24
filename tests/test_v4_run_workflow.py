@@ -4,8 +4,9 @@
 Tasks 9 and 10) runs the 48 cells of V4's registration on GitHub's machines, in one of three modes:
 ``rehearsal`` (the registered job graph on a synthetic world, Ruling W3), ``timing`` (the 44 cells
 that are not v3 on the real-size synthetic world, Ruling W2) and ``registered`` (the registered
-experiment, once). These tests pin part 1 of its job graph: ``plan``, ``v3-pack``, ``v3-picks``,
-``cell`` and ``v3-cell``.
+experiment, once). These tests pin its job graph: part 1, ``plan``, ``v3-pack``, ``v3-picks``,
+``cell`` and ``v3-cell`` (Task 9), and part 2, ``scenarios``, ``verdict``, ``analysis`` and
+``status`` (Task 10).
 
 They pin that it is dispatch-only and read-only, that its run name is the title the dispatch check
 looks for and its jobs carry the names the check reads, that every action is pinned and every
@@ -13,7 +14,12 @@ checkout keeps no token, that no value is spliced into a script, that every arti
 day and named as Ruling W1 says, that the registered plan gates the checkout, refuses a second
 dispatch and checks the data run before it downloads anything, that every cell job guards its data
 and gates its checkout before its cell runs, that a cell's standard output goes to /dev/null, and
-that the V3 pack's and the picks' pins are checked against the files.
+that the V3 pack's and the picks' pins are checked against the files. Part 2's tests pin that the
+verdict reads the cells' summaries alone, runs after failed cells but never after a failed plan,
+checks for another dispatch again in a registered run and judges every scenario of a rehearsal;
+that the analysis reads the cells but never the v3 cells; that each mode names its outputs as its
+own; that the status job always runs and reads the jobs' results through the environment; and
+that no CLI whose standard output could tell a result prints it to the public log.
 
 The tests parse the YAML and never call GitHub. Some run one step's script in bash, as GitHub runs
 it (``-e -o pipefail``): either for real on small files (the pin checks), or with ``python``,
@@ -23,8 +29,11 @@ it (``-e -o pipefail``): either for real on small files (the pin checks), or wit
 
 from __future__ import annotations
 
+import fnmatch
 import functools
 import hashlib
+import itertools
+import json
 import os
 import re
 import shlex
@@ -45,28 +54,33 @@ import yaml
 from crypto_grid_bot.combined.driver.packs import _write_gzip_json
 from crypto_grid_bot.v4.engine.v3_as_built import PICKS_FILE
 from crypto_grid_bot.v4.verdict import inputs as verdict_inputs
+from crypto_grid_bot.v4.verdict import report as verdict_report
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import v4_cell  # noqa: E402
 import v4_cells_timing  # noqa: E402
+import v4_diagnose  # noqa: E402
 import v4_registration  # noqa: E402
 import v4_rehearsal  # noqa: E402
 import v4_run_guard  # noqa: E402
 import v4_run_plan  # noqa: E402
+import v4_run_status  # noqa: E402
 import v4_v3_cell  # noqa: E402
 import v4_v3_pack  # noqa: E402
+import v4_verdict  # noqa: E402
 
 WORKFLOW = ROOT / ".github" / "workflows" / "v4-run.yml"
 CELLS_WORKFLOW = ROOT / ".github" / "workflows" / "v4-cells.yml"
 V3_WORKFLOW = ROOT / ".github" / "workflows" / "v4-v3.yml"
 MODES = ("rehearsal", "timing", "registered")
-# Part 1's jobs, in the file's order (Task 9); part 2 (Task 10) adds scenarios, verdict, analysis
-# and status after them.
+# Part 1's jobs, in the file's order (Task 9), then part 2's (Task 10).
 PART_1_JOBS = ("plan", "v3-pack", "v3-picks", "cell", "v3-cell")
+PART_2_JOBS = ("scenarios", "verdict", "analysis", "status")
 # The jobs that read GitHub's run listings or another run's artifacts: only they hold
-# actions: read, and each records its start first, the dispatch check's budget clock.
-CHECKING_JOBS = ("plan",)
+# actions: read, and each records its start first, the dispatch check's budget clock (the plan's
+# dispatch check, and the registered verdict's check again).
+CHECKING_JOBS = ("plan", "verdict")
 PINNED = re.compile(r"^(?P<action>[\w.-]+/[\w.-]+)@(?P<sha>[0-9a-f]{40})$")
 CHECKOUT = "actions/checkout@"
 UPLOAD = "actions/upload-artifact@"
@@ -112,9 +126,24 @@ PLAN_SHA = "a" * 64  # needs.plan.outputs.registration_sha256
 PLAN_PACK = "b" * 64  # needs.plan.outputs.v3_pack_sha256
 PICKS_SHA = "f" * 64  # needs.v3-picks.outputs.picks_sha256
 DATA_RUN = "40000000001"
+RUN_ID = "40000000099"  # github.run_id
 COMMIT = "c" * 40
 # The cells each mode plans: the v3-cell job's matrix is empty in timing.
 V3_COUNT = {mode: str(len(v4_run_plan.matrix(mode)[1])) for mode in MODES}
+# needs.plan.outputs.cell_ids: the 44 cells that are not v3, the analysis' --planned.
+CELL_IDS = ",".join(str(cell["cell"]) for cell in v4_run_plan.matrix("registered")[0])
+# Part 2: the verdict's and the analysis' downloads of the cells' artifacts, one folder per
+# artifact (Ruling V1's folder rule: summaries/v4-summary-<cell>-attempt-<n>/), and their if.
+SUMMARIES = {"pattern": "v4-summary-*", "merge-multiple": False, "path": "summaries"}
+CELL_FOLDERS = {"pattern": "v4-cell-*", "merge-multiple": False, "path": "cells"}
+AFTER_THE_CELLS = "${{ !cancelled() && needs.plan.result == 'success' }}"
+DIAGNOSED = (
+    "${{ !cancelled() && (steps.diagnose.outcome == 'success' || "
+    "steps.diagnose.outcome == 'failure') }}"
+)
+# Each mode's prefix of its outputs (Ruling W3): a synthetic verdict never passes for the
+# registered run's.
+OUTPUT_PREFIX = {"registered": "v4-", "rehearsal": "v4-rehearsal-", "timing": "v4-timing-"}
 
 
 # ---- reading the workflow -----------------------------------------------------------------------
@@ -320,6 +349,49 @@ def steps_that_run(job: str, mode: str, failing: Iterable[int] = ()) -> list[str
     return result
 
 
+RESULT_VALUES = ("success", "failure", "skipped")
+
+
+def job_can_run(name: str, mode: str) -> bool:
+    """Whether job ``name`` runs in any dispatch of ``mode``, whatever its needs ended with."""
+    job = jobs()[name]
+    if "if" not in job:
+        return True
+    condition = bare(job["if"])
+    aware = any(function in condition for function in STATUS_FUNCTIONS)
+    named = needs(job)
+    for ended in itertools.product(RESULT_VALUES, repeat=len(named)):
+        succeeded = all(result == "success" for result in ended)
+        results = dict(zip(named, ended, strict=True))
+        value = truth(condition, mode, results=results, succeeded=succeeded)
+        if value and (aware or succeeded):
+            return True
+    return False
+
+
+def step_can_run(step: Mapping[str, Any], mode: str) -> bool:
+    """Whether ``step`` runs in any dispatch of ``mode``, whatever the steps before it did."""
+    if "if" not in step:
+        return True
+    ids = sorted(set(re.findall(r"steps\.([\w-]+)\.outcome", bare(step["if"]))))
+    return any(
+        step_runs(step, mode, outcomes=dict(zip(ids, ended, strict=True)), failed=failed)
+        for failed in (False, True)
+        for ended in itertools.product(RESULT_VALUES, repeat=len(ids))
+    )
+
+
+def can_run(job: str, step: Mapping[str, Any], mode: str) -> bool:
+    return job_can_run(job, mode) and step_can_run(step, mode)
+
+
+def index_of_upload(job: str, name: str) -> int:
+    """The position of the one upload of ``job`` whose artifact is ``name``."""
+    found = [i for i, s in enumerate(steps(job)) if is_upload(s) and s["with"]["name"] == name]
+    assert len(found) == 1, (job, name, found)
+    return found[0]
+
+
 # ---- running a step in bash ---------------------------------------------------------------------
 
 
@@ -394,6 +466,7 @@ def context(mode: str) -> dict[str, str]:
         "github.repository": "owner/repository",
         "github.sha": COMMIT,
         "github.run_attempt": "1",
+        "github.run_id": RUN_ID,
         "matrix.cell": "v4_main-1000-1x",
         "matrix.arm": "v4_main",
         "matrix.capital": "1000",
@@ -401,6 +474,8 @@ def context(mode: str) -> dict[str, str]:
         "needs.plan.outputs.registration_sha256": PLAN_SHA,
         "needs.plan.outputs.v3_pack_sha256": PLAN_PACK,
         "needs.v3-picks.outputs.picks_sha256": PICKS_SHA,
+        "needs.plan.outputs.cell_ids": CELL_IDS,
+        "toJSON(needs)": "{}",
     }
 
 
@@ -469,6 +544,20 @@ def run_recorded(
         for line in calls.read_text(encoding="ascii").splitlines()
     ]
     return done, recorded, outputs_of(output)
+
+
+TIMED_BY = re.compile(r"/usr/bin/time -v -o \S+ ")
+
+
+def run_untimed(
+    job: str, step: Mapping[str, Any], mode: str, folder: Path
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]], dict[str, str]]:
+    """A step that runs its CLI under GNU time, run with the recorder and GNU time left out (a
+    Windows bash has none; ``trace`` records such a step as ``timed``): the calls its CLI gets in
+    ``mode``."""
+    script = str(step["run"])
+    assert TIMED_BY.search(script), (job, step.get("name"))
+    return run_recorded(job, {**step, "run": TIMED_BY.sub("", script)}, mode, folder)
 
 
 def trace(job: str, mode: str, folder: Path) -> list[tuple[Any, ...]]:
@@ -582,7 +671,7 @@ def test_jobs_are_named_as_the_dispatch_check_reads_them():
     # them: a job's id, or "<id> (<matrix values>)" for a matrix job. A job `name:` would change
     # them, and a launch with a job it does not know always counts.
     names = list(jobs())
-    assert names[: len(PART_1_JOBS)] == list(PART_1_JOBS)
+    assert names == [*PART_1_JOBS, *PART_2_JOBS]
     known = {
         v4_registration.PLAN_JOB,
         v4_registration.STATUS_JOB,
@@ -953,17 +1042,20 @@ def test_plans_world_step_unpacks_the_world_and_keeps_its_registration_pin(tmp_p
 
 
 def test_registered_steps_never_call_the_rehearsal_script():
+    # A step that calls the rehearsal script runs in no registered dispatch, whatever the jobs
+    # and steps before it did: its own if excludes a registered run, or its job's does (the
+    # scenarios job is a rehearsal's only).
     found = 0
     for name, job in jobs().items():
         for step in job["steps"]:
             if "v4_rehearsal.py" not in str(step.get("run", "")):
                 continue
             found += 1
-            assert "if" in step, (name, step.get("name"))
-            for failed in (False, True):
-                assert not step_runs(step, "registered", failed=failed), (name, step.get("name"))
+            assert "if" in step or "if" in job, (name, step.get("name"))
+            assert not can_run(name, step, "registered"), (name, step.get("name"))
             assert step_runs(step, "rehearsal") or step_runs(step, "timing"), name
-    assert found >= 2  # the plan's world and the rehearsal's picks
+    # The plan's world, the rehearsal's picks, the forced cells, the scenarios and their check.
+    assert found >= 5
     # The world's scale is the mode: the script's own parser refuses any other.
     world = steps("plan")[index_of("plan", "v4_rehearsal.py world")]
     command = shlex.split(run_text(world))[2:]
@@ -1176,21 +1268,8 @@ def test_cell_stdout_goes_to_dev_null_under_gnu_time():
                 expected = job_steps[index]["if"] == UPLOAD_CONDITION or mode == "timing"
                 assert (after_timing[index] == "success") is expected, (job, mode, index)
                 assert after_replay[index] == "skipped", (job, mode, index)
-    # The cells' standard output is the only one sent to /dev/null, and no step prints a result.
-    redirected = [
-        run_text(step)
-        for body in jobs().values()
-        for step in body["steps"]
-        if "/dev/null" in str(step.get("run", ""))
-    ]
-    assert sorted(redirected) == sorted(f"mkdir -p out {TIMED}{c}" for c in REPLAYS.values())
-    shown = re.compile(r"\b(cat|head|tail|less|more|jq|grep|sed|awk)\b")
-    for name, body in jobs().items():
-        for step in body["steps"]:
-            script = run_text(step)
-            assert shown.search(script) is None, (name, script)
-            for result in ("records.jsonl", "summary.json", "receipt.json", "report.html"):
-                assert result not in script, (name, result)
+    # The other CLIs whose standard output goes to /dev/null, and that no step prints a result,
+    # are in test_logs_counts_only.
 
 
 # ---- the artifacts ------------------------------------------------------------------------------
@@ -1394,6 +1473,672 @@ def test_v3_picks_runs_the_modes_picks_and_pins_the_file_it_wrote(tmp_path):
     assert done.returncode != 0 and output.read_text(encoding="ascii") == ""
 
 
+# ---- part 2: the scenarios, verdict, analysis and status jobs -----------------------------------
+
+
+def scenario_folders(folder: Path) -> None:
+    """``folder/scenarios/<name>/`` for every scenario of the table and its ``scenarios.json``,
+    as ``v4_rehearsal.py scenarios`` writes them: what the step judging every scenario reads."""
+    for name in v4_rehearsal.SCENARIOS:
+        (folder / "scenarios" / name).mkdir(parents=True)
+    (folder / "scenarios" / v4_rehearsal.SCENARIOS_FILE).write_bytes(b"{}")
+
+
+def upload_event(name: str, path: str) -> tuple[str, dict[str, Any]]:
+    """A traced upload of this run's first attempt, kept one day."""
+    spec = {"name": name, "path": path, "if-no-files-found": "error", "retention-days": 1}
+    return ("upload", spec)
+
+
+def test_scenarios_job_forces_each_stop_outcome_through_the_real_clis(tmp_path):
+    job = jobs()["scenarios"]
+    assert needs(job) == ["plan", "v3-picks"]
+    # A rehearsal's only, after the picks. The v3-pack job is skipped in a rehearsal, and GitHub
+    # skips the dependents of a skipped job, transitively, hence !cancelled().
+    assert job["if"] == (
+        "${{ !cancelled() && inputs.mode == 'rehearsal' && needs.plan.result == 'success' "
+        "&& needs.v3-picks.result == 'success' }}"
+    )
+    assert job["env"] == {"PICKS_SHA256": "${{ needs.v3-picks.outputs.picks_sha256 }}"}
+    for mode in ("registered", "timing"):
+        assert not job_can_run("scenarios", mode), mode
+    assert jobs_that_run("rehearsal", ["v3-picks"])["scenarios"] == "skipped"
+
+    events = trace("scenarios", "rehearsal", tmp_path)
+    forced = calls_of(events, "v4_rehearsal.py")
+    assert events == [
+        # The world folder force reads (rehearsal.json, the data pack and the V3 pack, as the
+        # plan built them) and this attempt's picks, the picks job's own.
+        ("download", {"name": "v4-rehearsal-world", "path": "world"}),
+        ("download", {"name": "v4-data", "path": "world/v4data"}),
+        ("download", {"name": "v4-v3-pack", "path": "world/v3pack"}),
+        ("download", {"name": "v4-v3-picks-attempt-1", "path": "picks"}),
+        *(("call", ["python", "scripts/v4_rehearsal.py", *call]) for call in forced),
+        upload_event("v4-forced-attempt-1", "forced/*/*/summary.json\nforced/*/*/receipt.json\n"),
+    ]
+    # One call per forced kind, in force's own order, each into its own folder: the v3 kinds with
+    # the picks job's own picks file and pin (the expected file's), the others with neither.
+    assert [call[call.index("--kind") + 1] for call in forced] == list(v4_rehearsal.FORCED)
+    for call in forced:
+        args = v4_rehearsal.build_parser().parse_args(call)
+        assert (args.command, args.world, args.out) == (
+            "force",
+            Path("world"),
+            Path(f"forced/{args.kind}"),
+        )
+        if args.kind in v4_rehearsal.FORCED_CELL:  # a v3 kind: v3_as_built's cell
+            assert (args.picks, args.picks_sha256) == (Path(PICKS_PATH), PICKS_SHA), args.kind
+        else:
+            assert (args.picks, args.picks_sha256) == (None, None), args.kind
+    # Force writes forced/<kind>/<cell id>/, and the scenarios read each one's summary and
+    # receipt there. The upload's root is forced/, the common folder of its paths, so the
+    # verdict job's download into forced gives that layout back.
+    for kind in v4_rehearsal.FORCED:
+        folder = tmp_path / "layout" / kind / v4_rehearsal.forced_cell(kind)
+        folder.mkdir(parents=True)
+        for name in ("summary.json", "receipt.json"):
+            (folder / name).write_bytes(b"{}")
+    assert set(v4_rehearsal._read_forced(tmp_path / "layout")) == set(v4_rehearsal.FORCED)
+
+
+def test_verdict_downloads_only_summaries(tmp_path):
+    # Ruling W1: the verdict reads each cell's summary.json and receipt.json alone (about 3 MB a
+    # cell), never a cell's records: v4-data (the expected file's window and pins) and every
+    # v4-summary-*, one folder per artifact; a rehearsal also its world (the expected file's V3
+    # pin) and its forced cells, whose artifact holds their summaries and receipts alone.
+    verdict_steps = steps("verdict")
+    for mode in MODES:
+        downloads = [s["with"] for s in verdict_steps if is_download(s) and step_runs(s, mode)]
+        expected = [{"name": "v4-data", "path": "v4data"}, SUMMARIES]
+        if mode == "rehearsal":
+            expected += [
+                {"name": "v4-rehearsal-world", "path": "world"},
+                {"name": f"v4-forced{ATTEMPT}", "path": "forced"},
+            ]
+        assert downloads == expected, mode
+    # The pattern takes every cell's summary artifact, the v3 cells' too, and nothing else that
+    # any job uploads; those artifacts and the forced cells' hold summary.json and receipt.json.
+    known = context("rehearsal")
+    matching = [
+        (job, s["with"])
+        for job in jobs()
+        for s in steps(job)
+        if is_upload(s)
+        and fnmatch.fnmatchcase(str(resolve(s["with"]["name"], known)), SUMMARIES["pattern"])
+    ]
+    assert [job for job, _ in matching] == ["cell", "v3-cell"]
+    for _, spec in matching:
+        assert spec["path"].strip().splitlines() == [f"out/{MATRIX_CELL}/summary.json",
+                                                     f"out/{MATRIX_CELL}/receipt.json"]  # fmt: skip
+    (forced,) = [s for s in steps("scenarios") if is_upload(s)]
+    assert forced["with"]["path"].strip().splitlines() == [
+        "forced/*/*/summary.json",
+        "forced/*/*/receipt.json",
+    ]
+    # No download of the verdict job takes a cell's or a v3 cell's folder.
+    cell = "v4_main-1000-1x"
+    for step in verdict_steps:
+        if is_download(step):
+            wanted = str(resolve(step["with"].get("name") or step["with"]["pattern"], known))
+            for folder in (f"v4-cell-{cell}-attempt-1", f"v4-v3-cell-{cell}-attempt-1"):
+                assert not fnmatch.fnmatchcase(folder, wanted), (wanted, folder)
+
+    # download-artifact makes no folder when no artifact matches (no cell uploaded a summary):
+    # the folder is made next, so the verdict is incomplete, naming every cell, not a crash.
+    made = index_of("verdict", "mkdir -p summaries")
+    assert run_text(verdict_steps[made]) == "mkdir -p summaries" and "if" not in verdict_steps[made]
+    assert verdict_steps[made - 1]["with"] == SUMMARIES
+    assert made < index_of("verdict", "--summaries summaries --expected")
+    for name, exists in (("none", False), ("some", True)):
+        folder = tmp_path / name
+        (folder / "summaries" if exists else folder).mkdir(parents=True)
+        done = run_script(str(verdict_steps[made]["run"]), folder, {})
+        assert done.returncode == 0 and (folder / "summaries").is_dir(), done.stderr
+
+
+def test_verdict_expects_the_modes_cells_against_the_modes_pins(tmp_path):
+    # The expected file (scripts/v4_run_plan.py expected): its cells, window and data from this
+    # run's v4-data, its V3 pack pin from the mode's own source (registered: the run manifest;
+    # rehearsal: the world's rehearsal.json; timing: none) and the picks pin of the picks job,
+    # which every v3 cell was run with and checked against.
+    verdict_steps = steps("verdict")
+    expected = index_of("verdict", "v4_run_plan.py expected")
+    assert "if" not in verdict_steps[expected]
+    assert jobs()["verdict"]["env"] == {
+        "PICKS_SHA256": "${{ needs.v3-picks.outputs.picks_sha256 }}"
+    }
+    for mode in MODES:
+        done, calls, _ = run_recorded("verdict", verdict_steps[expected], mode, tmp_path / mode)
+        assert done.returncode == 0, done.stderr
+        (call,) = calls
+        args = v4_run_plan.build_parser().parse_args(call[2:])
+        assert (args.command, args.mode, args.data, args.out) == (
+            "expected",
+            mode,
+            Path("v4data"),
+            Path("expected.json"),
+        )
+        source = {
+            "registered": (Path(MANIFEST), None),
+            "rehearsal": (None, Path("world")),
+            "timing": (None, None),
+        }
+        assert (args.manifest, args.world) == source[mode], mode
+        assert args.picks_sha256 == (None if mode == "timing" else PICKS_SHA), mode
+    # A rehearsal's world is downloaded before the expected file reads its rehearsal.json.
+    (world,) = [
+        i
+        for i, s in enumerate(verdict_steps)
+        if is_download(s) and s["with"].get("name") == "v4-rehearsal-world"
+    ]
+    assert world < expected and verdict_steps[world]["if"] == "${{ inputs.mode == 'rehearsal' }}"
+
+
+def test_verdict_runs_after_failed_cells_but_not_after_a_failed_plan():
+    graph = jobs()
+    assert needs(graph["verdict"]) == ["plan", "cell", "v3-cell", "v3-picks", "scenarios"]
+    assert needs(graph["analysis"]) == ["plan", "cell"]
+    # After every cell job that ended, failed or timed out included (GitHub may report a job
+    # that hit its timeout as cancelled, so no cell's result is tested); never after a cancelled
+    # run or a failed plan. !cancelled() also keeps the jobs a mode skips (v3-picks and v3-cell
+    # in a timing run, scenarios outside a rehearsal) from skipping the verdict.
+    assert graph["verdict"]["if"] == graph["analysis"]["if"] == AFTER_THE_CELLS
+    timeouts = {name: graph[name]["timeout-minutes"] for name in PART_2_JOBS}
+    assert timeouts == {"scenarios": 60, "verdict": 60, "analysis": 120, "status": 15}
+
+    ok, skip = "success", "skipped"
+    for mode in MODES:
+        ran = jobs_that_run(mode)
+        assert (ran["verdict"], ran["analysis"], ran["status"]) == (ok, ok, ok), mode
+        assert ran["scenarios"] == (ok if mode == "rehearsal" else skip), mode
+        for failing in (
+            ["cell"],
+            ["v3-cell"],
+            ["v3-picks"],
+            ["v3-pack"],
+            ["scenarios"],
+            ["cell", "v3-cell", "scenarios"],
+        ):
+            results = jobs_that_run(mode, failing)
+            assert (results["verdict"], results["analysis"], results["status"]) == (ok, ok, ok), (
+                mode,
+                failing,
+            )
+        # A failed plan skips every job but the status job, as the dispatch check's layer L2
+        # requires of a launch that stopped at the plan job with nothing run.
+        assert jobs_that_run(mode, ["plan"]) == {
+            **dict.fromkeys(jobs(), skip),
+            "plan": "failure",
+            "status": ok,
+        }, mode
+    # Without !cancelled(), GitHub's implicit success() would skip a timing run's verdict: some of
+    # the jobs before it were skipped.
+    timing = jobs_that_run("timing")
+    assert any(timing[name] == skip for name in ancestors("verdict"))
+
+
+def test_rehearsal_verdict_checks_every_scenario(tmp_path):
+    verdict_steps = steps("verdict")
+    judge = index_of("verdict", "--summaries summaries --expected")
+    timing = index_of("verdict", "--verdict-dir verdict")
+    (forced,) = [
+        i
+        for i, s in enumerate(verdict_steps)
+        if is_download(s) and s["with"].get("name") == f"v4-forced{ATTEMPT}"
+    ]
+    make = index_of("verdict", "v4_rehearsal.py scenarios")
+    each = index_of("verdict", '--summaries "scenarios/$scenario"')
+    check = index_of("verdict", "v4_rehearsal.py check")
+    upload = index_of_upload("verdict", f"v4-rehearsal-verdict{ATTEMPT}")
+    assert judge < timing < forced < make < each < check < upload
+    # A rehearsal's steps alone.
+    for index in (forced, make, each, check, upload):
+        assert step_can_run(verdict_steps[index], "rehearsal"), index
+        for mode in ("registered", "timing"):
+            assert not step_can_run(verdict_steps[index], mode), (index, mode)
+
+    # The trace after the main verdict's timing, with the folders the scenarios step writes.
+    scenario_folders(tmp_path / str(each))
+    events = trace("verdict", "rehearsal", tmp_path)
+    timed = ["python", "scripts/v4_cells_timing.py", "--time-file", "verdict.time"]
+    start = events.index(("call", [*timed, "--verdict-dir", "verdict"]))
+    tail = events[start + 1 :]
+
+    def judged(event: tuple[Any, ...]) -> bool:
+        return event[0] == "call" and event[1][:2] == ["python", "scripts/v4_verdict.py"]
+
+    assert [event for event in tail if not judged(event)] == [
+        ("download", {"name": "v4-forced-attempt-1", "path": "forced"}),
+        # The eleven scenarios of the base set (the downloaded summaries) and the forced cells.
+        ("call", ["python", "scripts/v4_rehearsal.py", "scenarios", "--base", "summaries",
+                  "--forced", "forced", "--out", "scenarios"]),
+        ("call", ["python", "scripts/v4_rehearsal.py", "check", "--scenarios", "scenarios",
+                  "--verdicts", "scenario-verdicts"]),
+        upload_event("v4-rehearsal-verdict-attempt-1", "verdict/\nscenario-verdicts/\ncheck.txt\n"),
+    ]  # fmt: skip
+    # Each scenario judged once, between the scenarios and the check, by the verdict step itself:
+    # every folder the scenarios wrote, so every scenario of the table, each with its own
+    # progress and output folders (a resumed progress of other inputs is refused), against the
+    # run's expected file, and with no dispatch reasons (a rehearsal's).
+    positions = [i for i, event in enumerate(tail) if judged(event)]
+    assert positions == list(range(2, 2 + len(v4_rehearsal.SCENARIOS)))
+    names = []
+    for i in positions:
+        args = v4_verdict.build_parser().parse_args(tail[i][1][2:])
+        names.append(args.summaries.name)
+        assert args.summaries == Path("scenarios") / args.summaries.name
+        assert args.progress == Path("scenario-progress") / args.summaries.name
+        assert args.out == Path("scenario-verdicts") / args.summaries.name
+        assert (args.expected, args.dispatch_reasons) == (Path("expected.json"), None)
+    assert sorted(names) == sorted(v4_rehearsal.SCENARIOS)
+    # The check reads the scenarios' folder and their verdicts' (V/<name>/verdict.json); its
+    # lines go to check.txt, which the rehearsal's verdict artifact holds with the verdicts.
+    args = v4_rehearsal.build_parser().parse_args(tail[1][1][2:])
+    assert (args.base, args.forced, args.out) == (
+        Path("summaries"),
+        Path("forced"),
+        Path("scenarios"),
+    )
+    args = v4_rehearsal.build_parser().parse_args(tail[-2][1][2:])
+    assert (args.scenarios, args.verdicts) == (Path("scenarios"), Path("scenario-verdicts"))
+    assert run_text(verdict_steps[check]).endswith(" > check.txt")
+    assert verdict_steps[upload]["with"]["path"].strip().splitlines() == [
+        "verdict/",
+        "scenario-verdicts/",
+        "check.txt",
+    ]
+    # Whatever failed after the main verdict was written (its timing, the forced download, the
+    # scenarios, one scenario's verdict, the check), the rehearsal's verdict is still uploaded and
+    # the job still fails; a main verdict that failed (nothing written) uploads nothing.
+    for failing in (timing, forced, make, each, check):
+        assert steps_that_run("verdict", "rehearsal", failing=[failing])[upload] == "success"
+    assert steps_that_run("verdict", "rehearsal", failing=[judge])[upload] == "skipped"
+
+
+def test_registered_verdict_rechecks_other_dispatches(tmp_path):
+    job = jobs()["verdict"]
+    verdict_steps = job["steps"]
+    # It lists this workflow's runs again (actions: read), and its deadline counts from the
+    # job's start, its first step: the 55-minute budget ends five minutes inside the timeout.
+    assert verdict_steps[0] == JOB_START_STEP
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    assert job["timeout-minutes"] * 60 >= v4_registration.VERDICT_JOB_BUDGET + 5 * 60
+    expected = index_of("verdict", "v4_run_plan.py expected")
+    check = index_of("verdict", "dispatch-check")
+    judge = index_of("verdict", "--summaries summaries --expected")
+    assert expected < check < judge
+    step = verdict_steps[check]
+    assert step["if"] == "${{ inputs.mode == 'registered' }}"
+    assert step["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
+    assert "timeout-minutes" not in step  # the check's own deadline ends it
+    for mode in ("rehearsal", "timing"):
+        assert not step_can_run(step, mode), mode
+
+    events = trace("verdict", "registered", tmp_path / "trace")
+    assert events == [
+        ("download", {"name": "v4-data", "path": "v4data"}),
+        ("download", SUMMARIES),
+        ("call", ["python", "scripts/v4_run_plan.py", "expected", "--mode", "registered",
+                  "--data", "v4data", "--out", "expected.json", "--manifest", MANIFEST,
+                  "--picks-sha256", PICKS_SHA]),
+        # Every earlier launch of the registration judged and none refused: each one that
+        # counts, or why none could be ruled out, is the verdict's input (Ruling G4).
+        ("call", ["python", "scripts/v4_registration.py", "dispatch-check", "--mode",
+                  "registered", "--registration-sha256", INPUT_SHA, "--judge-all", "--out",
+                  "reasons.json"]),
+        ("timed", run_text(verdict_steps[judge - 1])),  # the GNU time check
+        ("timed", run_text(verdict_steps[judge])),
+        ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "verdict.time",
+                  "--verdict-dir", "verdict"]),
+        upload_event("v4-verdict-attempt-1", "verdict/"),
+    ]  # fmt: skip
+    (call,) = calls_of(events, "v4_registration.py")
+    args = v4_registration.build_parser().parse_args(call)
+    assert (args.command, args.mode, args.judge_all, args.report_only, args.out) == (
+        "dispatch-check",
+        "registered",
+        True,
+        False,
+        "reasons.json",
+    )
+    assert args.registration_sha256 == INPUT_SHA  # the dispatch's input, as the plan's check
+    assert v4_registration._option_problem(args) is None
+
+    # The verdict reads the reasons the check wrote, in a registered run only.
+    for mode in MODES:
+        done, calls, _ = run_untimed("verdict", verdict_steps[judge], mode, tmp_path / mode)
+        assert done.returncode == 0, done.stderr
+        (verdict,) = calls
+        args = v4_verdict.build_parser().parse_args(verdict[2:])
+        assert (args.summaries, args.expected, args.progress, args.out) == (
+            Path("summaries"),
+            Path("expected.json"),
+            Path("progress"),
+            Path("verdict"),
+        )
+        assert args.dispatch_reasons == (Path("reasons.json") if mode == "registered" else None)
+    # A check that failed (it writes its file only when it ran to the end) skips the verdict, so
+    # a registered verdict never runs without the reasons; nothing is uploaded then.
+    after = steps_that_run("verdict", "registered", failing=[check])
+    assert after[judge] == "skipped"
+    assert after[index_of_upload("verdict", f"v4-verdict{ATTEMPT}")] == "skipped"
+    # A timing step that failed does not discard the verdict (the job still fails).
+    timing = index_of("verdict", "--verdict-dir verdict")
+    after = steps_that_run("verdict", "registered", failing=[timing])
+    assert after[index_of_upload("verdict", f"v4-verdict{ATTEMPT}")] == "success"
+
+
+def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
+    # Each runs its CLI under GNU time, checked first as in a cell job, and keeps the wall time
+    # and peak memory in its folder (scripts/v4_cells_timing.py): the verdict's 2 GB limit and the
+    # analysis' size are what a timing run measures (Ruling W2). A timing run uploads that file
+    # alone, and only once it was written.
+    files = {
+        "verdict": ("verdict.time", "--verdict-dir verdict", v4_cells_timing.VERDICT_TIMING_FILE),
+        "analysis": (
+            "diagnose.time",
+            "--diagnosis-dir diagnosis",
+            v4_cells_timing.DIAGNOSE_TIMING_FILE,
+        ),
+    }
+    for job, (time_file, target, timing_file) in files.items():
+        job_steps = steps(job)
+        check = index_of(job, "-x /usr/bin/time")
+        timing = index_of(job, target)
+        timed = timing - 1
+        assert check == timed - 1, job
+        assert "::error::" in run_text(job_steps[check]) and "exit 1" in run_text(job_steps[check])
+        lines = [line.strip() for line in str(job_steps[timed]["run"]).splitlines()]
+        clis = [line for line in lines if "python scripts/" in line]
+        assert clis, job
+        for line in clis:
+            assert line.startswith(f"/usr/bin/time -v -o {time_file} python scripts/"), line
+        assert job_steps[timing]["id"] == "timing"
+        command = f"python scripts/v4_cells_timing.py --time-file {time_file} {target}"
+        assert run_text(job_steps[timing]) == command
+        args = v4_cells_timing.build_parser().parse_args(shlex.split(command)[2:])
+        assert args.time_file == Path(time_file)
+        folder = Path(target.split()[1])
+        assert (args.verdict_dir if job == "verdict" else args.diagnosis_dir) == folder
+        (upload,) = [
+            i
+            for i, s in enumerate(job_steps)
+            if is_upload(s) and s["with"]["name"].startswith("v4-timing-")
+        ]
+        assert job_steps[upload]["with"]["path"] == f"{folder.as_posix()}/{timing_file}"
+        assert job_steps[upload]["if"] == (
+            "${{ !cancelled() && steps.timing.outcome == 'success' && inputs.mode == 'timing' }}"
+        )
+        assert steps_that_run(job, "timing")[upload] == "success"
+        assert steps_that_run(job, "timing", failing=[timing])[upload] == "skipped"
+    # The verdict's timing runs once the verdict wrote its folder (a verdict that failed wrote
+    # none); the analysis' after a diagnosis that ran, one that refused a cell included.
+    assert "if" not in steps("verdict")[index_of("verdict", "--verdict-dir verdict")]
+    assert steps("analysis")[index_of("analysis", "--diagnosis-dir")]["if"] == DIAGNOSED
+
+    # A timing run's verdict, traced: its 44 cells' summaries, no v3 pin, no dispatch check.
+    events = trace("verdict", "timing", tmp_path)
+    verdict_steps = steps("verdict")
+    judge = index_of("verdict", "--summaries summaries --expected")
+    assert events == [
+        ("download", {"name": "v4-data", "path": "v4data"}),
+        ("download", SUMMARIES),
+        ("call", ["python", "scripts/v4_run_plan.py", "expected", "--mode", "timing", "--data",
+                  "v4data", "--out", "expected.json"]),
+        ("timed", run_text(verdict_steps[judge - 1])),
+        ("timed", run_text(verdict_steps[judge])),
+        ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "verdict.time",
+                  "--verdict-dir", "verdict"]),
+        upload_event("v4-timing-verdict-attempt-1", "verdict/verdict-timing.json"),
+    ]  # fmt: skip
+
+
+def test_analysis_downloads_cells_not_v3_cells(tmp_path):
+    job = jobs()["analysis"]
+    assert job["env"] == {"PLANNED_CELLS": "${{ needs.plan.outputs.cell_ids }}"}
+    # Ruling W1: the analysis reads every v4-cell-* folder (the 44 cells that are not v3, the
+    # plan's cell_ids, its --planned); a v3 cell uploads v4-v3-cell-*, which no step of any job
+    # downloads.
+    cell = "v4_main-1000-1x"
+    v3_folder = f"v4-v3-cell-{cell}-attempt-1"
+    assert fnmatch.fnmatchcase(f"v4-cell-{cell}-attempt-1", CELL_FOLDERS["pattern"])
+    for other in (v3_folder, f"v4-summary-{cell}-attempt-1", f"v4-timing-cell-{cell}-attempt-1"):
+        assert not fnmatch.fnmatchcase(other, CELL_FOLDERS["pattern"]), other
+    for name, body in jobs().items():
+        for step in body["steps"]:
+            if is_download(step):
+                wanted = step["with"].get("name") or step["with"]["pattern"]
+                wanted = str(resolve(wanted, context("registered")))
+                assert not fnmatch.fnmatchcase(v3_folder, wanted), (name, wanted)
+    planned = CELL_IDS.split(",")
+    assert len(planned) == 44 and not any(c.startswith("v3_as_built-") for c in planned)
+
+    analysis_steps = steps("analysis")
+    guard = index_of("analysis", "scripts/v4_run_guard.py")
+    diagnose = index_of("analysis", "scripts/v4_diagnose.py")
+    timing = index_of("analysis", "--diagnosis-dir")
+    assert analysis_steps[diagnose]["id"] == "diagnose" and "if" not in analysis_steps[diagnose]
+    uploads = {
+        "registered": upload_event("v4-analysis-attempt-1", "diagnosis/"),
+        "rehearsal": upload_event("v4-rehearsal-analysis-attempt-1", "diagnosis/"),
+        "timing": upload_event("v4-timing-analysis-attempt-1", "diagnosis/diagnose-timing.json"),
+    }
+    for mode in MODES:
+        kind = ["--manifest", MANIFEST] if mode == "registered" else ["--synthetic"]
+        events = trace("analysis", mode, tmp_path / mode)
+        assert events == [
+            ("download", {"name": "v4-data", "path": "v4data"}),
+            # The mode's guard before the cells are read (v4-d03).
+            ("call", ["python", "scripts/v4_run_guard.py", "--data", "v4data", *kind]),
+            ("download", CELL_FOLDERS),
+            ("timed", run_text(analysis_steps[diagnose - 1])),  # the GNU time check
+            ("timed", run_text(analysis_steps[diagnose])),
+            ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "diagnose.time",
+                      "--diagnosis-dir", "diagnosis"]),
+            uploads[mode],
+        ], mode  # fmt: skip
+        done, calls, _ = run_untimed("analysis", analysis_steps[diagnose], mode, tmp_path / "d")
+        assert done.returncode == 0, done.stderr
+        assert calls == [
+            ["python", "scripts/v4_diagnose.py", "--data", "v4data", "--cells", "cells",
+             "--planned", CELL_IDS, "--out", "diagnosis", *kind]
+        ], mode  # fmt: skip
+        args = v4_diagnose.build_parser().parse_args(calls[0][2:])
+        registered = mode == "registered"
+        assert (args.manifest, args.synthetic) == (
+            (Path(MANIFEST), False) if registered else (None, True)
+        )
+        # A diagnosis that refused a cell exits 1 after writing the others': its timing and its
+        # upload still run (the job still fails). After a failed guard, nothing runs.
+        upload = index_of_upload("analysis", f"{OUTPUT_PREFIX[mode]}analysis{ATTEMPT}")
+        refused = steps_that_run("analysis", mode, failing=[diagnose])
+        assert (refused[timing], refused[upload]) == ("success", "success"), mode
+        unguarded = steps_that_run("analysis", mode, failing=[guard])
+        assert {unguarded[diagnose], unguarded[timing], unguarded[upload]} == {"skipped"}, mode
+
+
+def test_mode_names_its_outputs():
+    # Ruling W3: a rehearsal's and a timing run's outputs carry their mode's name, so a synthetic
+    # verdict, analysis or status can never pass for the registered run's; and the registered
+    # run uploads nothing named for another mode.
+    def modes_of(name: str) -> set[str]:
+        if name.startswith(("v4-rehearsal-", "v4-forced-")):
+            return {"rehearsal"}
+        if name.startswith("v4-timing-"):
+            return {"timing"}
+        if name.startswith(("v4-verdict-", "v4-analysis-", "v4-status-")):
+            return {"registered"}
+        return set(MODES)  # the run's own hand-offs: data, packs, picks, cells and summaries
+
+    for job, body in jobs().items():
+        for step in body["steps"]:
+            if is_upload(step):
+                name = step["with"]["name"]
+                ran = {mode for mode in MODES if can_run(job, step, mode)}
+                assert ran and ran <= modes_of(name), (job, name, ran)
+    names = {job: [s["with"]["name"] for s in steps(job) if is_upload(s)] for job in PART_2_JOBS}
+    assert names == {
+        "scenarios": [f"v4-forced{ATTEMPT}"],
+        "verdict": [f"v4-verdict{ATTEMPT}", f"v4-rehearsal-verdict{ATTEMPT}",
+                    f"v4-timing-verdict{ATTEMPT}"],
+        "analysis": [f"v4-analysis{ATTEMPT}", f"v4-rehearsal-analysis{ATTEMPT}",
+                     f"v4-timing-analysis{ATTEMPT}"],
+        "status": [f"v4-status{ATTEMPT}", f"v4-rehearsal-status{ATTEMPT}",
+                   f"v4-timing-status{ATTEMPT}"],
+    }  # fmt: skip
+    # Each mode uploads one verdict, one analysis and one status, under its own name; the
+    # analysis' is the one the verdict page names.
+    for mode in MODES:
+        ran = jobs_that_run(mode)
+        for job in ("verdict", "analysis", "status"):
+            assert ran[job] == "success", (mode, job)
+            outcome = steps_that_run(job, mode)
+            uploaded = [
+                s["with"]["name"]
+                for i, s in enumerate(steps(job))
+                if is_upload(s) and outcome[i] == "success"
+            ]
+            assert uploaded == [f"{OUTPUT_PREFIX[mode]}{job}{ATTEMPT}"], (mode, job)
+        page = verdict_report.ANALYSIS_ARTIFACTS[mode].replace("<n>", "${{ github.run_attempt }}")
+        assert page == f"{OUTPUT_PREFIX[mode]}analysis{ATTEMPT}", mode
+
+
+def test_status_always_runs_and_reads_needs_through_env(tmp_path, monkeypatch, capsys):
+    job = jobs()["status"]
+    # Whatever the other jobs did, a cancelled run included, so a run that stopped half way still
+    # records how far it got. It needs every other job: NEEDS must list exactly those.
+    assert job["if"] == "${{ always() }}"
+    assert len(needs(job)) == len(set(needs(job)))
+    assert set(needs(job)) == set(v4_run_status.JOBS) == set(jobs()) - {"status"}
+    (record,) = [s for s in job["steps"] if "scripts/v4_run_status.py" in str(s.get("run", ""))]
+    assert record["env"] == {
+        "RUN_ID": "${{ github.run_id }}",
+        "RUN_ATTEMPT": "${{ github.run_attempt }}",
+        "NEEDS": "${{ toJSON(needs) }}",
+    }
+    # The dispatch's own registration_sha256 (the workflow's environment): a plan that stopped
+    # early has no output to give.
+    assert run_text(record) == (
+        'python scripts/v4_run_status.py --mode "$MODE" --registration-sha256 '
+        '"$REGISTRATION_SHA256" --out status/status.json'
+    )
+    assert "needs.plan.outputs" not in str(job)
+    for mode in MODES:
+        events = trace("status", mode, tmp_path / mode)
+        sha = INPUT_SHA if mode == "registered" else ""
+        assert events == [
+            ("call", ["python", "scripts/v4_run_status.py", "--mode", mode,
+                      "--registration-sha256", sha, "--out", "status/status.json"]),
+            upload_event(f"{OUTPUT_PREFIX[mode]}status-attempt-1", "status/"),
+        ]  # fmt: skip
+        args = v4_run_status.build_parser().parse_args(events[0][1][2:])
+        assert (args.mode, args.registration_sha256) == (mode, sha)
+        # Run for real on the needs context such a run gives (toJSON(needs): each job's result
+        # and outputs): the script accepts it and records each job's result.
+        for failing in ([], ["plan"], ["cell", "verdict"], ["v3-picks", "analysis"]):
+            results = jobs_that_run(mode, failing)
+            assert results["status"] == "success", (mode, failing)
+            context_needs = {name: {"result": results[name], "outputs": {}} for name in needs(job)}
+            monkeypatch.setenv("NEEDS", json.dumps(context_needs))
+            monkeypatch.setenv("RUN_ID", RUN_ID)
+            monkeypatch.setenv("RUN_ATTEMPT", "1")
+            out = tmp_path / "real" / mode / "-".join(failing or ["none"]) / "status.json"
+            assert v4_run_status.main(["--mode", mode, "--registration-sha256", sha,
+                                       "--out", str(out)]) == 0  # fmt: skip
+            document = json.loads(out.read_bytes())
+            assert document["jobs"] == {name: results[name] for name in needs(job)}
+            assert document["verdict_ran"] is (results["verdict"] in ("success", "failure"))
+    capsys.readouterr()
+
+
+# The CLIs whose standard output could tell a result, and where each call sends it instead of the
+# public log (owner rule: counts, ids, sizes, times and pins only).
+QUIET = {
+    ("v4_cell.py", "run"): "/dev/null",  # the cell's outcome
+    ("v4_v3_cell.py", "run"): "/dev/null",
+    ("v4_rehearsal.py", "force"): "/dev/null",  # a forced cell's line, as a cell's own
+    # Its counts of missing and refused cells can tell an incomplete verdict.
+    ("v4_verdict.py", None): "/dev/null",
+    # A cell's record and month counts can tell a cell that stopped.
+    ("v4_diagnose.py", None): "/dev/null",
+    # Its lines per scenario, kept in the rehearsal's verdict artifact.
+    ("v4_rehearsal.py", "check"): "check.txt",
+}
+# The CLIs whose standard output is counts, ids, sizes, times and pins only, as each one's
+# docstring says: it stays in the log.
+COUNTS = {
+    ("v4_run_plan.py", "matrix"),
+    ("v4_run_plan.py", "expected"),
+    ("v4_rehearsal.py", "world"),
+    ("v4_rehearsal.py", "picks"),
+    ("v4_rehearsal.py", "scenarios"),
+    ("v4_registration.py", "gate"),
+    ("v4_registration.py", "dispatch-check"),
+    ("v4_run_guard.py", None),
+    ("v4_v3_pack.py", None),
+    ("v4_v3_cell.py", "picks"),
+    ("v4_cells_timing.py", None),
+    ("v4_run_status.py", None),
+}
+CLI_CALL = re.compile(r"python scripts/(?P<script>[\w.]+)(?: (?P<command>[a-z][\w-]*))?")
+
+
+def cli_lines() -> list[tuple[str, tuple[str, str | None], str]]:
+    """Every line of a script that calls one of the repository's scripts: its job, the script
+    and its subcommand, and the line (continuations joined, whitespace collapsed)."""
+    found = []
+    for name, body in jobs().items():
+        for step in body["steps"]:
+            for line in str(step.get("run", "")).replace("\\\n", " ").splitlines():
+                line = " ".join(line.split())
+                for match in CLI_CALL.finditer(line):
+                    found.append((name, (match["script"], match["command"]), line))
+    return found
+
+
+def test_logs_counts_only():
+    # The logs are public: never a price, an equity, a return, a cell's outcome or the verdict.
+    # Every call of a CLI whose standard output could tell one sends it elsewhere, and every
+    # other CLI called is one whose output is counts, which the log keeps.
+    seen = set()
+    for job, cli, line in cli_lines():
+        assert cli in QUIET or cli in COUNTS, (job, cli)
+        seen.add(cli)
+        if cli in QUIET:
+            assert line.endswith(f" > {QUIET[cli]}") and line.count(">") == 1, (job, line)
+        else:
+            assert ">" not in line, (job, line)
+    assert seen == set(QUIET) | COUNTS  # each is called: none is listed for nothing
+    # The steps that send a CLI's output to /dev/null are exactly these.
+    redirected = sorted(
+        (job, step["name"])
+        for job, body in jobs().items()
+        for step in body["steps"]
+        if "/dev/null" in str(step.get("run", ""))
+    )
+    assert redirected == sorted([
+        ("cell", "Replay the cell"),
+        ("v3-cell", "Replay the cell"),
+        ("scenarios", "Force the six stop outcomes"),
+        ("verdict", "Judge the cells"),
+        ("verdict", "Judge every scenario"),
+        ("analysis", "Diagnose the cells"),
+    ])  # fmt: skip
+    # The scenario check's lines are kept in the rehearsal's verdict artifact, not printed.
+    upload = steps("verdict")[index_of_upload("verdict", f"v4-rehearsal-verdict{ATTEMPT}")]
+    assert "check.txt" in upload["with"]["path"].strip().splitlines()
+    # No step prints, copies to the log or searches a result file.
+    shown = re.compile(r"\b(cat|head|tail|less|more|jq|grep|sed|awk|tee)\b")
+    results = ("records.jsonl", "summary.json", "receipt.json", "report.html")
+    results += ("verdict.json", "verdict.md", "diagnosis.json", "diagnosis.md")
+    for name, body in jobs().items():
+        for step in body["steps"]:
+            script = run_text(step)
+            assert shown.search(script) is None, (name, script)
+            for result in results:
+                assert result not in script, (name, result)
+
+
 # ---- fail closed and the header -----------------------------------------------------------------
 
 
@@ -1440,3 +2185,37 @@ def test_header_states_the_modes_and_the_operating_rules():
         "- v3-cell",
     ):
         assert phrase in said, phrase
+
+
+def test_header_says_what_the_jobs_do():
+    said = header()
+    for phrase in (
+        # Part 2's jobs, in "Jobs:".
+        "- scenarios (rehearsal)",
+        "- verdict (every mode)",
+        "- analysis (every mode)",
+        "- status (always)",
+        # What each one does and uploads.
+        "six stop outcomes",
+        "v4-forced-attempt-<n>",
+        "never a cell's records",
+        "--judge-all",
+        "eleven scenarios",
+        "verdict-timing.json",
+        "diagnose-timing.json",
+        "v4-verdict-attempt-<n>",
+        "v4-rehearsal-verdict-attempt-<n>",
+        "v4-timing-verdict-attempt-<n>",
+        "v4-analysis-attempt-<n>",
+        "v4-rehearsal-analysis-attempt-<n>",
+        "v4-timing-analysis-attempt-<n>",
+        "v4-status-attempt-<n>",
+        "v4-rehearsal-status-attempt-<n>",
+        "v4-timing-status-attempt-<n>",
+        "toJSON(needs)",
+        # The token is the plan's and the registered verdict's; the spec's one re-run.
+        "the verdict job of a registered run",
+        "single aggregate-only re-run",
+    ):
+        assert phrase in said, phrase
+    assert "Three steps of the plan job" not in said
