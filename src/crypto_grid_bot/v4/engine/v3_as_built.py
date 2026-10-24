@@ -20,9 +20,12 @@ part of "Pass rule" condition 2. Nothing of V3 is re-implemented: V3.1's reviewe
   capital other than 10,000, ``v3_capital``, with V3's disclosure
   ``v3_capital_adapter_sets_only_starting_capital``. The pins, the cell and an existing output
   are all checked, the picks and the pack read through their pins and the replay run, before
-  anything is written: a refusal or an exception leaves nothing behind, not even the folder. A
-  failure once writing has begun (an error or an interrupt) removes the cell's folder, if the
-  cell created it, or else its two files, so no partial ``records.jsonl`` remains.
+  anything is written: a refusal or an exception leaves nothing behind, not even the folder.
+  After that, ``records.jsonl`` is opened exclusively; a failed open (the file is there, or a
+  link is) removes nothing of the cell's, at most an empty folder the call created. A failure
+  once that open has succeeded (an error or an interrupt) removes what this call created: its
+  ``records.jsonl``, its ``receipt.json`` (never one that was already there) and its folder if
+  that is then empty, so no partial ``records.jsonl`` remains and no other file is touched.
 * **Open marks.** An hour's open mark is V3's ``open`` native mark. It is complete iff every one
   of V3's coins (``v3_coins``: the symbols of the pack's futures hourly bars, the bars V3 trades
   on; 10 in V3's pack) has its hourly bar that hour. This is conservative: V3 holds a subset.
@@ -95,7 +98,6 @@ from __future__ import annotations
 
 import contextlib
 import re
-import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
@@ -304,9 +306,10 @@ def run_v3_cell(
     """Replay the v3 cell ``cell`` into ``out_dir`` (its own folder): ``records.jsonl`` and
     ``receipt.json`` (module docstring); return the receipt. Everything is checked and the
     replay run before anything is written, and the folder's existing files are never replaced.
-    A write that fails (an error or an interrupt) leaves no partial records: the folder this call
-    created is removed, and in a folder that was already there only the cell's own two files
-    are."""
+    A write that fails (an error or an interrupt) after this call's own exclusive open of
+    ``records.jsonl`` leaves no partial records: only the files this call created are removed,
+    and the folder if it made it and it is then empty. A failed open removes at most that empty
+    folder, so a ``records.jsonl`` that appeared during the replay is never touched."""
     _require_cell(cell)
     data = {
         "v3_pack_sha256": _require_pin("the V3 pack's sha256", pack_sha256),
@@ -337,7 +340,13 @@ def run_v3_cell(
     created = not folder.exists()
     folder.mkdir(parents=True, exist_ok=True)
     try:
-        with RecordWriter(records) as writer:
+        writer = RecordWriter(records)  # exclusive: it fails if records.jsonl (or a link) is there
+    except BaseException:  # nothing of this call's was created but, perhaps, the folder
+        _remove_partial(folder, created, ())
+        raise
+    foreign_receipt = False
+    try:
+        with writer:
             for mark in opens:
                 hour = mark.timestamp_ms
                 complete = all(hour in present[coin] for coin in coins)
@@ -375,23 +384,28 @@ def run_v3_cell(
                 },
             )
             receipt = writer.close()
-        write_receipt(receipt_file, receipt)
-    except BaseException:  # a partial records.jsonl is never evidence: nothing of the cell stays
-        _remove_partial(folder, created, (records, receipt_file))
+        try:
+            write_receipt(receipt_file, receipt)
+        except FileExistsError:  # its open is exclusive: this receipt is another run's, not ours
+            foreign_receipt = True
+            raise
+    except BaseException:  # a partial records.jsonl is never evidence: remove what we created
+        _remove_partial(folder, created, (records,) if foreign_receipt else (records, receipt_file))
         raise
     return receipt
 
 
 def _remove_partial(folder: Path, created: bool, files: Sequence[Path]) -> None:
-    """Undo a cell's failed write: the folder if the cell created it, else its own ``files``
-    (neither existed before the cell, which checked). Errors of the cleanup itself are
-    ignored: the failure that led here is the one to report."""
-    if created:
-        shutil.rmtree(folder, ignore_errors=True)
-        return
+    """Undo a cell's failed write: remove ``files``, which this call created, then ``folder`` if
+    this call created it and nothing else is in it (a non-recursive ``rmdir``: a file of another
+    run, or a link, is never removed). Errors of the cleanup itself are ignored: the failure
+    that led here is the one to report."""
     for file in files:
         with contextlib.suppress(OSError):
             file.unlink(missing_ok=True)
+    if created:
+        with contextlib.suppress(OSError):
+            folder.rmdir()
 
 
 def _outcome(evidence: BaselineEvidence, cell: CellSpec, opens: Sequence[NativeMark]) -> _Outcome:

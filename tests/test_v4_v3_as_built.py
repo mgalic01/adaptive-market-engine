@@ -1369,6 +1369,91 @@ def test_an_exception_in_the_replay_leaves_nothing_behind(existing, tmp_path, mo
     assert not existing or list(folder.iterdir()) == []
 
 
+ANOTHER_RUN = b"the finished file of another run of the same cell"
+
+
+@pytest.mark.parametrize("appears", ["records", "receipt", "records link"])
+def test_a_file_that_appears_during_the_replay_survives_the_refusal(appears, tmp_path, monkeypatch):
+    """The existing-file check runs before the long replay, so a second run of the same cell
+    into one folder passes it too. The records are opened exclusively, so the later run is
+    refused (``FileExistsError``), and its cleanup removes only what it created: another run's
+    ``records.jsonl`` (or a link at its path, here a dangling symbolic link) is never touched,
+    and nor is another run's ``receipt.json`` (the later run removes only its own records, which
+    would have no receipt of their own)."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+    target = folder / (RECEIPT if appears == "receipt" else RECORDS)
+    if appears == "records link":  # a dangling link does not exist, so the check passes it
+        folder.mkdir(parents=True)
+        try:
+            target.symlink_to(tmp_path / "nowhere")
+        except (OSError, NotImplementedError):
+            pytest.skip("this platform cannot make symbolic links here")
+    real = v3_as_built.replay_v3_baseline
+
+    def late(*args: Any, **kwargs: Any) -> Any:
+        evidence = real(*args, **kwargs)
+        if appears != "records link":  # the other run finishes while this one replays
+            folder.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(ANOTHER_RUN)
+        return evidence
+
+    monkeypatch.setattr(v3_as_built, "replay_v3_baseline", late)
+    with pytest.raises(FileExistsError):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    assert [item.name for item in folder.iterdir()] == [target.name]
+    if appears == "records link":
+        assert target.is_symlink() and not (tmp_path / "nowhere").exists()
+    else:
+        assert target.read_bytes() == ANOTHER_RUN
+
+
+def test_a_receipt_that_appears_before_ours_is_not_removed_nor_is_its_folder(tmp_path, monkeypatch):
+    """The folder is this call's, but another run's receipt lands in it before this call's own
+    receipt is written (the exclusive open of the receipt refuses). The call removes its own
+    records only; the folder is not empty, so it stays (the cleanup never removes recursively)."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+
+    def raced(path: Path, receipt: Receipt) -> str:
+        path.write_bytes(ANOTHER_RUN)  # the other run's receipt, created first
+        raise FileExistsError(str(path))
+
+    monkeypatch.setattr(v3_as_built, "write_receipt", raced)
+    with pytest.raises(FileExistsError):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    assert [item.name for item in folder.iterdir()] == [RECEIPT]
+    assert (folder / RECEIPT).read_bytes() == ANOTHER_RUN
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new folder", "existing folder"])
+def test_a_failed_open_removes_at_most_the_empty_folder_the_call_made(
+    existing, tmp_path, monkeypatch
+):
+    """When the exclusive open of ``records.jsonl`` itself fails nothing of this call's exists
+    but, if it made the folder, the empty folder: that goes, and a folder that was there before
+    keeps what it held."""
+    w = world(tmp_path, monkeypatch)
+    cell = CellSpec(ARM, 10000, 1)
+    folder = tmp_path / "cells" / cell.cell_id
+    if existing:
+        folder.mkdir(parents=True)
+        (folder / "notes.txt").write_text("not the cell's", "utf-8")
+
+    def denied(path: Path) -> RecordWriter:
+        raise PermissionError("the open was denied")
+
+    monkeypatch.setattr(v3_as_built, "RecordWriter", denied)
+    with pytest.raises(PermissionError, match="denied"):
+        run_v3_cell(w.pack, w.pack_sha256, w.picks, w.picks_sha256, cell, folder)
+    if existing:
+        assert [item.name for item in folder.iterdir()] == ["notes.txt"]
+    else:
+        assert not folder.exists()
+
+
 # ---- the CLI and the page -------------------------------------------------------------------
 
 
