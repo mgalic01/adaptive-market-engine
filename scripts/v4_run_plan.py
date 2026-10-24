@@ -33,7 +33,9 @@ those of ``Market.load(D)`` (``run.window_record`` and ``run.data_record``, so e
 verified by its pin); its v3 pins come from the mode's own source, and from no other:
 
 - ``registered``: ``--manifest`` is the run manifest (``config/v4_run_manifest.json``), whose
-  ``v3_pack_sha256`` is the pin, and whose ``data`` must carry the four pins of ``D``;
+  ``v3_pack_sha256`` is the pin, and whose ``data`` must carry the four pins of ``D``; ``D`` must
+  not be synthetic (its ``config_sha256`` is not ``synthetic.CONFIG_SHA256``: the verdict job has
+  no guard step, so the manifest's pins alone would accept a synthetic world a manifest names);
   ``--world`` is refused;
 - ``rehearsal``: ``--world`` is the world folder, whose ``rehearsal.json`` (``read_world``) must be
   of the rehearsal scale and gives the pin, and whose ``data`` must be ``D``'s pins; ``D`` must be
@@ -262,7 +264,10 @@ def write_expected(
         raise PlanError("the data directory carries no pins")
     if wanted is not None and pins != dict(wanted):
         raise PlanError(f"the data directory's pins are not the {source}'s")
-    if mode != "registered" and market.pins.config_sha256 != CONFIG_SHA256:
+    synthetic = market.pins.config_sha256 == CONFIG_SHA256
+    if mode == "registered" and synthetic:
+        raise PlanError("a registered run never runs on synthetic data: this data is synthetic")
+    if mode != "registered" and not synthetic:
         raise PlanError(f"a {mode} runs on synthetic data only (v4-d03): this data is not")
     expected = Expected(
         mode,

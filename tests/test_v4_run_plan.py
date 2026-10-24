@@ -116,6 +116,13 @@ def market(data_dir) -> Market:
     return Market.load(data_dir)
 
 
+@pytest.fixture
+def real_config(monkeypatch):
+    """The small world, taken for real data: its config pin is not the synthetic worlds' (the
+    script's ``CONFIG_SHA256`` is replaced; the world's own packs keep their pin)."""
+    monkeypatch.setattr(v4_run_plan, "CONFIG_SHA256", sha("a real config"))
+
+
 def pins_of(market: Market) -> dict[str, object]:
     pins = run.data_record(market.pins)
     assert pins is not None
@@ -289,7 +296,7 @@ def test_expected_from_a_synthetic_world(tmp_path, data_dir, market):
     assert re.search(r"[0-9]+\.[0-9]", stdout) is None  # counts and pins, never a price
 
 
-def test_expected_registered_takes_the_manifests_v3_pin(tmp_path, data_dir, market):
+def test_expected_registered_takes_the_manifests_v3_pin(tmp_path, data_dir, market, real_config):
     manifest = write_manifest_file(tmp_path / "config" / "v4_run_manifest.json", market)
     out = tmp_path / "expected.json"
     argv = expected_argv("registered", data_dir, out, world=None, manifest=manifest, picks=PICKS)
@@ -318,7 +325,7 @@ def test_expected_timing_has_44_cells_and_no_v3_pins(tmp_path, data_dir, empty_p
     assert "44 cells" in stdout
 
 
-def test_write_expected_is_the_commands_function(tmp_path, data_dir, market):
+def test_write_expected_is_the_commands_function(tmp_path, data_dir, market, real_config):
     out = tmp_path / "e" / "expected.json"  # its folder is made
     manifest = read_manifest(write_manifest_file(tmp_path / "m.json", market).read_bytes())
     v4_run_plan.write_expected(
@@ -419,6 +426,18 @@ def test_expected_registered_refuses_data_that_is_not_the_manifests(tmp_path, da
         code, _, stderr = run_cli(v4_run_plan, argv)
         assert code == 1 and "manifest" in stderr, key
         assert not out.exists(), key
+
+
+def test_registered_refuses_data_that_is_synthetic(tmp_path, data_dir, market):
+    """The verdict job has no guard step: a manifest naming a synthetic world's pins (which the
+    pin equality alone accepts) must still not make a registered run's expected file."""
+    manifest = write_manifest_file(tmp_path / "m.json", market)  # the synthetic world's own pins
+    out = tmp_path / "expected.json"
+    argv = expected_argv("registered", data_dir, out, world=None, manifest=manifest, picks=PICKS)
+    code, stdout, stderr = run_cli(v4_run_plan, argv)
+    assert code == 1 and stdout == ""
+    assert "registered" in stderr and "synthetic" in stderr
+    assert not out.exists()
 
 
 @pytest.mark.parametrize("mode", ["rehearsal", "timing"])
