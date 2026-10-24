@@ -28,8 +28,9 @@ repository.
 Verdict **FAIL**. Record: [the verdict review](reviews/2026-10-17-claude-v3-1-verdict.md).
 
 **Deleted on 2026-10-24.** The owner deleted these run files (both local copies below, and
-`E:\v31-diag\`) after the final summary was merged (PR #297). At 15:49 UTC the folders were
-gone and both drives' Recycle Bins empty. See
+`E:\v31-diag\`) after the final summary was merged (PR #297). At 15:49 UTC Claude Code
+(session f7f187df) checked the drives: the folders were gone and both drives' Recycle Bins
+empty. See
 [the V3.0 and V3.1 final summary](reviews/2026-10-24-claude-v3-v31-final-summary.md): what
 each folder held, the results and the fingerprints that keep any copy checkable.
 
@@ -186,8 +187,8 @@ both.
 
 Earlier trials in [the trial register](trials/register.jsonl) name their own local
 sources in each event's `sources` field. For example, the V3 replay of 2026-10-09 names
-`E:/adaptive-market-engine/v3/replay-20261009-01` (deleted 2026-10-24). Those locations are as recorded by the
-agent that ran them. They were not re-verified when this page was written.
+`E:/adaptive-market-engine/v3/replay-20261009-01`. Those locations are as the agent that ran
+them recorded them; the ones under `E:\adaptive-market-engine\` no longer exist (below).
 
 The run files of the V3 replay and of the cross-version diagnosis of 2026-10-10
 (`E:\adaptive-market-engine\`) were deleted by the owner on 2026-10-24, after
