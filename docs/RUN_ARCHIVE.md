@@ -118,6 +118,61 @@ packs, in each pack's `manifest`, so in these two copies. No committed file hold
   refuses bytes that differ from the pin. That needs one of the two copies above for the
   manifests.
 
+## V4 run (`v4-run.yml`): where its artifacts go
+
+No `v4-run` has run yet. The first runs are a rehearsal and a timing run, after step 4b's merge.
+The registered run comes in step 5, on the owner's go. Give each run its own section here once it
+is archived, as above.
+
+**Where.** Each run goes to `E:\v4-run-<run id>\` (WD 750 GB hard disk, label BACKUPS), one
+folder per artifact. The layout is that of the V4 cells runs' archives (for example
+`E:\v4-v3-run-40040422092\`, written by its `scripts\fetch_v4_cells.py`):
+- `zips\<artifact>.zip`: each artifact exactly as downloaded. Its SHA-256 must equal the digest
+  GitHub recorded at upload (`sha256:...`), or the download stops;
+- `<artifact>\`: each zip unpacked. A member with an absolute path or `..` is refused;
+- `meta\artifacts.json`: per artifact, its id, size, GitHub digest and the zip's SHA-256;
+- `scripts\`: the scripts that downloaded and checked it;
+- `SHA256SUMS.txt`: the SHA-256 of every file (`sha256sum -c SHA256SUMS.txt` from the archive
+  root).
+
+Then offer the owner the deletion of the run's artifacts on GitHub. Nothing is deleted without the
+owner's confirmation. GitHub keeps each artifact one day (v4-d10), so download the same day.
+
+**By mode:**
+- **Rehearsal:** every artifact. It is synthetic and holds no market data.
+- **Timing:** only the `v4-timing-*` artifacts (the cells', the verdict's and the analysis' times,
+  and the status). Its other artifacts are synthetic results that only its own verdict and
+  analysis jobs read; they expire after their day, and their deletion is offered too.
+  `fetch_v4_cells.py` downloads every artifact of a run, so a timing download needs a name filter.
+- **Registered:** every artifact. Its `v4-data` holds the registered packs, with market data from
+  2025-01 onward, so the reserved-window note of the V4 data run above applies to it. Its cells
+  and verdict are the run's results, which never leave the owner's PC (v4-d10).
+
+**What each artifact holds.** Files are at the artifact's root unless a folder is named. The
+workflow's header lists them too.
+
+| Artifact | Modes | Contents |
+| --- | --- | --- |
+| `v4-data` | all | the checked data pack: `data.json`, the daily pack, the hourly index, the coin packs |
+| `v4-v3-pack` | registered, rehearsal | `v3-input.pack.json.gz` |
+| `v4-rehearsal-world` | rehearsal | `world.tar` (the world's git repository, under `repo/`) and `rehearsal.json` |
+| `v4-v3-picks-attempt-<n>` | registered, rehearsal | `v3_picks.json` |
+| `v4-cell-<cell>-attempt-<n>` | all (44 cells) | `records.jsonl`, `receipt.json`, `summary.json`, `report.html`, `timing.json` |
+| `v4-v3-cell-<cell>-attempt-<n>` | registered, rehearsal (4 cells) | the same five files, for a `v3_as_built` cell |
+| `v4-summary-<cell>-attempt-<n>` | all (48 cells; 44 in timing) | `summary.json`, `receipt.json` |
+| `v4-forced-attempt-<n>` | rehearsal | `<kind>\<cell>\summary.json` and `receipt.json`, for the six forced cells |
+| `v4-verdict-attempt-<n>` | registered | `verdict.json`, `verdict.md`, `verdict-timing.json` |
+| `v4-rehearsal-verdict-attempt-<n>` | rehearsal | `verdict\` (the same three files), `scenario-verdicts\<scenario>\` (`verdict.json`, `verdict.md`) and `check.txt` |
+| `v4-analysis-attempt-<n>`, `v4-rehearsal-analysis-attempt-<n>` | registered, rehearsal | `diagnosis.json`, `diagnosis.md`, `diagnose-timing.json` |
+| `v4-status-attempt-<n>`, `v4-rehearsal-status-attempt-<n>` | registered, rehearsal | `status.json` |
+| `v4-timing-cell-<cell>-attempt-<n>` | timing (44 cells) | `timing.json` |
+| `v4-timing-verdict-attempt-<n>`, `v4-timing-analysis-attempt-<n>`, `v4-timing-status-attempt-<n>` | timing | `verdict-timing.json`, `diagnose-timing.json`, `status.json` |
+
+**The two verdict artifacts differ in layout.** In `v4-verdict-attempt-<n>`, `verdict.json` is at
+the root. In `v4-rehearsal-verdict-attempt-<n>` it is under `verdict\`, because that artifact
+uploads three paths and GitHub keeps their common folder. A script that reads both must expect
+both.
+
 ## Earlier runs
 
 Earlier trials in [the trial register](trials/register.jsonl) name their own local

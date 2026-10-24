@@ -36,7 +36,7 @@
   - Arithmetic is exact `Decimal` under `v4.engine.numbers.CONTEXT`. Maximum drawdown is `trend.metrics.maximum_drawdown`.
   - Every Decimal in JSON is a string.
 - **Tests:** any test that could reach the network blocks it, with the `network_blocked` fixture pattern of `tests/test_v4_cell_cli.py`.
-- **Reviews:** Bob is out (owner, 2026-10-24). Reviews go to Codex. Nothing addresses Bob.
+- **Reviews:** the standing review bar applies: Bob's deep review (NO ISSUES), Codex with no open P1, green CI and claude[bot] APPROVE. Bob was out from 01:24 to about 10:40 Zagreb time on 2026-10-24 (owner).
 - **Commits** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Rulings (where the spec is silent)
@@ -981,7 +981,7 @@ The changes:
 - **The spec:**
   - add "Amended in the V4 step-4b PR (the pipeline and the verdict step)" after the step-4a amendment. It states rulings V1 to V14, G1 to G5 and W1 to W3 in the spec's own words, and that V3.1's helpers are imported unchanged;
   - under "Delivery", mark item 4 as built, with the after-merge rehearsal and timing still owed;
-  - "Verification"'s review bar names Bob, so add "(Bob is out from 2026-10-24: Codex holds his reviews; owner instruction)".
+  - "Verification"'s review bar names Bob, and it stays as it is: Bob is back (owner, 2026-10-24, about 10:40 Zagreb time).
 - **`docs/RUN_ARCHIVE.md`:** add a "V4 run" section. It says where each `v4-run` artifact goes on E: (`E:/v4-run-<run id>/`, one folder per artifact) and that it is checked against GitHub's digests, as for the cells runs.
 - [ ] **Step 1: Write** both changes. Run `python scripts/check_reports.py` and expect 0 problems.
 - [ ] **Step 2: Commit**: `v4 step 4b: spec amendment and run archive notes`.
