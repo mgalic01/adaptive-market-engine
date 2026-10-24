@@ -28,7 +28,9 @@ jobs:
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 60 minutes (owner, 2026-10-24): a deep investigation of a large PR does not fit 15;
+    # --max-turns below still bounds Bob's cost.
+    timeout-minutes: 60
     steps:
       # The job-level `contains` is only a prefilter: `@bobby` would pass it. Require a
       # whole-word mention (no letter, digit, "_" or "-" right after "@bob") before any
