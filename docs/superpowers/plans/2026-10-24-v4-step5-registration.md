@@ -1,9 +1,10 @@
 # V4.0 step 5: the registration and the one registered run (plan)
 
-**Status: a plan for the owner's review. Nothing in it has been done.** Writing it registered no
+**Status: approved by the owner on 2026-10-24 (v4-d26), with the answers v4-d27 to v4-d29 (see
+"The owner's answers" at the end). Nothing in it has been done yet.** Writing it registered no
 trial, appended nothing to the trial register, created no registration file and dispatched no
 workflow. Each step below starts only after the step before it passed its check, and the
-registered run starts only on the owner's go (owner decision v4-d15).
+registered run starts only on the owner's separate go (owner decision v4-d15, step 7).
 
 Written 2026-10-24 by Claude Code (session f7f187df), on branch `claude/v4-step5-plan` from main
 `19e3190`. Times for the owner are given in Zagreb time (CET, UTC+1, from 2026-10-25); machine
@@ -13,7 +14,8 @@ stamps stay UTC.
 - the V4 spec, `docs/superpowers/specs/2026-10-17-v4-design.md`:
   - "Registration and the run";
   - the "Amended in the V4 step-4b PR" block, rulings G1 to G5 and W1 to W3;
-  - owner decisions v4-d03, v4-d10, v4-d15, v4-d24 and v4-d25;
+  - owner decisions v4-d03, v4-d10, v4-d15, v4-d24 and v4-d25, and this plan's v4-d26 to
+    v4-d29;
 - V3.1's precedent: `docs/reviews/2026-10-15-claude-v3-1-registration.md`, the register's lines
   228 to 230, and PR #285's commits (below);
 - V4's machinery:
@@ -38,8 +40,8 @@ stamps stay UTC.
   the go. GitHub runs the test.
 - **How long.**
   - Preparation and review: about one to two days.
-  - Merge to archived results: about 7 to 8 hours (a data run of about 75 minutes, then the run
-    itself, about 4.5 to 5.5 hours, then the download).
+  - Merge to archived results: about 6 to 7 hours (a data run of about 75 minutes, then the run
+    itself, about 4 to 4.5 hours, then the download).
   - Main is frozen from the start of step 5 until the dispatch. Every job of the run checks out
     the dispatched commit, so main is free again once the run is dispatched.
 
@@ -86,6 +88,10 @@ main:  ... B ---------------------------------------------------- M  (merge comm
      inside the verdict job's 180 minutes;
    - the verdict's and the expected step's peak memory inside the spec's 2 GB;
    - the analysis inside its 120 minutes.
+
+   **Met on 2026-10-24.** The run succeeded in 30 minutes (15:47:48 to 16:17:55 UTC), and its
+   47 `v4-timing-*` artifacts matched GitHub's digests. The numbers are under "Expected run
+   length" below: every one is far inside its limit, so no fix is needed.
 2. **Any fix is merged and re-tested.** A fix it needs is merged under the full review bar. Then
    the rehearsal and the timing run are run again on the fixed main: a timing run must time the
    code the code pin will hold (header of `v4-run.yml`).
@@ -265,7 +271,7 @@ The completion is
 
 **What it holds.** B's code, unchanged. V3.1's code pin also carried a test, the CI's full
 history and the experiment menu's status. V4 has no menu, and every V4 checkout already fetches
-the whole history. Recommended content, as V3.1's ruling TC-5 had it:
+the whole history. Its content, as V3.1's ruling TC-5 had it (owner decision v4-d27):
 - **`tests/test_v4_registration_committed.py`**, the committed-registration test:
   - it skips while HEAD commits no `config/v4_registration.json`. That is the case at P itself;
   - once that file is committed, it never skips;
@@ -281,9 +287,8 @@ the whole history. Recommended content, as V3.1's ruling TC-5 had it:
 
   So GitHub's CI checks the registration on Linux at the PR's merge ref, before the merge,
   while a fix can still keep the trial id.
-- **Or, if the owner prefers, an empty commit** (`git commit --allow-empty`), which
-  `check_ready` accepts. Then no CI check of the registration runs before the merge: the first
-  check on GitHub is the registered run's plan job.
+- The alternative, an empty commit (`git commit --allow-empty`), which `check_ready` also
+  accepts, was not chosen: with it, no CI check of the registration would run before the merge.
 
 **Why nothing may change after P** except the files of ruling G2:
 - the job gate, in the plan job and again in every cell job, refuses any path changed since P
@@ -440,6 +445,8 @@ experiment re-run. Raising its limit would be a `.github/` change after P, so a 
   4. the download of every artifact to E: and the verified copy on F:.
 
   The deletion of GitHub's copies is not covered: it is asked separately.
+- the questions still open at the end of this plan: the main freeze and the result event's
+  status.
 
 **The record.** Claude writes "The owner's go (dated record)" into the review file in a
 docs-only commit:
@@ -541,15 +548,22 @@ gh workflow run v4-run.yml -R mgalic01/adaptive-market-engine --ref main \
 
 ## Step 12. After the run
 
-**a. Only if the verdict job failed from an infrastructure failure** (a runner lost, a full disk,
-a GitHub outage; not a code bug):
+**a. Only if the verdict or the analysis job failed from an infrastructure failure** (a runner
+lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - Claude asks the owner;
-- on the owner's word, Claude re-runs the verdict job alone: GitHub's "Re-run job" on `verdict`,
-  which takes the `status` job with it;
-- once, and only while the cells' summaries still exist: they expire a day after their upload,
-  from about the first hour of the run;
+- on the owner's word, Claude re-runs one job alone with GitHub's "Re-run job", which takes the
+  `status` job with it: the `verdict` job if it failed, otherwise the `analysis` job;
+- once in all, since the run allows one re-run attempt, and only while the cells' summaries
+  still exist: they expire a day after their upload, from about the first hour of the run;
 - never "Re-run failed jobs" and never "Re-run all jobs". The verdict counts any other re-run
-  from the run's attempts, and makes the verdict incomplete.
+  from the run's attempts, and makes the verdict incomplete;
+- if the verdict job fails again, the verdict is computed on the owner's PC from the downloaded
+  artifacts, with the verdict job's own steps at M (the dispatch check, `scripts/v4_run_plan.py
+  expected` and `scripts/v4_verdict.py`), in a clean worktree of M. It is recorded as a deviation
+  in the verdict record (v4-d28). The timing run puts the expected and verdict steps under two
+  minutes and under 0.5 GB;
+- a failed analysis that was not re-run, or failed again, may be computed there the same way
+  (`scripts/v4_diagnose.py`, about 14 minutes and 0.7 GB in the timing run). It decides nothing.
 
 **b. Download every artifact the same day**, about 102 of them, to `E:\v4-run-<id>\`:
 - with the rehearsal's `scripts\fetch_v4_cells.py` (from `E:\v4-run-40106774107\scripts\`);
@@ -565,14 +579,15 @@ a GitHub outage; not a code bug):
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
   archive.
 - Tell the owner the verdict in chat.
-- Nothing from the results goes into a log, a PR comment or a commit beyond what the owner
-  allows (open question 6).
+- Nothing from the results goes into a log or a PR comment. The verdict record (12e) gives the
+  verdict, aggregated numbers (per-arm means, the conditions' values) and fingerprints, and no
+  result file (owner decision v4-d29).
 
 **e. A post-run PR, once the run has ended,** under the normal review bar:
 - **the result event** `v4-0-registered-1-result`, in V3.1's line-230 shape:
   - `completion_id`, and `run_id` (the run's id);
-  - `status`: pass `success`, fail `failed`, incomplete or no verdict `invalid` (open question
-    7);
+  - `status`: pass `success`, fail `failed`, incomplete or no verdict `invalid` (asked with
+    the go, step 7);
   - `provenance`, a JSON string: the archive, the digest check, P, M as `dispatched_from`, S,
     the manifest's SHA-256, the data run's id and `verdict.json`'s SHA-256;
   - `report`, the verdict record;
@@ -598,9 +613,9 @@ a false pass.
 - **A cell runs past its job's 60 minutes, or out of memory.** That cell is missing:
   incomplete. The other cells still run, since the matrix does not fail fast.
 - **The verdict job fails** (memory, disk, a crash, its 180 minutes). There is no verdict until
-  the one verdict-only re-run (step 12a). If that fails too, the run is used up with no verdict.
-  Computing the verdict on the owner's PC instead would be a deviation, needing the owner's
-  decision beforehand (open question 5), as V3.1's v31-d30 to v31-d32 were.
+  the one re-run (step 12a). If that fails too, the verdict is computed on the owner's PC with
+  the run's own code and recorded as a deviation (owner decision v4-d28, made before any result,
+  as V3.1's v31-d30 to v31-d32 were).
 - **The verdict's dispatch check cannot read GitHub within its 55 minutes.** The verdict is
   incomplete.
 - **A cancel, any re-run other than the verdict-only one, or a third attempt.** The verdict is
@@ -609,8 +624,8 @@ a false pass.
   then counts as cancelled.
 - **The artifacts expire before the download.** The evidence is then lost to the owner's PC,
   even with a verdict on GitHub. So the download (step 12b) is the same day.
-- **The analysis job fails.** There is no diagnosis page, but the verdict is unaffected: the
-  analysis decides nothing.
+- **The analysis job fails.** The verdict is unaffected: the analysis decides nothing. It may
+  take the one re-run if the verdict job did not fail, or be computed on the owner's PC (v4-d28).
 
 ## Expected run length
 
@@ -621,22 +636,30 @@ a false pass.
   the four v3 cells 8.4 to 14.6 min;
 - **data runs**: 1 h 13 min for the full one (39403004530), about 1 h for the pre-2025 ones.
 
-**From the timing run 40108602725,** to be filled in when it finishes:
-- the 44 cells' wall times (longest and median) and peak memory: [ ];
-- their output sizes: [ ];
-- the verdict's time and memory, x2: [ ];
-- the expected step's time and memory: [ ];
-- the analysis' time and memory: [ ].
+**From the timing run 40108602725** (main `19e3190`, real size on synthetic data, no v3 cell),
+2026-10-24, 30 minutes end to end:
+- **plan job:** 3 min 45 s;
+- **the 44 cells:** each 51 to 315 seconds (median 223 s; the longest `v4_slower-10000-2x`), and
+  each cell job 78 to 374 seconds, against its 60 minutes. All 44 ran in 11.6 minutes, at most
+  20 at a time;
+- **cell memory:** 485 to 652 MB at peak;
+- **cell output:** `records.jsonl` 35 to 161 MB each, 5.2 GB in all before compression; each
+  `v4-cell-*` artifact about 8 to 35 MB zipped, each `v4-summary-*` about 1 MB;
+- **the expected step:** 71 seconds, 459 MB at peak;
+- **the verdict step:** 40 seconds, 90 MB at peak. Doubled for the four v3 cells it did not have
+  (ruling W2), about 1.5 minutes. The verdict job took 2 min 16 s, against its 180 minutes (55 of
+  them the dispatch check's budget), and the steps' memory is far under the spec's 2 GB;
+- **the analysis:** 815 seconds (13.6 minutes), 702 MB at peak; its job 14 min 14 s, against 120.
 
 **Estimate:**
-- the run itself takes about 4.5 to 5.5 hours, set by V3's picks: plan, pack, about 3.5 hours of
+- the run itself takes about 4 to 4.5 hours, set by V3's picks: plan, pack, about 3.5 hours of
   picks, the v3 cells, then the verdict;
-- the 44 other cells run beside it, at most 20 at a time, and should finish well before;
+- the 44 other cells run beside it, at most 20 at a time, and should finish in about 15 minutes;
 - while 20 cells run, GitHub's limit of 20 concurrent jobs may hold the v3-pack job back by up to
   one cell's time;
 - the registered data run (about 75 minutes) comes before, and the download after.
 
-So the whole takes about 7 to 8 hours from the merge to an archived result. Best dispatched in the
+So the whole takes about 6 to 7 hours from the merge to an archived result. Best dispatched in the
 Zagreb morning, so that the same-day download is certain.
 
 ## Operating rules
@@ -674,38 +697,35 @@ The code does not enforce these. The people who merge and dispatch must follow t
    them and lists them in `verdict.json` (`skipped_ms`).
 5. **No content for V3.1's commit 2.** V3.1's code pin flipped the experiment menu and deepened
    the CI's checkout. V4 has no menu, and every V4 checkout already fetches the whole history.
-   The code pin holds the committed test or nothing (open question 2).
+   The code pin holds the committed test (owner decision v4-d27).
 6. **No writer for the real files.** V3.1's driver had helpers for its manifest and its trial;
    V4 has only readers. So a one-off script outside the repository writes them (step 4).
 7. **Canonical JSON.** V3.1's registration was indented JSON. V4's must be canonical, or the gate
    refuses it.
 8. **A narrower public record.** V3.1's verdict record and result event gave aggregated results.
-   v4-d10 keeps V4's results on the owner's PC, so the owner decides what is published (open
-   question 6).
+   v4-d10 keeps V4's results on the owner's PC, and the owner chose the verdict, aggregated
+   numbers and fingerprints (v4-d29).
 
-## Open questions for the owner
+## The owner's answers, 2026-10-24
 
-1. **Approve this plan,** the trial id `v4-0-registered-1`, and step 1's pinning data run. That
-   run takes about 75 minutes on GitHub and reads 2025+ data for data preparation, as v4-d03
+The owner answered four questions in chat at about 16:22 UTC (18:22 Zagreb time), each with the
+recommended option. They are owner decisions v4-d26 to v4-d29 in the spec:
+1. **v4-d26, "Approve":** this plan, the trial id `v4-0-registered-1`, and step 1's data run,
+   which takes about 75 minutes on GitHub and reads 2025+ data for data preparation, as v4-d03
    allows.
-2. **The code pin's content:** the committed-registration test (recommended, as V3.1's TC-5), so
-   that CI checks the registration before the merge; or an empty commit.
-3. **The main freeze:** from B to the dispatch, about one to two days, nothing else lands on
-   main. Other PRs wait, Codex's and Bob's included. Is that acceptable?
-4. **The go and the dispatch time:**
-   - should the go cover the merge, step 9's data run, the one dispatch, the download to E: and
-     the backup on F:?
-   - at what Zagreb time should the run be dispatched?
-5. **If the verdict job and its one re-run both fail:**
-   - should the run stop with no verdict;
-   - or may the verdict be computed on the owner's PC from the downloaded summaries, with the
-     same code (V3.1's v31-d30 precedent)?
+2. **v4-d27, "A registration test":** the code pin holds the committed-registration test
+   (step 3), not an empty commit.
+3. **v4-d28, "Compute it on your PC":** one re-run attempt in all, for the verdict job or else
+   the analysis job; if the verdict still fails, it is computed on the owner's PC with the run's
+   own code and recorded as a deviation (step 12a).
+4. **v4-d29, "Verdict + aggregated numbers":** the verdict record gives the verdict, aggregated
+   numbers and fingerprints; the result files stay on the owner's PC (step 12d).
 
-   Deciding now, before any result, keeps it unbiased. In the same vein: may the analysis job,
-   which decides nothing, also be re-run once after an infrastructure failure? The code allows
-   it (`RERUN_JOBS`), but the spec names only the verdict job.
-6. **The public record after the run** (v4-d10):
-   - the verdict word and fingerprints only;
-   - or also aggregated numbers, as V3.1's record gave?
-7. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
-   `invalid`. Is that acceptable?
+## Still open, asked with the go (step 7)
+
+1. **The main freeze:** from B to the dispatch, about one to two days, nothing else lands on
+   main. Other PRs wait, Codex's and Bob's included.
+2. **What the go covers:** the merge, step 9's data run, the one dispatch, the download to E:
+   and the backup on F:, and the Zagreb time of the dispatch.
+3. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
+   `invalid`.

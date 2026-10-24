@@ -130,9 +130,15 @@ packs, in each pack's `manifest`, so in these two copies. No committed file hold
 
 ## V4 run (`v4-run.yml`): where its artifacts go
 
-No `v4-run` has run yet. The first runs are a rehearsal and a timing run, after step 4b's merge.
-The registered run comes in step 5, on the owner's go. Give each run its own section here once it
-is archived, as above.
+Two `v4-run`s have run, both on main `19e3190` after step 4b's merge (their sections are below).
+The registered run comes in step 5, on the owner's go
+([the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md)). Give each run its
+own section here once it is archived, as above.
+
+**The registered run also gets a verified backup on F:** (owner, 2026-10-24): a copy in
+`F:\v4-run-<run id>-backup\` (Kingston 960 GB SSD, a separate physical disk), checked with
+`sha256sum -c SHA256SUMS.txt` there and with the same file list as E:'s. The rehearsal and the
+timing run are synthetic and have no F: copy.
 
 **Where.** Each run goes to `E:\v4-run-<run id>\` (WD 750 GB hard disk, label BACKUPS), one
 folder per artifact. The layout is that of the V4 cells runs' archives (for example
@@ -185,6 +191,25 @@ workflow's header lists them too.
 the root. In `v4-rehearsal-verdict-attempt-<n>` it is under `verdict\`, because that artifact
 uploads three paths and GitHub keeps their common folder. A script that reads both must expect
 both.
+
+## V4 rehearsal 40106774107 (synthetic)
+
+`mode=rehearsal` on main `19e3190`, 2026-10-24 15:23:46 to 15:40:53 UTC. Every job succeeded,
+all 48 cells ran, and `check.txt` gave all 11 scenarios "as expected". It is synthetic: it holds
+no market data and no result of the experiment.
+
+`E:\v4-run-40106774107\`: every one of its 104 artifacts, each zip equal to GitHub's digest, in
+the layout above (about 2.0 GB; `SHA256SUMS.txt` lists 496 files).
+
+## V4 timing run 40108602725 (synthetic, real size)
+
+`mode=timing` on main `19e3190`, 2026-10-24 15:47:48 to 16:17:55 UTC. Every job it runs
+succeeded; the v3 jobs and the scenarios are skipped in this mode. Its times are in
+[the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md), "Expected run length".
+
+`E:\v4-run-40108602725\`: only its 47 `v4-timing-*` artifacts, as the mode list above says, each
+zip equal to GitHub's digest (`SHA256SUMS.txt` lists 97 files). Its other 89 artifacts are
+synthetic results, left on GitHub to expire.
 
 ## Earlier runs
 
