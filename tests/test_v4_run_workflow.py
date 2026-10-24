@@ -12,11 +12,12 @@ They pin that it is dispatch-only and read-only, that its run name is the title 
 looks for and its jobs carry the names the check reads, that every action is pinned and every
 checkout keeps no token, that no value is spliced into a script, that every artifact is kept one
 day and named as Ruling W1 says, that the registered plan gates the checkout, refuses a second
-dispatch and checks the data run before it downloads anything, that every cell job guards its data
-and gates its checkout before its cell runs, that a cell's standard output goes to /dev/null, and
-that the V3 pack's and the picks' pins are checked against the files. Part 2's tests pin that the
-verdict reads the cells' summaries alone, runs after failed cells but never after a failed plan,
-checks for another dispatch again in a registered run and judges every scenario of a rehearsal;
+dispatch and checks the data run before it downloads anything, that every cell job gates its
+checkout first and guards its data before its cell runs, that a cell's standard output goes to
+/dev/null, and that the V3 pack's and the picks' pins are checked against the files. Part 2's tests
+pin that the verdict reads the cells' summaries alone, runs after failed cells but never after a
+failed plan, checks for another dispatch again in a registered run (first, before any download),
+times its expected step and its verdict step and judges every scenario of a rehearsal;
 that the analysis reads the cells but never the v3 cells; that each mode names its outputs as its
 own; that the status job always runs and reads the jobs' results through the environment; and
 that no CLI whose standard output could tell a result prints it to the public log.
@@ -111,10 +112,11 @@ JOB_START_STEP = {
 ATTEMPT = "-attempt-${{ github.run_attempt }}"
 FIXED_NAMES = ("v4-data", "v4-v3-pack", "v4-rehearsal-world")
 MATRIX_CELL = "${{ matrix.cell }}"
-# A cell's uploads run when every step passed, or when only the timing step failed (v4-cells.yml).
+# A cell's uploads run when every step passed, or when only the timing step failed (v4-cells.yml);
+# its timing alone, in a timing run, only once the timing step wrote it.
 UPLOAD_CONDITION = "${{ success() || steps.timing.outcome == 'failure' }}"
 TIMING_UPLOAD_CONDITION = (
-    "${{ (success() || steps.timing.outcome == 'failure') && inputs.mode == 'timing' }}"
+    "${{ success() && steps.timing.outcome == 'success' && inputs.mode == 'timing' }}"
 )
 PACK_PIN = v4_v3_pack.EXPECTED_PACK_SHA256
 PACK_PATH = f"v3pack/{v4_v3_pack.PACK_FILE}"
@@ -165,6 +167,15 @@ NO_PICKS = "0" * 64
 VERDICT_RAN = (
     "${{ !cancelled() && (steps.verdict.outcome == 'success' || "
     "steps.verdict.outcome == 'failure') }}"
+)
+EXPECTED_RAN = (
+    "${{ !cancelled() && (steps.expected.outcome == 'success' || "
+    "steps.expected.outcome == 'failure') }}"
+)
+# The verdict job's expected step and its timing (v4_cells_timing.py --expected-dir).
+EXPECTED_TIMING_STEP = (
+    "mkdir -p verdict python scripts/v4_cells_timing.py --time-file expected.time "
+    "--expected-dir verdict"
 )
 
 
@@ -687,6 +698,9 @@ def test_run_name_matches_registration_titles():
         assert title(mode, "") in v4_registration.run_titles(mode, ""), mode
     assert WORKFLOW.name == v4_registration.WORKFLOW_FILE
     assert document["name"] == v4_registration.RUN_NAME
+    # The registration script's note of the run-name quotes it as it is.
+    source = (ROOT / "scripts" / "v4_registration.py").read_text(encoding="utf-8")
+    assert run_name in source and "${{ inputs.sha }}" not in source
 
 
 def test_jobs_are_named_as_the_dispatch_check_reads_them():
@@ -1111,7 +1125,7 @@ def test_every_guard_passes_its_data_and_refuses_real_data_outside_the_registere
 # ---- the cell jobs ------------------------------------------------------------------------------
 
 
-def test_cells_need_plan_and_guard_first(tmp_path):
+def test_cells_need_plan_and_gate_first_then_guard(tmp_path):
     job = jobs()["cell"]
     assert needs(job) == ["plan"] and "if" not in job
     assert job["strategy"] == {
@@ -1134,20 +1148,18 @@ def test_cells_need_plan_and_guard_first(tmp_path):
     guard = index_of("cell", "scripts/v4_run_guard.py")
     gate = index_of("cell", "v4_registration.py gate")
     replay = index_of("cell", "scripts/v4_cell.py")
-    assert SETUP_STEPS <= download < guard < gate < replay
+    # The job gate runs first (Ruling G5), before the run's data is downloaded or guarded.
+    assert SETUP_STEPS <= gate < download < guard < replay
 
-    # What runs before the cell, in each mode: the guard of the mode's data, then the gate
-    # again (registered: on this checkout; rehearsal: on the world's repository; timing: none).
+    # What runs before the cell, in each mode: the gate again (registered: on this checkout;
+    # rehearsal: on the world's repository, downloaded first; timing: none), then the guard of
+    # the mode's data.
     for mode in MODES:
         events = trace("cell", mode, tmp_path / mode)
         timed = [i for i, event in enumerate(events) if event[0] == "timed"]
         before = events[: timed[0]]
         gate_repo = {"registered": ".", "rehearsal": "world/repo"}.get(mode)
-        expected: list[tuple[Any, ...]] = [
-            ("download", {"name": "v4-data", "path": "v4data"}),
-            ("call", ["python", "scripts/v4_run_guard.py", "--data", "v4data",
-                      *(["--manifest", MANIFEST] if mode == "registered" else ["--synthetic"])]),
-        ]  # fmt: skip
+        expected: list[tuple[Any, ...]] = []
         if mode == "rehearsal":
             expected += [
                 ("download", {"name": "v4-rehearsal-world", "path": "world"}),
@@ -1158,9 +1170,18 @@ def test_cells_need_plan_and_guard_first(tmp_path):
                 ("call", ["python", "scripts/v4_registration.py", "gate", "--repo", gate_repo,
                           "--mode", mode, "--registration-sha256", PLAN_SHA])
             )  # fmt: skip
+        expected += [
+            ("download", {"name": "v4-data", "path": "v4data"}),
+            ("call", ["python", "scripts/v4_run_guard.py", "--data", "v4data",
+                      *(["--manifest", MANIFEST] if mode == "registered" else ["--synthetic"])]),
+        ]  # fmt: skip
         assert before == expected, mode
         for call in calls_of(before, "v4_registration.py"):
             assert v4_registration.build_parser().parse_args(call).mode == mode
+    # A gate that refused skips everything after it: no data is downloaded, nothing replayed.
+    for mode in ("registered", "rehearsal"):
+        after = steps_that_run("cell", mode, failing=[gate])
+        assert {after[download], after[guard], after[replay]} == {"skipped"}, mode
 
 
 def test_v3_cell_checks_both_pins_before_anything_runs(tmp_path):
@@ -1186,7 +1207,9 @@ def test_v3_cell_checks_both_pins_before_anything_runs(tmp_path):
     pins = index_of("v3-cell", "sha256sum")
     gate = index_of("v3-cell", "v4_registration.py gate")
     replay = index_of("v3-cell", "scripts/v4_v3_cell.py")
-    assert max(downloads) < pins < gate < replay
+    # The job gate first, as in the cell job; the pins are checked before anything reads the
+    # files.
+    assert SETUP_STEPS <= gate < min(downloads) and max(downloads) < pins < replay
     assert "if" not in v3_steps[pins]
 
     # The check, run for real on small files: a pack written as write_v3_pack writes one, whose
@@ -1288,7 +1311,9 @@ def test_cell_stdout_goes_to_dev_null_under_gnu_time():
             after_timing = steps_that_run(job, mode, failing=[timing])
             after_replay = steps_that_run(job, mode, failing=[replay])
             for index in uploads:
-                expected = job_steps[index]["if"] == UPLOAD_CONDITION or mode == "timing"
+                # After a failed timing step the cell's folder and summary are uploaded, never
+                # its timing alone: a failed timing step wrote no timing.json.
+                expected = job_steps[index]["if"] == UPLOAD_CONDITION
                 assert (after_timing[index] == "success") is expected, (job, mode, index)
                 assert after_replay[index] == "skipped", (job, mode, index)
     # The other CLIs whose standard output goes to /dev/null, and that no step prints a result,
@@ -1356,6 +1381,18 @@ def test_every_upload_kept_one_day_and_named_per_W1():
     assert timing["if"] == TIMING_UPLOAD_CONDITION
     for mode in ("registered", "rehearsal"):
         assert not step_runs(timing, mode), mode
+    # In a timing run, uploaded once the timing step wrote its file, and never after a timing
+    # step that failed: it wrote no timing.json, and the upload would fail on the missing file.
+    upload = index_of_upload("cell", f"v4-timing-cell-{cell}{ATTEMPT}")
+    timed = index_of("cell", "scripts/v4_cells_timing.py")
+    assert steps_that_run("cell", "timing")[upload] == "success"
+    assert steps_that_run("cell", "timing", failing=[timed])[upload] == "skipped"
+    kept = [
+        index_of_upload("cell", f"v4-cell-{cell}{ATTEMPT}"),
+        index_of_upload("cell", f"v4-summary-{cell}{ATTEMPT}"),
+    ]
+    for index in kept:  # the replay succeeded: its folder and summary are kept
+        assert steps_that_run("cell", "timing", failing=[timed])[index] == "success"
 
 
 # ---- the V3 pack and the picks ------------------------------------------------------------------
@@ -1626,14 +1663,22 @@ def test_verdict_expects_the_modes_cells_against_the_modes_pins(tmp_path):
     # which every v3 cell was run with and checked against.
     verdict_steps = steps("verdict")
     expected = index_of("verdict", "v4_run_plan.py expected")
-    assert "if" not in verdict_steps[expected]
+    assert "if" not in verdict_steps[expected] and verdict_steps[expected]["id"] == "expected"
     assert jobs()["verdict"]["env"] == {
         "PICKS_RESULT": "${{ needs.v3-picks.result }}",
         "PICKS_SHA256": "${{ needs.v3-picks.outputs.picks_sha256 }}",
     }
+    # It loads the whole data pack (Market.load) in the verdict job, so it runs under GNU time,
+    # each mode's call (test_verdict_and_analysis_are_timed_as_the_cells_are keeps its timing).
+    script = str(verdict_steps[expected]["run"])
+    calls_made = [line.strip() for line in script.splitlines() if "scripts/" in line]
+    assert len(calls_made) == len(MODES)
+    for line in calls_made:
+        assert line.startswith("/usr/bin/time -v -o expected.time python scripts/v4_run_plan.py ")
 
     def expected_call(mode: str, folder: str, **known: str) -> argparse.Namespace:
-        step = verdict_steps[expected]
+        # GNU time left out (a Windows bash has none): the call its CLI gets.
+        step = {**verdict_steps[expected], "run": TIMED_BY.sub("", script)}
         done, calls, _ = run_recorded(
             "verdict", step, mode, tmp_path / folder, known={**context(mode), **known}
         )
@@ -1770,8 +1815,10 @@ def test_verdict_runs_after_failed_cells_but_not_after_a_failed_plan():
     # run or a failed plan. !cancelled() also keeps the jobs a mode skips (v3-picks and v3-cell
     # in a timing run, scenarios outside a rehearsal) from skipping the verdict.
     assert graph["verdict"]["if"] == graph["analysis"]["if"] == AFTER_THE_CELLS
+    # The scenarios replay six forced cells one after another, two of them V3's 3.5-year
+    # replays; the verdict has more than two hours after its dispatch check's deadline.
     timeouts = {name: graph[name]["timeout-minutes"] for name in PART_2_JOBS}
-    assert timeouts == {"scenarios": 60, "verdict": 60, "analysis": 120, "status": 15}
+    assert timeouts == {"scenarios": 180, "verdict": 180, "analysis": 120, "status": 15}
 
     ok, skip = "success", "skipped"
     for mode in MODES:
@@ -1808,6 +1855,7 @@ def test_rehearsal_verdict_checks_every_scenario(tmp_path):
     verdict_steps = steps("verdict")
     judge = index_of("verdict", "--summaries summaries --expected")
     timing = index_of("verdict", "--verdict-dir verdict")
+    expected_timing = index_of("verdict", "--expected-dir verdict")
     (forced,) = [
         i
         for i, s in enumerate(verdict_steps)
@@ -1817,7 +1865,7 @@ def test_rehearsal_verdict_checks_every_scenario(tmp_path):
     each = index_of("verdict", '--summaries "scenarios/$scenario"')
     check = index_of("verdict", "v4_rehearsal.py check")
     upload = index_of_upload("verdict", f"v4-rehearsal-verdict{ATTEMPT}")
-    assert judge < timing < forced < make < each < check < upload
+    assert judge < timing < expected_timing < forced < make < each < check < upload
     # A rehearsal's steps alone.
     for index in (forced, make, each, check, upload):
         assert step_can_run(verdict_steps[index], "rehearsal"), index
@@ -1835,6 +1883,9 @@ def test_rehearsal_verdict_checks_every_scenario(tmp_path):
         return event[0] == "call" and event[1][:2] == ["python", "scripts/v4_verdict.py"]
 
     assert [event for event in tail if not judged(event)] == [
+        # The expected step's timing, beside the verdict's: the artifact below holds both.
+        ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "expected.time",
+                  "--expected-dir", "verdict"]),
         ("download", {"name": "v4-forced-attempt-1", "path": "forced"}),
         # The eleven scenarios of the base set (the downloaded summaries) and the forced cells.
         ("call", ["python", "scripts/v4_rehearsal.py", "scenarios", "--base", "summaries",
@@ -1848,7 +1899,7 @@ def test_rehearsal_verdict_checks_every_scenario(tmp_path):
     # progress and output folders (a resumed progress of other inputs is refused), against the
     # run's expected file, and with no dispatch reasons (a rehearsal's).
     positions = [i for i, event in enumerate(tail) if judged(event)]
-    assert positions == list(range(2, 2 + len(v4_rehearsal.SCENARIOS)))
+    assert positions == list(range(3, 3 + len(v4_rehearsal.SCENARIOS)))
     names = []
     for i in positions:
         args = v4_verdict.build_parser().parse_args(tail[i][1][2:])
@@ -1860,7 +1911,7 @@ def test_rehearsal_verdict_checks_every_scenario(tmp_path):
     assert sorted(names) == sorted(v4_rehearsal.SCENARIOS)
     # The check reads the scenarios' folder and their verdicts' (V/<name>/verdict.json); its
     # lines go to check.txt, which the rehearsal's verdict artifact holds with the verdicts.
-    args = v4_rehearsal.build_parser().parse_args(tail[1][1][2:])
+    args = v4_rehearsal.build_parser().parse_args(tail[2][1][2:])
     assert (args.base, args.forced, args.out) == (
         Path("summaries"),
         Path("forced"),
@@ -1874,10 +1925,11 @@ def test_rehearsal_verdict_checks_every_scenario(tmp_path):
         "scenario-verdicts/",
         "check.txt",
     ]
-    # Whatever failed after the main verdict was written (its timing, the forced download, the
-    # scenarios, one scenario's verdict, the check), the rehearsal's verdict is still uploaded and
-    # the job still fails; a main verdict that failed (nothing written) uploads nothing.
-    for failing in (timing, forced, make, each, check):
+    # Whatever failed after the main verdict was written (its timing, the expected step's
+    # timing, the forced download, the scenarios, one scenario's verdict, the check), the
+    # rehearsal's verdict is still uploaded and the job still fails; a main verdict that failed
+    # (nothing written) uploads nothing.
+    for failing in (timing, expected_timing, forced, make, each, check):
         assert steps_that_run("verdict", "rehearsal", failing=[failing])[upload] == "success"
     assert steps_that_run("verdict", "rehearsal", failing=[judge])[upload] == "skipped"
 
@@ -1886,14 +1938,21 @@ def test_registered_verdict_rechecks_other_dispatches(tmp_path):
     job = jobs()["verdict"]
     verdict_steps = job["steps"]
     # It lists this workflow's runs again (actions: read), and its deadline counts from the
-    # job's start, its first step: the 55-minute budget ends five minutes inside the timeout.
+    # job's start, its first step: the 55-minute budget ends inside the timeout, and the job's
+    # 180 minutes leave the verdict more than two hours after it.
     assert verdict_steps[0] == JOB_START_STEP
     assert job["permissions"] == {"contents": "read", "actions": "read"}
+    assert job["timeout-minutes"] == 180
     assert job["timeout-minutes"] * 60 >= v4_registration.VERDICT_JOB_BUDGET + 5 * 60
+    assert job["timeout-minutes"] * 60 - v4_registration.VERDICT_JOB_BUDGET > 2 * 3600
     expected = index_of("verdict", "v4_run_plan.py expected")
     check = index_of("verdict", "dispatch-check")
     judge = index_of("verdict", "--summaries summaries --expected")
-    assert expected < check < judge
+    # The check is the first step after the setup steps, before any download and the expected
+    # step, so its deadline never eats into the verdict's time.
+    assert check == 1 + SETUP_STEPS
+    downloads = [i for i, s in enumerate(verdict_steps) if is_download(s)]
+    assert check < min(downloads) and check < expected < judge
     step = verdict_steps[check]
     assert step["if"] == "${{ inputs.mode == 'registered' }}"
     assert step["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
@@ -1902,22 +1961,30 @@ def test_registered_verdict_rechecks_other_dispatches(tmp_path):
         assert not step_can_run(step, mode), mode
 
     events = trace("verdict", "registered", tmp_path / "trace")
+    gnu_check = index_of("verdict", "-x /usr/bin/time")
     assert events == [
-        ("download", {"name": "v4-data", "path": "v4data"}),
-        ("download", SUMMARIES),
-        ("call", ["python", "scripts/v4_run_plan.py", "expected", "--mode", "registered",
-                  "--data", "v4data", "--out", "expected.json", "--manifest", MANIFEST,
-                  "--picks-sha256", PICKS_SHA]),
         # Every earlier launch of the registration judged and none refused: each one that
         # counts, or why none could be ruled out, is the verdict's input (Ruling G4).
         ("call", ["python", "scripts/v4_registration.py", "dispatch-check", "--mode",
                   "registered", "--registration-sha256", INPUT_SHA, "--judge-all", "--out",
                   "reasons.json"]),
-        ("timed", run_text(verdict_steps[judge - 1])),  # the GNU time check
+        ("download", {"name": "v4-data", "path": "v4data"}),
+        ("download", SUMMARIES),
+        ("timed", run_text(verdict_steps[gnu_check])),  # the GNU time check
+        ("timed", run_text(verdict_steps[expected])),
         ("timed", run_text(verdict_steps[judge])),
         ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "verdict.time",
                   "--verdict-dir", "verdict"]),
+        ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "expected.time",
+                  "--expected-dir", "verdict"]),
+        # verdict/: the verdict, its timing and the expected step's.
         upload_event("v4-verdict-attempt-1", "verdict/"),
+    ]  # fmt: skip
+    done, calls, _ = run_untimed("verdict", verdict_steps[expected], "registered", tmp_path / "e")
+    assert done.returncode == 0, done.stderr
+    assert calls == [
+        ["python", "scripts/v4_run_plan.py", "expected", "--mode", "registered", "--data",
+         "v4data", "--out", "expected.json", "--manifest", MANIFEST, "--picks-sha256", PICKS_SHA]
     ]  # fmt: skip
     (call,) = calls_of(events, "v4_registration.py")
     args = v4_registration.build_parser().parse_args(call)
@@ -1944,10 +2011,11 @@ def test_registered_verdict_rechecks_other_dispatches(tmp_path):
             Path("verdict"),
         )
         assert args.dispatch_reasons == (Path("reasons.json") if mode == "registered" else None)
-    # A check that failed (it writes its file only when it ran to the end) skips the verdict, so
-    # a registered verdict never runs without the reasons; nothing is uploaded then.
+    # A check that failed (it turns any failure to read GitHub into a reason and still writes
+    # its file, so it fails only when the file cannot be written) skips everything after it, so
+    # a registered verdict never runs without the reasons; nothing is downloaded or uploaded.
     after = steps_that_run("verdict", "registered", failing=[check])
-    assert after[judge] == "skipped"
+    assert {after[i] for i in (*downloads, expected, judge)} == {"skipped"}
     assert after[index_of_upload("verdict", f"v4-verdict{ATTEMPT}")] == "skipped"
     # A timing step that failed does not discard the verdict (the job still fails).
     timing = index_of("verdict", "--verdict-dir verdict")
@@ -1969,97 +2037,164 @@ KILLED_REPORT = (
     "\tMaximum resident set size (kbytes): 2200000\n"
     "\tExit status: 0\n"
 )
-# The step each timing file names.
-STEP_NAMES = {"verdict": "verdict", "analysis": "diagnose"}
+# Each timed step of part 2: its job, the id of the step GNU time times, its time file, its
+# timing step's target and id, the timing file and the step that file names.
+TIMED_STEPS = (
+    ("verdict", "verdict", "verdict.time", "--verdict-dir verdict", "timing",
+     v4_cells_timing.VERDICT_TIMING_FILE, "verdict"),
+    ("verdict", "expected", "expected.time", "--expected-dir verdict", "expected_timing",
+     v4_cells_timing.EXPECTED_TIMING_FILE, "expected"),
+    ("analysis", "diagnose", "diagnose.time", "--diagnosis-dir diagnosis", "timing",
+     v4_cells_timing.DIAGNOSE_TIMING_FILE, "diagnose"),
+)  # fmt: skip
+# The verdict job's timing-run upload: either timing, once written.
+VERDICT_TIMING_UPLOAD = (
+    "${{ !cancelled() && (steps.timing.outcome == 'success' || "
+    "steps.expected_timing.outcome == 'success') && inputs.mode == 'timing' }}"
+)
+
+
+def index_of_id(job: str, step_id: str) -> int:
+    (found,) = [i for i, step in enumerate(steps(job)) if step.get("id") == step_id]
+    return found
 
 
 def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
     # Each runs its CLI under GNU time, checked first as in a cell job, and keeps the wall time
-    # and peak memory in its folder (scripts/v4_cells_timing.py): the verdict's 2 GB limit and the
-    # analysis' size are what a timing run measures (Ruling W2). A timing run uploads that file
-    # alone, and only once it was written.
-    files = {
-        "verdict": ("verdict.time", "--verdict-dir verdict", v4_cells_timing.VERDICT_TIMING_FILE),
-        "analysis": (
-            "diagnose.time",
-            "--diagnosis-dir diagnosis",
-            v4_cells_timing.DIAGNOSE_TIMING_FILE,
-        ),
-    }
-    for job, (time_file, target, timing_file) in files.items():
+    # and peak memory in its folder (scripts/v4_cells_timing.py): the verdict's 2 GB limit (the
+    # verdict step's, and the expected step's, which loads the whole data pack) and the
+    # analysis' size are what a timing run measures (Ruling W2). A timing run uploads those
+    # files alone, and only once written.
+    for job, step_id, time_file, target, timing_id, timing_file, step_name in TIMED_STEPS:
         job_steps = steps(job)
         check = index_of(job, "-x /usr/bin/time")
+        timed = index_of_id(job, step_id)
         timing = index_of(job, target)
-        timed = timing - 1
-        assert check == timed - 1, job
+        assert check < timed < timing and job_steps[timing]["id"] == timing_id, step_id
         assert "::error::" in run_text(job_steps[check]) and "exit 1" in run_text(job_steps[check])
         lines = [line.strip() for line in str(job_steps[timed]["run"]).splitlines()]
         clis = [line for line in lines if "python scripts/" in line]
-        assert clis, job
+        assert clis, step_id
         for line in clis:
             assert line.startswith(f"/usr/bin/time -v -o {time_file} python scripts/"), line
-        assert job_steps[timing]["id"] == "timing"
         folder = Path(target.split()[1])
         command = f"python scripts/v4_cells_timing.py --time-file {time_file} {target}"
         # The folder is made first: a step that failed before writing made none.
         assert run_text(job_steps[timing]) == f"mkdir -p {folder.as_posix()} {command}"
         args = v4_cells_timing.build_parser().parse_args(shlex.split(command)[2:])
         assert args.time_file == Path(time_file)
-        assert (args.verdict_dir if job == "verdict" else args.diagnosis_dir) == folder
+        assert getattr(args, target.split()[0].removeprefix("--").replace("-", "_")) == folder
+        # Each timing runs after its step succeeded or failed, never after one that did not run.
+        assert job_steps[timing]["if"] == (
+            f"${{{{ !cancelled() && (steps.{step_id}.outcome == 'success' || "
+            f"steps.{step_id}.outcome == 'failure') }}}}"
+        )
         (upload,) = [
             i
             for i, s in enumerate(job_steps)
             if is_upload(s) and s["with"]["name"].startswith("v4-timing-")
         ]
-        assert job_steps[upload]["with"]["path"] == f"{folder.as_posix()}/{timing_file}"
-        assert job_steps[upload]["if"] == (
-            "${{ !cancelled() && steps.timing.outcome == 'success' && inputs.mode == 'timing' }}"
-        )
+        assert f"{folder.as_posix()}/{timing_file}" in job_steps[upload]["with"]["path"].split()
         assert steps_that_run(job, "timing")[upload] == "success"
-        assert steps_that_run(job, "timing", failing=[timing])[upload] == "skipped"
         # A step that failed (at real size, out of memory, say: the run a timing run exists to
         # measure) is timed too, and its timing uploaded; a step that never ran is not.
         after_failure = steps_that_run(job, "timing", failing=[timed])
-        assert (after_failure[timing], after_failure[upload]) == ("success", "success"), job
+        assert (after_failure[timing], after_failure[upload]) == ("success", "success"), step_id
         never_ran = steps_that_run(job, "timing", failing=[check])
-        assert (never_ran[timing], never_ran[upload]) == ("skipped", "skipped"), job
+        assert (never_ran[timing], never_ran[upload]) == ("skipped", "skipped"), step_id
         # The step itself, with a time file of a command that failed and no folder: it makes
         # the folder, and the timing helper keeps the failure's time, memory and exit status.
-        work = tmp_path / f"{job}-failed"
+        work = tmp_path / f"{step_id}-failed"
         work.mkdir()
         done, calls, _ = run_recorded(job, job_steps[timing], "timing", work)
         assert done.returncode == 0 and (work / folder).is_dir(), done.stderr
-        assert calls == [shlex.split(command)], job
+        assert calls == [shlex.split(command)], step_id
         for report, status in ((FAILED_REPORT, 1), (KILLED_REPORT, 128 + 9)):
             (work / time_file).write_text(report, encoding="ascii")
             (work / folder / timing_file).unlink(missing_ok=True)
             argv = ["--time-file", str(work / time_file), target.split()[0], str(work / folder)]
-            assert v4_cells_timing.main(argv) == 0, (job, status)
+            assert v4_cells_timing.main(argv) == 0, (step_id, status)
             written = json.loads((work / folder / timing_file).read_text(encoding="ascii"))
-            assert (written["step"], written["exit_status"]) == (STEP_NAMES[job], status), job
-    # Each timing runs after its step succeeded or failed, never after one that did not run.
+            assert (written["step"], written["exit_status"]) == (step_name, status), step_id
     assert steps("verdict")[index_of("verdict", "--verdict-dir verdict")]["if"] == VERDICT_RAN
+    assert steps("verdict")[index_of("verdict", "--expected-dir verdict")]["if"] == EXPECTED_RAN
     assert steps("analysis")[index_of("analysis", "--diagnosis-dir")]["if"] == DIAGNOSED
-    # The registered and rehearsal verdicts are uploaded only once written.
-    judged = index_of("verdict", "--summaries summaries --expected")
+    assert run_text(steps("verdict")[index_of("verdict", "--expected-dir")]) == EXPECTED_TIMING_STEP
+
+    # The analysis' timing-run upload: its timing alone, once written.
+    analysis_steps = steps("analysis")
+    upload = index_of_upload("analysis", f"v4-timing-analysis{ATTEMPT}")
+    assert analysis_steps[upload]["with"]["path"] == "diagnosis/diagnose-timing.json"
+    assert analysis_steps[upload]["if"] == (
+        "${{ !cancelled() && steps.timing.outcome == 'success' && inputs.mode == 'timing' }}"
+    )
+    timing = index_of("analysis", "--diagnosis-dir")
+    assert steps_that_run("analysis", "timing", failing=[timing])[upload] == "skipped"
+
+    # The verdict job: the GNU time check, then the expected step, the verdict, and their two
+    # timings, the expected step's after the verdict's, so that a timing step that fails never
+    # keeps the verdict from running.
+    verdict_steps = steps("verdict")
+    check = index_of("verdict", "-x /usr/bin/time")
+    expected = index_of_id("verdict", "expected")
+    judge = index_of_id("verdict", "verdict")
+    timing = index_of_id("verdict", "timing")
+    expected_timing = index_of_id("verdict", "expected_timing")
+    assert (check, expected, judge, timing) == tuple(range(check, check + 4))
+    assert expected_timing == timing + 1
+    # Its timing-run upload: the two timings of one folder, so both sit at the artifact's
+    # root, each once it was written, of a step that succeeded or failed.
+    upload = index_of_upload("verdict", f"v4-timing-verdict{ATTEMPT}")
+    assert verdict_steps[upload]["with"]["path"].strip().splitlines() == [
+        f"verdict/{v4_cells_timing.VERDICT_TIMING_FILE}",
+        f"verdict/{v4_cells_timing.EXPECTED_TIMING_FILE}",
+    ]
+    assert verdict_steps[upload]["if"] == VERDICT_TIMING_UPLOAD
+    for failing, uploaded in (
+        ([timing], "success"),  # the expected step's timing alone
+        ([expected_timing], "success"),  # the verdict's alone
+        ([timing, expected_timing], "skipped"),  # no timing was written
+    ):
+        assert steps_that_run("verdict", "timing", failing=failing)[upload] == uploaded, failing
+    # An expected step that failed skips the verdict and its timing; its own timing is kept and
+    # uploaded alone.
+    after = steps_that_run("verdict", "timing", failing=[expected])
+    assert (after[judge], after[timing], after[expected_timing], after[upload]) == (
+        "skipped",
+        "skipped",
+        "success",
+        "success",
+    )
     for mode in ("registered", "rehearsal"):
         upload = index_of_upload("verdict", f"{OUTPUT_PREFIX[mode]}verdict{ATTEMPT}")
-        assert steps_that_run("verdict", mode, failing=[judged])[upload] == "skipped", mode
+        # The registered and rehearsal verdicts are uploaded only once written, with both
+        # timings in verdict/; a failed timing step never discards a written verdict.
+        assert steps_that_run("verdict", mode, failing=[judge])[upload] == "skipped", mode
+        assert steps_that_run("verdict", mode, failing=[expected])[upload] == "skipped", mode
+        for failing in ([timing], [expected_timing]):
+            assert steps_that_run("verdict", mode, failing=failing)[upload] == "success", mode
+        assert verdict_steps[upload]["with"]["path"].strip().splitlines()[0] == "verdict/"
 
     # A timing run's verdict, traced: its 44 cells' summaries, no v3 pin, no dispatch check.
     events = trace("verdict", "timing", tmp_path)
-    verdict_steps = steps("verdict")
-    judge = index_of("verdict", "--summaries summaries --expected")
     assert events == [
         ("download", {"name": "v4-data", "path": "v4data"}),
         ("download", SUMMARIES),
-        ("call", ["python", "scripts/v4_run_plan.py", "expected", "--mode", "timing", "--data",
-                  "v4data", "--out", "expected.json"]),
-        ("timed", run_text(verdict_steps[judge - 1])),
+        ("timed", run_text(verdict_steps[check])),
+        ("timed", run_text(verdict_steps[expected])),
         ("timed", run_text(verdict_steps[judge])),
         ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "verdict.time",
                   "--verdict-dir", "verdict"]),
-        upload_event("v4-timing-verdict-attempt-1", "verdict/verdict-timing.json"),
+        ("call", ["python", "scripts/v4_cells_timing.py", "--time-file", "expected.time",
+                  "--expected-dir", "verdict"]),
+        upload_event("v4-timing-verdict-attempt-1",
+                     "verdict/verdict-timing.json\nverdict/expected-timing.json\n"),
+    ]  # fmt: skip
+    done, calls, _ = run_untimed("verdict", verdict_steps[expected], "timing", tmp_path / "e")
+    assert done.returncode == 0, done.stderr
+    assert calls == [
+        ["python", "scripts/v4_run_plan.py", "expected", "--mode", "timing", "--data", "v4data",
+         "--out", "expected.json"]
     ]  # fmt: skip
 
 
@@ -2410,6 +2545,34 @@ def test_header_says_what_the_jobs_do():
         # The token is the plan's and the registered verdict's; the spec's one re-run.
         "the verdict job of a registered run",
         "single aggregate-only re-run",
+        # The verdict job's check comes first, its timeout leaves the verdict two hours, and its
+        # expected step is timed beside the verdict.
+        "before any download",
+        "the job's timeout is 180 minutes",
+        "expected-timing.json",
+        # A verdict-only re-run starts from zero.
+        "its progress/ folder is never uploaded",
+        # What a timing run uploads, and how its verdict time is to be read (Ruling W2).
+        "it uploads v4-data and every cell's v4-cell-* and v4-summary-*",
+        "46 measures that load marks, against about 92 in a registered run",
+        # The dispatch ref of each mode, once.
+        "A registered run is dispatched from the registration's ref",
+        "A timing run, made before the registration exists, is dispatched from a ref at the code",
+        "A rehearsal may be dispatched from any ref",
+        # The accepted residual: sizes and times are public.
+        "Accepted residual",
     ):
         assert phrase in said, phrase
     assert "Three steps of the plan job" not in said
+    # A single path uploads its files at the artifact's root: only the rehearsal's verdict
+    # artifact, of three paths, keeps a folder.
+    for wrong in (
+        "verdict/ (verdict.json",
+        "diagnosis/ (diagnosis.json",
+        "status/status.json",
+        "verdict/verdict-timing.json alone",
+        "diagnosis/diagnose-timing.json alone",
+        "a registered or timing run is dispatched from the registration's ref",
+        "Only its v4-timing-* artifacts are downloaded after it; the cells' own artifacts",
+    ):
+        assert wrong not in said, wrong

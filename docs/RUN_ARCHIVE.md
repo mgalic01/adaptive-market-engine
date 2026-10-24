@@ -141,9 +141,10 @@ download the same day.
 
 **By mode:**
 - **Rehearsal:** every artifact. It is synthetic and holds no market data.
-- **Timing:** only the `v4-timing-*` artifacts (the cells', the verdict's and the analysis' times,
-  and the status). Its other artifacts are synthetic results that only its own verdict and
-  analysis jobs read; they expire after their day, and their deletion is offered too.
+- **Timing:** only the `v4-timing-*` artifacts (the cells', the expected step's, the verdict's
+  and the analysis' times, and the status). Its other artifacts are synthetic results that only
+  its own verdict and analysis jobs read; they expire after their day, and their deletion is
+  offered too.
   `fetch_v4_cells.py` downloads every artifact of a run, so a timing download needs a name filter.
 - **Registered:** every artifact. Its `v4-data` holds the registered packs, with market data from
   2025-01 onward, so the reserved-window note of the V4 data run above applies to it. Its cells
@@ -162,12 +163,13 @@ workflow's header lists them too.
 | `v4-v3-cell-<cell>-attempt-<n>` | registered, rehearsal (4 cells) | the same five files, for a `v3_as_built` cell |
 | `v4-summary-<cell>-attempt-<n>` | all (48 cells; 44 in timing) | `summary.json`, `receipt.json` |
 | `v4-forced-attempt-<n>` | rehearsal | `<kind>\<cell>\summary.json` and `receipt.json`, for the six forced cells |
-| `v4-verdict-attempt-<n>` | registered | `verdict.json`, `verdict.md`, `verdict-timing.json` |
-| `v4-rehearsal-verdict-attempt-<n>` | rehearsal | `verdict\` (the same three files), `scenario-verdicts\<scenario>\` (`verdict.json`, `verdict.md`) and `check.txt` |
+| `v4-verdict-attempt-<n>` | registered | `verdict.json`, `verdict.md`, `verdict-timing.json`, `expected-timing.json` |
+| `v4-rehearsal-verdict-attempt-<n>` | rehearsal | `verdict\` (the same four files), `scenario-verdicts\<scenario>\` (`verdict.json`, `verdict.md`) and `check.txt` |
 | `v4-analysis-attempt-<n>`, `v4-rehearsal-analysis-attempt-<n>` | registered, rehearsal | `diagnosis.json`, `diagnosis.md`, `diagnose-timing.json` |
 | `v4-status-attempt-<n>`, `v4-rehearsal-status-attempt-<n>` | registered, rehearsal | `status.json` |
 | `v4-timing-cell-<cell>-attempt-<n>` | timing (44 cells) | `timing.json` |
-| `v4-timing-verdict-attempt-<n>`, `v4-timing-analysis-attempt-<n>`, `v4-timing-status-attempt-<n>` | timing | `verdict-timing.json`, `diagnose-timing.json`, `status.json` |
+| `v4-timing-verdict-attempt-<n>` | timing | `verdict-timing.json` and `expected-timing.json` (each once written) |
+| `v4-timing-analysis-attempt-<n>`, `v4-timing-status-attempt-<n>` | timing | `diagnose-timing.json`, `status.json` |
 
 **The two verdict artifacts differ in layout.** In `v4-verdict-attempt-<n>`, `verdict.json` is at
 the root. In `v4-rehearsal-verdict-attempt-<n>` it is under `verdict\`, because that artifact

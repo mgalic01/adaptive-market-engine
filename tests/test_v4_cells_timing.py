@@ -6,7 +6,9 @@ that file and the cell's ``records.jsonl`` into ``out/<cell>/timing.json``: the 
 peak resident memory in MB and the records file's size in bytes. These are the numbers the spec's
 timing run needs. The diagnose job times its diagnosis the same way into
 ``diagnosis/diagnose-timing.json``, with the exit status, since a diagnosis that refused a cell
-exits 1 after writing the others'. Nothing here reads market data.
+exits 1 after writing the others'; v4-run's verdict job times its verdict step and its expected
+step into ``verdict/verdict-timing.json`` and ``verdict/expected-timing.json``. Nothing here reads
+market data.
 """
 
 from __future__ import annotations
@@ -483,9 +485,73 @@ def test_verdict_dir_writes_verdict_timing(tmp_path, capsys):
     parser = v4_cells_timing.build_parser()
     args = parser.parse_args(["--time-file", "t", "--verdict-dir", "v"])
     assert (args.verdict_dir, args.diagnosis_dir, args.cell_dir) == (Path("v"), None, None)
-    for other in (["--cell-dir", "c"], ["--diagnosis-dir", "d"]):
+    for other in (["--cell-dir", "c"], ["--diagnosis-dir", "d"], ["--expected-dir", "e"]):
         with pytest.raises(SystemExit):
             parser.parse_args(["--time-file", "t", "--verdict-dir", "v", *other])
+    capsys.readouterr()
+
+
+# ---- the expected step's own timing (v4-run.yml's verdict job) ----
+
+
+def test_expected_dir_writes_expected_timing_beside_the_verdicts(tmp_path, capsys):
+    """``--expected-dir`` times the verdict job's ``expected`` step (``v4_run_plan.py expected``,
+    which loads the whole data pack) as ``--verdict-dir`` times the verdict:
+    ``<verdict dir>/expected-timing.json`` with the step, the wall seconds, the peak memory and
+    the exit status, beside ``verdict-timing.json`` in the same folder, never replacing a file.
+    It is one of the four targets, never with another."""
+
+    def expected(text: str | None) -> tuple[int, str, str]:
+        if text is not None:
+            (tmp_path / "expected.time").write_text(text, encoding="ascii")
+        argv = ["--time-file", str(tmp_path / "expected.time")]
+        code = v4_cells_timing.main([*argv, "--expected-dir", str(tmp_path / "verdict")])
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    # The folder must exist: the workflow makes it.
+    code, out, err = expected(REALISTIC)
+    assert code == 1 and out == "" and "expected-timing.json" in err
+    assert not (tmp_path / "verdict").exists()
+
+    (tmp_path / "verdict").mkdir()
+    (tmp_path / "verdict" / "verdict-timing.json").write_bytes(b"{}\n")  # the verdict's stays
+    code, out, err = expected(REALISTIC)
+    assert (code, err) == (0, "")
+    path = tmp_path / "verdict" / v4_cells_timing.EXPECTED_TIMING_FILE
+    assert v4_cells_timing.EXPECTED_TIMING_FILE == "expected-timing.json"
+    text = path.read_text(encoding="ascii")
+    assert json.loads(text) == {
+        "step": "expected",
+        "wall_seconds": 5025.0,
+        "peak_rss_mb": 2103.8,
+        "exit_status": 0,
+    }
+    assert text.endswith("\n") and text.count("\n") == 1
+    assert out == "v4_cells_timing: expected: 5025.00 s, 2103.8 MB peak, exit status 0\n"
+    assert sorted(p.name for p in (tmp_path / "verdict").iterdir()) == [
+        "expected-timing.json",
+        "verdict-timing.json",
+    ]
+    assert (tmp_path / "verdict" / "verdict-timing.json").read_bytes() == b"{}\n"
+
+    # Never replaced.
+    code, out, err = expected(gnu_time())
+    assert code == 1 and out == "" and "expected-timing.json" in err
+    assert path.read_text(encoding="ascii") == text
+
+    # One target of the four, never two.
+    parser = v4_cells_timing.build_parser()
+    args = parser.parse_args(["--time-file", "t", "--expected-dir", "v"])
+    assert (args.expected_dir, args.verdict_dir, args.diagnosis_dir, args.cell_dir) == (
+        Path("v"),
+        None,
+        None,
+        None,
+    )
+    for other in (["--cell-dir", "c"], ["--diagnosis-dir", "d"], ["--verdict-dir", "v"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--time-file", "t", "--expected-dir", "v", *other])
     capsys.readouterr()
 
 
@@ -494,15 +560,16 @@ def test_verdict_dir_writes_verdict_timing(tmp_path, capsys):
     [
         ("--verdict-dir", "verdict-timing.json", "verdict"),
         ("--diagnosis-dir", "diagnose-timing.json", "diagnose"),
+        ("--expected-dir", "expected-timing.json", "expected"),
     ],
 )
 def test_a_step_that_failed_or_was_killed_is_timed_with_its_status(
     tmp_path, capsys, flag, file_name, step
 ):
-    """A timing run must not lose the run that failed (Ruling W2): a verdict or a diagnosis that
-    exited 1, or that was killed (out of memory: GNU time says "Exit status: 0" then), is timed
-    with its peak memory and a status that says so, 128 + the signal for a killed one (the status
-    GNU time itself exits with)."""
+    """A timing run must not lose the run that failed (Ruling W2): a verdict, a diagnosis or an
+    expected step that exited 1, or that was killed (out of memory: GNU time says "Exit status:
+    0" then), is timed with its peak memory and a status that says so, 128 + the signal for a
+    killed one (the status GNU time itself exits with)."""
     for text, status in ((REALISTIC_FAILED, 1), (REALISTIC_KILLED, 128 + 9)):
         folder = tmp_path / str(status)
         folder.mkdir()

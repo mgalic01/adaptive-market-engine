@@ -945,6 +945,29 @@ def test_the_dispatch_check_refuses_conflicting_options(github_env, capsys, extr
     assert message in capsys.readouterr().err and api.requests == []
 
 
+def test_the_verdict_jobs_check_past_its_deadline_still_writes_its_reasons(
+    github_env, monkeypatch, capsys, tmp_path
+):
+    """v4-run.yml's verdict job: a check whose deadline passed (VERDICT_JOB_BUDGET after the
+    job's start) is a reason in its file, not a failed step. The file is written and the step
+    exits 0, so the verdict runs, and is incomplete."""
+    monkeypatch.setenv("V4_JOB_STARTED", "1792000000")
+    api = FakeGitHub([CURRENT])
+    out = tmp_path / "reasons.json"
+    argv = ["dispatch-check", "--mode", "registered", "--registration-sha256", SHA]
+    code = reg.main(
+        [*argv, "--judge-all", "--out", str(out)],
+        github_opener=api,
+        sleep=no_sleep,
+        wall=lambda: 1792000000.0 + reg.VERDICT_JOB_BUDGET,
+    )
+    assert code == 0, capsys.readouterr().err
+    (reason,) = report.read_dispatch_reasons(out)
+    assert reason.startswith("another dispatch of this registration could not be ruled out: ")
+    assert "deadline" in reason
+    assert api.requests == []  # refused before any request: nothing was asked of GitHub
+
+
 def test_the_job_start_is_v4s(github_env, monkeypatch):
     """The deadline counts from V4_JOB_STARTED; V3.1's variable is not read."""
     monkeypatch.setenv("V31_JOB_STARTED", "not a time")

@@ -143,8 +143,9 @@ DISPATCH_CHECK_SCHEMA = DISPATCH_FORMAT  # "v4-dispatch-check-1": the verdict st
 # The files that may differ from the code pin, besides anything under docs/reviews/ and
 # docs/tasks/ (run_cell.REGISTRATION_DIRECTORIES, which run_cell._allowed adds; Ruling G2).
 ALLOWED = frozenset({REGISTRATION, RUN_MANIFEST, TRIAL_REGISTER})
-# The dispatch check's deadline counts from its job's start, recorded by the job's first step:
-# five minutes inside the plan job's timeout, and the verdict job's (Ruling G4).
+# The dispatch check's deadline counts from its job's start, recorded by the job's first step,
+# and ends at least five minutes inside the job's timeout (Ruling G4): 25 of the plan job's 60
+# minutes, and 55 of the verdict job's 180, which leaves the verdict more than two hours after it.
 JOB_STARTED = "V4_JOB_STARTED"
 PLAN_JOB_BUDGET = 25 * 60  # seconds
 VERDICT_JOB_BUDGET = 55 * 60  # seconds
@@ -157,7 +158,9 @@ SKIPPED_JOBS = ("v3-pack", "v3-picks", "scenarios", "verdict", "analysis")
 SKIPPED_MATRIX_JOBS = ("cell", "v3-cell")
 GATE_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
 TITLE_MODES = ("registered", "rehearsal", "timing")  # the workflow's modes, in its run-name
-RUN_NAME = "v4-run"  # the workflow's run-name: v4-run ${{ inputs.mode }} ${{ inputs.sha }}
+# The workflow's name, which starts its run-name:
+# v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
+RUN_NAME = "v4-run"
 SPEC = "docs/superpowers/specs/2026-10-17-v4-design.md"  # V4's spec, at its real path
 REHEARSAL_SCHEMA = "v4-rehearsal-1"
 REHEARSAL_TRIAL = "v4-0-synthetic"  # the rehearsal world's synthetic trial

@@ -32,10 +32,18 @@ The ``analysis`` job of ``.github/workflows/v4-run.yml`` times its diagnosis the
 ``peak_rss_mb`` and ``exit_status``, in a folder that must exist, and never over a file. A
 verdict that failed (it exits 1 having written nothing, or is killed) is timed too, with its
 status: that is the run a timing run must not lose, and the workflow makes the folder for it.
-For both steps, a command killed by a signal N (out of memory, say), whose exit status GNU time
-leaves undefined, is timed with 128 + N, the status GNU time then exits with. The three targets
-exclude each other. Standard output carries the step's seconds, megabytes and exit status: times
-only, never a count of cells, an outcome or the verdict.
+
+``--time-file expected.time --expected-dir verdict`` times the same job's ``expected`` step
+(``scripts/v4_run_plan.py expected``, which loads the whole data pack with ``Market.load``) the
+same way: it writes ``<expected dir>/expected-timing.json`` with ``step`` (``expected``),
+``wall_seconds``, ``peak_rss_mb`` and ``exit_status``, beside ``verdict-timing.json`` in the
+verdict folder, which must exist (the workflow makes it), and never over a file; a step that
+failed is timed too, with its status.
+
+For these three steps, a command killed by a signal N (out of memory, say), whose exit status GNU
+time leaves undefined, is timed with 128 + N, the status GNU time then exits with. The four
+targets exclude each other. Standard output carries the step's seconds, megabytes and exit status:
+times only, never a count of cells, an outcome or the verdict.
 """
 
 from __future__ import annotations
@@ -54,6 +62,7 @@ from crypto_grid_bot.v4.engine.run import RECORDS_FILE
 TIMING_FILE = "timing.json"
 DIAGNOSE_TIMING_FILE = "diagnose-timing.json"
 VERDICT_TIMING_FILE = "verdict-timing.json"
+EXPECTED_TIMING_FILE = "expected-timing.json"
 
 # GNU time -v prints "h:mm:ss" from one hour on, and "m:ss.ss" below it.
 _ELAPSED_LINE = re.compile(
@@ -138,6 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument(
         "--verdict-dir", type=Path, help="the verdict folder, for verdict-timing.json"
     )
+    target.add_argument(
+        "--expected-dir", type=Path, help="the verdict folder, for expected-timing.json"
+    )
     return parser
 
 
@@ -172,8 +184,9 @@ def _create(path: Path, document: dict[str, object]) -> None:
 
 
 def _step_timing(step: str, file_name: str, time_file: Path, folder: Path) -> int:
-    """``--diagnosis-dir`` and ``--verdict-dir``: one step's ``file_name`` in ``folder``, with
-    ``step`` (``diagnose`` or ``verdict``) and its exit status (module docstring)."""
+    """``--diagnosis-dir``, ``--verdict-dir`` and ``--expected-dir``: one step's ``file_name`` in
+    ``folder``, with ``step`` (``diagnose``, ``verdict`` or ``expected``) and its exit status
+    (module docstring)."""
     text = _read_time_file(time_file)
     if text is None:
         return 1
@@ -208,6 +221,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _step_timing("diagnose", DIAGNOSE_TIMING_FILE, args.time_file, args.diagnosis_dir)
     if args.verdict_dir is not None:
         return _step_timing("verdict", VERDICT_TIMING_FILE, args.time_file, args.verdict_dir)
+    if args.expected_dir is not None:
+        return _step_timing("expected", EXPECTED_TIMING_FILE, args.time_file, args.expected_dir)
     cell = args.cell_dir.name
     text = _read_time_file(args.time_file)
     if text is None:

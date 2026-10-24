@@ -25,15 +25,20 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   can never pass for the registered run's. It needs no input: registration_sha256 and
 #   data_run stay empty.
 # - timing: the 44 cells that are not v3 on the real-size synthetic world (Ruling W2): no
-#   registration exists yet, so nothing is gated or checked for a second dispatch. Only its
-#   v4-timing-* artifacts are downloaded after it; the cells' own artifacts simply expire. The v3
-#   cells' times come from the v4-v3 run 40040422092.
+#   registration exists yet, so nothing is gated or checked for a second dispatch. Besides its
+#   v4-timing-* artifacts it uploads v4-data and every cell's v4-cell-* and v4-summary-*, as a
+#   registered run does, which its verdict and analysis read; only the v4-timing-* artifacts are
+#   downloaded after it, and the others, synthetic results, simply expire. The v3 cells' times
+#   come from the v4-v3 run 40040422092. Its verdict plans no condition-2 and no v3 measures (46
+#   measures that load marks, against about 92 in a registered run), so scale its verdict time by
+#   about two: that, plus the dispatch check's 55-minute deadline, must fit the verdict job's
+#   timeout.
 # - registered: the registered experiment, once (spec, "Registration and the run"). The plan job
 #   gates the checkout on the dispatched registration_sha256 first of all, refuses a second
 #   dispatch of the registration, checks the data run (data_run) through GitHub's API before
 #   anything of it is downloaded, then guards the downloaded data against the run manifest's
 #   pins; v3-pack rebuilds V3's input pack; v3-picks trains V3's selector once; every cell job
-#   guards its data and gates its checkout again before its cell runs.
+#   gates its checkout again, then guards its data, before its cell runs.
 #
 # OPERATING RULE: one v4-run at a time. Never dispatch v4-run while another v4-run is queued or
 # running: the concurrency group below keeps the running one, but GitHub keeps one pending run
@@ -42,15 +47,17 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # counts as an execution of its registration (owner decision v31-d21, layer L2), and a re-run
 # voids the verdict.
 #
-# THE DISPATCH REF: a registered or timing run is dispatched from the registration's ref. The
-# registered run's ref is the code pin plus the registration files only (config/v4_registration.json,
-# config/v4_run_manifest.json, docs/trials/register.jsonl, docs/reviews/** and docs/tasks/**,
-# Ruling G2), which the job gate checks in the plan job and again in every cell job, so a wrong
-# ref fails in the first job; every checkout holds the full history, which that check reads. A
-# timing run, made before the registration exists, is dispatched from the code pin's ref, so its
-# times are the registered code's. The registered data run (data_run) must be a successful
-# "v4-data full config/v4_data.json" run of this run's own commit (github.sha), so dispatch it
-# from the same ref, and this run within a day of it: its v4-data artifact is kept one day.
+# THE DISPATCH REF, by mode. A registered run is dispatched from the registration's ref: the code
+# pin plus the registration files only (config/v4_registration.json, config/v4_run_manifest.json,
+# docs/trials/register.jsonl, docs/reviews/** and docs/tasks/**, Ruling G2), which the job gate
+# checks in the plan job and again in every cell job, so a wrong ref fails in the first job;
+# every checkout holds the full history, which that check reads. A timing run, made before the
+# registration exists, is dispatched from a ref at the code to be timed (the code the code pin
+# will name), so its times are the registered code's. A rehearsal may be dispatched from any ref:
+# it gates its own world's repository, never this checkout. The registered data run (data_run)
+# must be a successful "v4-data full config/v4_data.json" run of this run's own commit
+# (github.sha), so dispatch it from the same ref, and this run within a day of it: its v4-data
+# artifact is kept one day.
 #
 # THE MATRICES: scripts/v4_run_plan.py matrix lists the cells of the mode, the verdict's expected
 # cells (so a cell that runs is a cell that is expected): the cell job takes the 44 that are not
@@ -74,22 +81,24 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # - v4-timing-cell-<cell>-attempt-<n>: a timing run's cell timing.json alone;
 # - v4-forced-attempt-<n>: a rehearsal's six forced cells, <kind>/<cell>/summary.json and
 #   receipt.json alone;
-# - v4-verdict-attempt-<n>: verdict/ (verdict.json, verdict.md, verdict-timing.json); in a
-#   rehearsal v4-rehearsal-verdict-attempt-<n>, which also holds every scenario's verdict
-#   (scenario-verdicts/<scenario>/) and the scenario check's lines (check.txt); in a timing run
-#   v4-timing-verdict-attempt-<n>, verdict/verdict-timing.json alone;
-# - v4-analysis-attempt-<n>: diagnosis/ (diagnosis.json, diagnosis.md, diagnose-timing.json); in a
-#   rehearsal v4-rehearsal-analysis-attempt-<n>; in a timing run v4-timing-analysis-attempt-<n>,
-#   diagnosis/diagnose-timing.json alone;
-# - v4-status-attempt-<n>: status/status.json, every other job's result; in a rehearsal
+# - v4-verdict-attempt-<n>: verdict.json, verdict.md, verdict-timing.json and expected-timing.json
+#   at its root (one folder uploaded alone keeps no folder); in a rehearsal
+#   v4-rehearsal-verdict-attempt-<n>, whose three paths keep their common folder: verdict/ (the
+#   same four files), every scenario's verdict (scenario-verdicts/<scenario>/) and the scenario
+#   check's lines (check.txt); in a timing run v4-timing-verdict-attempt-<n>, verdict-timing.json
+#   and expected-timing.json alone, at its root;
+# - v4-analysis-attempt-<n>: diagnosis.json, diagnosis.md and diagnose-timing.json at its root; in
+#   a rehearsal v4-rehearsal-analysis-attempt-<n>; in a timing run v4-timing-analysis-attempt-<n>,
+#   diagnose-timing.json alone;
+# - v4-status-attempt-<n>: status.json at its root, every other job's result; in a rehearsal
 #   v4-rehearsal-status-attempt-<n>, in a timing run v4-timing-status-attempt-<n>.
 # A rehearsal's and a timing run's outputs carry their mode's name (Ruling W3), so a synthetic
 # verdict can never pass for the registered run's.
 # Every name carries -attempt-<n> (github.run_attempt) but v4-data, v4-v3-pack and
 # v4-rehearsal-world, whose names are fixed and which are uploaded without overwrite, so a
 # re-run of the whole workflow fails closed at the plan job. A cell's uploads run after its
-# replay succeeded, a failed timing step included (the job still fails); a failed replay
-# uploads nothing.
+# replay succeeded, a failed timing step included (the job still fails), but for a timing run's
+# timing.json alone, which a failed timing step did not write; a failed replay uploads nothing.
 #
 # A registered run is executed once. Re-running any job, the failed ones or all of them, is a new
 # recorded attempt (a new run_attempt), whose artifacts carry its number: the verdict refuses a
@@ -98,8 +107,9 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # Do not re-run a registered run. The one exception is the spec's single aggregate-only re-run
 # after an infrastructure failure: re-running the verdict job alone (with the status job, which
 # needs it) is harmless, since its artifacts are named for its attempt and the cells' summaries
-# it reads are unchanged, still those of attempt 1. (A rehearsal's verdict re-run alone fails at
-# its forced cells' download, which takes its own attempt's.)
+# it reads are unchanged, still those of attempt 1. Such a re-run starts the verdict from zero:
+# its progress/ folder is never uploaded (resuming is for a local run). (A rehearsal's verdict
+# re-run alone fails at its forced cells' download, which takes its own attempt's.)
 #
 # The reserved window (owner decision v4-d03): no market data from 2025-01 onward is executed
 # before the registered run. The rehearsal and timing modes run on synthetic worlds only, and the
@@ -115,6 +125,11 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # the forced cells' lines, the verdict step's (its counts of missing and refused cells can tell
 # an incomplete verdict) and the diagnosis' (a cell's record and month counts can tell a stop).
 # The rehearsal's scenario check writes its lines to check.txt, in its verdict artifact.
+# Accepted residual: a cell job's timing step prints the cell's wall time and records size, and
+# every artifact's size and every job's duration are public on GitHub. A cell that stopped early
+# runs shorter and writes fewer records, so these can hint at a stop; the owner's rule allows
+# sizes and times in the public log, and they are kept, since the timing run exists to measure
+# them.
 #
 # Jobs:
 # - plan (every mode): records its start (the dispatch check's budget), lists the cells' matrices,
@@ -131,13 +146,15 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # - v3-picks (registered, rehearsal): trains V3's selector once on that pack
 #   (scripts/v4_v3_cell.py picks; a rehearsal's stand-in, scripts/v4_rehearsal.py picks); its
 #   output picks_sha256 is the SHA-256 of the file it wrote, the pin every v3 cell requires.
-# - cell, one job per cell of the plan's cells matrix: downloads v4-data, guards it, gates the
-#   checkout again (a rehearsal's world repository), then runs scripts/v4_cell.py under GNU time
+# - cell, one job per cell of the plan's cells matrix: gates the checkout again first (a
+#   rehearsal's world repository, which it downloads for that; Ruling G5: the job gate runs
+#   first), then downloads v4-data, guards it, runs scripts/v4_cell.py under GNU time
 #   (/usr/bin/time -v) and keeps its wall time and peak memory in timing.json
 #   (scripts/v4_cells_timing.py).
-# - v3-cell, one job per v3 cell (registered, rehearsal): downloads the pack and the picks, checks
-#   both files against their pins (the plan's and the picks job's) before anything runs, gates the
-#   checkout again, then runs scripts/v4_v3_cell.py run under GNU time.
+# - v3-cell, one job per v3 cell (registered, rehearsal): gates the checkout again first, as the
+#   cell job does, then downloads the pack and the picks, checks both files against their pins
+#   (the plan's and the picks job's) before anything reads them, then runs scripts/v4_v3_cell.py
+#   run under GNU time.
 # - scenarios (rehearsal), after the picks: forces six stop outcomes that a synthetic world does
 #   not produce by itself, through the real cell CLIs (scripts/v4_rehearsal.py force, Ruling W3):
 #   liquidated, limit_unrestorable, accounting_failure and engine_error on v4_main-1000-1x, and
@@ -146,22 +163,26 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   that is not synthetic before any cell runs. The forced cells' summaries and receipts are
 #   v4-forced-attempt-<n>.
 # - verdict (every mode), after every cell job that ended, failed or timed out included, never
-#   after a cancelled run or a failed plan: downloads v4-data and every v4-summary-*, one folder
-#   per artifact, never a cell's records (Ruling W1); writes the expected file
-#   (scripts/v4_run_plan.py expected: the mode's cells, the data's window and pins, the V3 pack
-#   pin of the run manifest or of the rehearsal's world, and the picks job's pin, or 64 zeros
-#   when the picks job did not succeed: no picks file hashes to them, so every v3 cell counts as
-#   missing and the verdict is incomplete, or fail if a v4_main stopped, rather than not
-#   written); in a registered run judges every other dispatch of the registration again
-#   (scripts/v4_registration.py dispatch-check --judge-all: any that counts, or a check that
-#   could not rule one out, makes the verdict incomplete), its deadline 55 minutes from the
-#   job's start, its first step; then runs scripts/v4_verdict.py under GNU time, whose wall time,
-#   peak memory and exit status go to verdict/verdict-timing.json, after a verdict that failed
-#   too. A rehearsal then writes its eleven
-#   scenarios (scripts/v4_rehearsal.py scenarios: the base set and ten altered ones, from the
-#   summaries and the forced cells), judges each one into its own folders, and checks each
-#   verdict against the scenario's own (check, which fails the job unless all eleven are as
-#   expected). The verdict is uploaded once it is written, whatever failed after it.
+#   after a cancelled run or a failed plan. In a registered run it first judges every other
+#   dispatch of the registration again, before any download (scripts/v4_registration.py
+#   dispatch-check --judge-all: any that counts, or a check that could not rule one out, makes
+#   the verdict incomplete), its deadline 55 minutes from the job's start (which the job's first
+#   step records); the job's timeout is 180 minutes, so the verdict always has more than two
+#   hours after it. Then
+#   it downloads v4-data and every v4-summary-*, one folder per artifact, each cell's summary and
+#   receipt alone, never a cell's records (Ruling W1); writes the expected file under GNU time
+#   (scripts/v4_run_plan.py expected, which loads the whole data pack: the mode's cells, the
+#   data's window and pins, the V3 pack pin of the run manifest or of the rehearsal's world, and
+#   the picks job's pin, or 64 zeros when the picks job did not succeed: no picks file hashes to
+#   them, so every v3 cell counts as missing and the verdict is incomplete, or fail if a v4_main
+#   stopped, rather than not written); then runs scripts/v4_verdict.py under GNU time. The
+#   verdict's wall time, peak memory and exit status go to verdict/verdict-timing.json, the
+#   expected step's to verdict/expected-timing.json, after a step that failed too. A rehearsal
+#   then writes its eleven scenarios (scripts/v4_rehearsal.py scenarios: the base set and ten
+#   altered ones, from the summaries and the forced cells), judges each one into its own
+#   folders, and checks each verdict against the scenario's own (check, which fails the job
+#   unless all eleven are as expected). The verdict is uploaded once it is written, whatever
+#   failed after it.
 # - analysis (every mode), as the verdict: downloads v4-data, guards it, downloads every
 #   v4-cell-* (the 44 cells that are not v3; a v3 cell's folder is v4-v3-cell-*, which no job
 #   downloads), then runs scripts/v4_diagnose.py under GNU time (--manifest in a registered run,
@@ -172,7 +193,8 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   names its artifact.
 # - status (always), whatever the other jobs did, a cancelled run included: needs every other job
 #   and records each one's result (scripts/v4_run_status.py, which reads toJSON(needs), RUN_ID
-#   and RUN_ATTEMPT from the environment), and whether the verdict job ran.
+#   and RUN_ATTEMPT from the environment), and whether the verdict job ran; a registration_sha256
+#   input of the wrong form is recorded as null, with a note, never refused.
 on:
   workflow_dispatch:
     inputs:
@@ -564,6 +586,32 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
+      # A rehearsal gates the world's repository, which the plan uploaded as world.tar.
+      - if: ${{ inputs.mode == 'rehearsal' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v4-rehearsal-world
+          path: world
+      - name: Unpack the rehearsal world's repository
+        if: ${{ inputs.mode == 'rehearsal' }}
+        run: tar -xf world/world.tar -C world
+
+      # The job gate again, first (Ruling G5: the job gate runs first), before the run's data is
+      # downloaded or guarded: this checkout in a registered run, the world's repository in a
+      # rehearsal. The guard below trusts the run manifest it is given; the gate holds that
+      # manifest to the registration.
+      - name: Gate the cell on the registration
+        if: ${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}
+        run: |
+          if [ "$MODE" = registered ]; then
+            python scripts/v4_registration.py gate --repo . --mode registered --registration-sha256 "$RUN_REGISTRATION_SHA256"
+          elif [ "$MODE" = rehearsal ]; then
+            python scripts/v4_registration.py gate --repo world/repo --mode rehearsal --registration-sha256 "$RUN_REGISTRATION_SHA256"
+          else
+            echo "::error::the job gate runs in registered and rehearsal mode only, not $MODE." >&2
+            exit 1
+          fi
+
       # This run's own copy of the data, which the plan checked and uploaded.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -579,30 +627,6 @@ jobs:
             python scripts/v4_run_guard.py --data v4data --synthetic
           else
             echo "::error::the data guard knows the registered, rehearsal and timing modes only, not $MODE." >&2
-            exit 1
-          fi
-
-      # A rehearsal gates the world's repository, which the plan uploaded as world.tar.
-      - if: ${{ inputs.mode == 'rehearsal' }}
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: v4-rehearsal-world
-          path: world
-      - name: Unpack the rehearsal world's repository
-        if: ${{ inputs.mode == 'rehearsal' }}
-        run: tar -xf world/world.tar -C world
-
-      # The job gate again, before the cell: this checkout in a registered run, the world's
-      # repository in a rehearsal.
-      - name: Gate the cell on the registration
-        if: ${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}
-        run: |
-          if [ "$MODE" = registered ]; then
-            python scripts/v4_registration.py gate --repo . --mode registered --registration-sha256 "$RUN_REGISTRATION_SHA256"
-          elif [ "$MODE" = rehearsal ]; then
-            python scripts/v4_registration.py gate --repo world/repo --mode rehearsal --registration-sha256 "$RUN_REGISTRATION_SHA256"
-          else
-            echo "::error::the job gate runs in registered and rehearsal mode only, not $MODE." >&2
             exit 1
           fi
 
@@ -630,7 +654,8 @@ jobs:
       # A timing step that failed must not discard a replay that succeeded (the job still fails):
       # the uploads run after a failed timing step, and after nothing else that failed, so a
       # failed replay uploads nothing. The cell's folder (the analysis reads it), its summary
-      # and receipt alone (the verdict reads those), and in a timing run its timing alone.
+      # and receipt alone (the verdict reads those), and in a timing run its timing alone, only
+      # once the timing step wrote it (a failed one wrote no timing.json to upload).
       - if: ${{ success() || steps.timing.outcome == 'failure' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -647,7 +672,7 @@ jobs:
             out/${{ matrix.cell }}/receipt.json
           if-no-files-found: error
           retention-days: 1
-      - if: ${{ (success() || steps.timing.outcome == 'failure') && inputs.mode == 'timing' }}
+      - if: ${{ success() && steps.timing.outcome == 'success' && inputs.mode == 'timing' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v4-timing-cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
@@ -690,6 +715,29 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
+      - if: ${{ inputs.mode == 'rehearsal' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v4-rehearsal-world
+          path: world
+      - name: Unpack the rehearsal world's repository
+        if: ${{ inputs.mode == 'rehearsal' }}
+        run: tar -xf world/world.tar -C world
+
+      # The job gate again, first, as in the cell job: before the pack and the picks are
+      # downloaded.
+      - name: Gate the cell on the registration
+        if: ${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}
+        run: |
+          if [ "$MODE" = registered ]; then
+            python scripts/v4_registration.py gate --repo . --mode registered --registration-sha256 "$RUN_REGISTRATION_SHA256"
+          elif [ "$MODE" = rehearsal ]; then
+            python scripts/v4_registration.py gate --repo world/repo --mode rehearsal --registration-sha256 "$RUN_REGISTRATION_SHA256"
+          else
+            echo "::error::the job gate runs in registered and rehearsal mode only, not $MODE." >&2
+            exit 1
+          fi
+
       # This run's pack and picks: v3pack/v3-input.pack.json.gz and picks/v3_picks.json.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -700,8 +748,8 @@ jobs:
           name: v4-v3-picks-attempt-${{ github.run_attempt }}
           path: picks
 
-      # Before anything runs: each file must be the one its pin names. The pack's pin is the
-      # SHA-256 of the JSON it compresses, the picks' that of the file's own bytes; pipefail
+      # Before anything reads them: each file must be the one its pin names. The pack's pin is
+      # the SHA-256 of the JSON it compresses, the picks' that of the file's own bytes; pipefail
       # makes a gzip that cannot be read fail the step. The script checks both pins again when
       # it reads the files.
       - name: Check the pack and the picks against their pins
@@ -715,28 +763,6 @@ jobs:
           picks=$(sha256sum picks/v3_picks.json | cut -d' ' -f1)
           if [ "$picks" != "$PICKS_SHA256" ]; then
             echo "::error::the downloaded picks file is not the one the picks job pinned." >&2
-            exit 1
-          fi
-
-      - if: ${{ inputs.mode == 'rehearsal' }}
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: v4-rehearsal-world
-          path: world
-      - name: Unpack the rehearsal world's repository
-        if: ${{ inputs.mode == 'rehearsal' }}
-        run: tar -xf world/world.tar -C world
-
-      # The job gate again, before the cell, as in the cell job.
-      - name: Gate the cell on the registration
-        if: ${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}
-        run: |
-          if [ "$MODE" = registered ]; then
-            python scripts/v4_registration.py gate --repo . --mode registered --registration-sha256 "$RUN_REGISTRATION_SHA256"
-          elif [ "$MODE" = rehearsal ]; then
-            python scripts/v4_registration.py gate --repo world/repo --mode rehearsal --registration-sha256 "$RUN_REGISTRATION_SHA256"
-          else
-            echo "::error::the job gate runs in registered and rehearsal mode only, not $MODE." >&2
             exit 1
           fi
 
@@ -785,7 +811,8 @@ jobs:
     # says otherwise, hence !cancelled() and the results it requires.
     if: ${{ !cancelled() && inputs.mode == 'rehearsal' && needs.plan.result == 'success' && needs.v3-picks.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Six replays one after another, two of them V3's 3.5-year replays.
+    timeout-minutes: 180
     env:
       PICKS_SHA256: ${{ needs.v3-picks.outputs.picks_sha256 }}
     steps:
@@ -856,7 +883,10 @@ jobs:
     # scenarios outside a rehearsal) would skip it too.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The dispatch check's deadline is 55 minutes from the job's start (VERDICT_JOB_BUDGET), so
+    # the verdict always has more than two hours after it: a timing run's verdict time, scaled by
+    # about two (it plans no condition-2 and no v3 measures), must fit in what is left.
+    timeout-minutes: 180
     # actions: read lets a registered run's verdict list this workflow's runs and jobs again (the
     # dispatch check); nothing is written.
     permissions:
@@ -869,7 +899,7 @@ jobs:
       PICKS_SHA256: ${{ needs.v3-picks.outputs.picks_sha256 }}
     steps:
       # First of all: the job's start, from which a registered verdict's dispatch check budgets
-      # its deadline (VERDICT_JOB_BUDGET, 55 of the job's 60 minutes), as the plan job's does.
+      # its deadline (VERDICT_JOB_BUDGET, 55 of the job's 180 minutes), as the plan job's does.
       - name: Record the job's start
         run: echo "V4_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
@@ -885,6 +915,20 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
+
+      # Ruling G4, again, as the verdict's input, first after the setup and before any download,
+      # so its deadline (55 minutes from the job's start) never eats into the verdict's time:
+      # every earlier dispatch of the registration is judged and none refused; each that counts,
+      # or why none could be ruled out (any failure of the check, its deadline passing included),
+      # goes to reasons.json and makes the verdict incomplete. Such a failure is a reason, not a
+      # failed step: reasons.json is still written. The step fails, writing no file, only when
+      # the file cannot be written (or already exists, or the options are wrong); then nothing
+      # after it runs, the verdict included.
+      - name: Judge every other dispatch of the registration
+        if: ${{ inputs.mode == 'registered' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/v4_registration.py dispatch-check --mode registered --registration-sha256 "$REGISTRATION_SHA256" --judge-all --out reasons.json
 
       # This run's data (the expected file's window and pins), and each cell's summary and
       # receipt alone, one folder per artifact: summaries/v4-summary-<cell id>-attempt-<n>/
@@ -912,6 +956,14 @@ jobs:
           name: v4-rehearsal-world
           path: world
 
+      # The expected step and the verdict step both run under GNU time.
+      - name: Check that GNU time is installed
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            echo "::error::/usr/bin/time (GNU time) is missing, so the verdict's peak memory cannot be measured." >&2
+            exit 1
+          fi
+
       # What the cells are judged against: the mode's cells, the data's window and pins (each
       # pack verified by its pin), the V3 pack pin from the mode's own source (the run manifest,
       # the world, or none in a timing run) and the picks job's pin. A picks job that did not
@@ -920,46 +972,32 @@ jobs:
       # the verdict is incomplete (fail if a v4_main stopped) rather than not written at all.
       # The sentinel is keyed on the job's result, so a picks job that succeeded with an empty
       # or bad pin still fails here. A registered run's data must not be synthetic, and a
-      # rehearsal's and a timing run's must be (v4-d03).
-      - name: Write the expected file
+      # rehearsal's and a timing run's must be (v4-d03). It loads the whole data pack
+      # (Market.load), inside the verdict step's 2 GB limit: it runs under GNU time, and its
+      # wall time and peak memory are kept as the verdict's are (expected.time).
+      - id: expected
+        name: Write the expected file
         run: |
           picks="$PICKS_SHA256"
           if [ "$PICKS_RESULT" != success ]; then
             picks=0000000000000000000000000000000000000000000000000000000000000000
           fi
           if [ "$MODE" = registered ]; then
-            python scripts/v4_run_plan.py expected --mode registered --data v4data --out expected.json --manifest config/v4_run_manifest.json --picks-sha256 "$picks"
+            /usr/bin/time -v -o expected.time python scripts/v4_run_plan.py expected --mode registered --data v4data --out expected.json --manifest config/v4_run_manifest.json --picks-sha256 "$picks"
           elif [ "$MODE" = rehearsal ]; then
-            python scripts/v4_run_plan.py expected --mode rehearsal --data v4data --out expected.json --world world --picks-sha256 "$picks"
+            /usr/bin/time -v -o expected.time python scripts/v4_run_plan.py expected --mode rehearsal --data v4data --out expected.json --world world --picks-sha256 "$picks"
           elif [ "$MODE" = timing ]; then
-            python scripts/v4_run_plan.py expected --mode timing --data v4data --out expected.json
+            /usr/bin/time -v -o expected.time python scripts/v4_run_plan.py expected --mode timing --data v4data --out expected.json
           else
             echo "::error::the expected file knows the registered, rehearsal and timing modes only, not $MODE." >&2
             exit 1
           fi
 
-      # Ruling G4, again, as the verdict's input: every earlier dispatch of the registration is
-      # judged and none refused; each that counts, or why none could be ruled out (any failure
-      # of the check, its deadline passing included), goes to reasons.json and makes the verdict
-      # incomplete. The file is written only when the check ran to its end; otherwise the step
-      # fails and the verdict does not run.
-      - name: Judge every other dispatch of the registration
-        if: ${{ inputs.mode == 'registered' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/v4_registration.py dispatch-check --mode registered --registration-sha256 "$REGISTRATION_SHA256" --judge-all --out reasons.json
-
-      - name: Check that GNU time is installed
-        run: |
-          if [ ! -x /usr/bin/time ]; then
-            echo "::error::/usr/bin/time (GNU time) is missing, so the verdict's peak memory cannot be measured." >&2
-            exit 1
-          fi
-
-      # The verdict step (resumable: progress/ holds its finished steps) writes verdict/verdict.json
-      # and verdict/verdict.md and exits 0, whatever the verdict; it exits 1 having written
-      # nothing. Its standard output, counts of accepted, refused and missing cells, could tell
-      # an incomplete verdict: it goes to /dev/null.
+      # The verdict step writes verdict/verdict.json and verdict/verdict.md and exits 0, whatever
+      # the verdict; it exits 1 having written nothing. It is resumable (progress/ holds its
+      # finished steps), but progress/ is never uploaded, so a re-run of this job starts from
+      # zero: resuming is for a local run. Its standard output, counts of accepted, refused and
+      # missing cells, could tell an incomplete verdict: it goes to /dev/null.
       - id: verdict
         name: Judge the cells
         run: |
@@ -981,6 +1019,16 @@ jobs:
         run: |
           mkdir -p verdict
           python scripts/v4_cells_timing.py --time-file verdict.time --verdict-dir verdict
+
+      # The expected step's wall time and peak memory, beside the verdict's, after an expected
+      # step that failed too (the verdict then did not run, and made no folder). It runs after the
+      # verdict, so a timing step that fails never keeps the verdict from running.
+      - id: expected_timing
+        if: ${{ !cancelled() && (steps.expected.outcome == 'success' || steps.expected.outcome == 'failure') }}
+        name: Keep the expected file's wall time and peak memory
+        run: |
+          mkdir -p verdict
+          python scripts/v4_cells_timing.py --time-file expected.time --expected-dir verdict
 
       # A rehearsal's eleven scenarios (Ruling W3): the base set (the summaries just judged) and
       # ten altered sets, with the forced cells of this attempt in place of base cells, a cell
@@ -1015,8 +1063,9 @@ jobs:
         run: python scripts/v4_rehearsal.py check --scenarios scenarios --verdicts scenario-verdicts > check.txt
 
       # The verdict, once it is written, whatever failed after it (the job still fails): its
-      # timing, or in a rehearsal a scenario step. A timing run keeps the timing alone, of a
-      # verdict that succeeded or failed.
+      # timing, or in a rehearsal a scenario step; verdict/ holds both timings by then. A timing
+      # run keeps the two timings alone, each once it was written, of a step that succeeded or
+      # failed: two files of one folder, so they sit at the artifact's root.
       - if: ${{ !cancelled() && steps.verdict.outcome == 'success' && inputs.mode == 'registered' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1034,11 +1083,13 @@ jobs:
             check.txt
           if-no-files-found: error
           retention-days: 1
-      - if: ${{ !cancelled() && steps.timing.outcome == 'success' && inputs.mode == 'timing' }}
+      - if: ${{ !cancelled() && (steps.timing.outcome == 'success' || steps.expected_timing.outcome == 'success') && inputs.mode == 'timing' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v4-timing-verdict-attempt-${{ github.run_attempt }}
-          path: verdict/verdict-timing.json
+          path: |
+            verdict/verdict-timing.json
+            verdict/expected-timing.json
           if-no-files-found: error
           retention-days: 1
 
@@ -1178,8 +1229,9 @@ jobs:
       - run: python -m pip install -e . --no-deps
 
       # Every other job's result, read from the needs context through the environment (only the
-      # results are kept), and the dispatch's own registration_sha256 (empty: null): a plan that
-      # stopped early has no output to give.
+      # results are kept), and the dispatch's own registration_sha256 (empty: null; of any other
+      # form: null, with a note, so the record is written in every case): a plan that stopped
+      # early has no output to give.
       - name: Record every job's result
         env:
           RUN_ID: ${{ github.run_id }}

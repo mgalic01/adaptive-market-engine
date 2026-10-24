@@ -143,7 +143,7 @@ Each ruling states the decision and what it costs if it is wrong. Tasks cite the
   - Each artifact carries `-attempt-<github.run_attempt>`, except `v4-data`, `v4-v3-pack` and `v4-rehearsal-world`. Those three have fixed names and are uploaded without `overwrite`, so re-running the whole workflow fails closed at the plan job.
   - The verdict job downloads only `v4-summary-*` (`summary.json` and `receipt.json`, about 3 MB a cell at real size). V3.1's aggregate died of a full disk; this keeps the verdict step far inside 5 GB.
   - The analysis job downloads `v4-cell-*`. V3 cells upload `v4-v3-cell-*`, so the analysis never downloads them.
-- **W2. The timing mode** runs the 44 non-v3 cells on the real-size synthetic world, then the verdict step and the analysis over their outputs. It uploads only timing files: cell, verdict and analysis times, peak memory and output sizes. The v3 cells' times come from the `v4-v3` run (40040422092).
+- **W2. The timing mode** runs the 44 non-v3 cells on the real-size synthetic world, then the verdict step and the analysis over their outputs. It uploads only timing files: cell, verdict and analysis times, peak memory and output sizes. The v3 cells' times come from the `v4-v3` run (40040422092). (Corrected at the final review: it also uploads `v4-data`, `v4-cell-*` and `v4-summary-*`, which its own verdict and analysis read and which expire unread; only the `v4-timing-*` artifacts are downloaded. The verdict job also times its expected step, `expected-timing.json`.)
 - **W3. The rehearsal mode** builds the world in its plan job and runs every job of the registered graph on it, with the real gate on the world's git repository.
   - It also forces six stop outcomes through the real CLIs: `liquidated`, `limit_unrestorable` and `accounting_failure` through `v4_cell.py`, `engine_error` likewise, and `V3Stop` and `V3Accounting` through `v4_v3_cell.py`.
   - It then judges eleven scenarios, the base set and ten altered sets, and requires each to get its expected verdict.
@@ -994,8 +994,10 @@ The changes:
    - Check every job's result, the scenario check's lines ("as expected" for all 11), and that the gate ran on the world.
    - Download every artifact to `E:/v4-run-<id>/`, verify GitHub's digests, and offer the owner their deletion.
 2. **Dispatch the timing run:** `mode=timing`.
-   - Report the cell times, peak memory and output sizes, and the verdict's and the analysis's.
-   - The verdict must stay under 2 GB of memory, and its job's downloads well under 5 GB.
+   - Report the cell times, peak memory and output sizes, and the expected step's, the verdict's and the analysis's (`expected-timing.json`, `verdict-timing.json`, `diagnose-timing.json`).
+   - The verdict and the expected step must each stay under 2 GB of memory, and the verdict job's downloads well under 5 GB.
+   - The timing verdict plans no condition-2 and no v3 measures: 46 measures that load marks, against about 92 in a registered run. Scale its time by roughly two. The scaled time plus the dispatch check's deadline (55 minutes from the job's start) must fit the verdict job's timeout (180 minutes).
+   - `progress/` is not uploaded, so a verdict-only re-run starts from zero. Resuming is for a local run.
    - Download, then offer deletion.
 3. Fix any failure in a follow-up PR, under the same review bar.
 4. Record both runs in the step-4b build record.
