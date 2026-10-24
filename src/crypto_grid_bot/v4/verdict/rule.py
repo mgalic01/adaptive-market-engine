@@ -63,6 +63,11 @@ are skipped for all arms alike.
   ended in an engine error, a re-run, another dispatch, the conditions that cannot be computed, and
   the conditions that do not hold. The outcome is the precedence's; the reasons are everything the
   owner needs to read beside it.
+* **Skipped hours** (the spec: "hours missing from any source are skipped for all arms alike and
+  listed"). ``skipped_hours`` gives the hour opens of a range that are not common boundaries of two
+  arms. A computed ``condition_1`` (given its ``window``, the run's first and last hour open) and
+  ``condition_2`` (the V3 period, ``skipped_against_v3``, where a liquidated v3's hours after its
+  stop count as complete) carry them in ``Check.skipped_ms``; every other check has None.
 * ``Check.note``, ``Incomputable`` messages and ``Verdict.reasons`` are words and cell ids only:
   never an equity, a return or a quoted dispatch (public logs carry no figures).
 
@@ -139,7 +144,11 @@ class PathMeasure:
 class Check:
     """One condition at one capital. ``holds`` is None when it cannot be computed (or a needed cell
     is missing), and ``note`` says why in words. ``main`` and ``other`` are the two sides: two
-    ``PathMeasure`` for conditions 1 and 2, two Decimals for 3 and 4, None when ``holds`` is."""
+    ``PathMeasure`` for conditions 1 and 2, two Decimals for 3 and 4, None when ``holds`` is.
+    ``skipped_ms`` is, for a condition 1 or 2 that was computed over a range (``condition_1``'s
+    ``window``, condition 2's V3 period), the sorted hour opens of the range that are not common
+    boundaries of its two arms: the hours skipped for both alike, which the spec says are
+    listed. It is None for everything else."""
 
     condition: int
     capital: int
@@ -147,6 +156,7 @@ class Check:
     main: PathMeasure | Decimal | None
     other: PathMeasure | Decimal | None
     note: str | None
+    skipped_ms: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +198,18 @@ def common_boundaries(
             if (start_ms is None or hour >= start_ms) and (end_ms is None or hour <= end_ms)
         )
     )
+
+
+def skipped_hours(
+    left: Sequence[Mark], right: Sequence[Mark], *, start_ms: int, end_ms: int
+) -> tuple[int, ...]:
+    """The hour opens from ``start_ms`` to ``end_ms`` (both included, hour by hour) that are not
+    common boundaries of the two arms: the spec's "hours missing from any source are skipped for
+    all arms alike and listed". Sorted. ``start_ms`` must be an hour open."""
+    if start_ms % HOUR_MS != 0:
+        raise ValueError("the range of skipped hours starts at an hour open")
+    common = set(common_boundaries(left, right, start_ms=start_ms, end_ms=end_ms))
+    return tuple(hour for hour in range(start_ms, end_ms + 1, HOUR_MS) if hour not in common)
 
 
 def after_stop(
@@ -290,6 +312,22 @@ def measure_against_v3(
     return path_measure(arm_marks, hours, None), path_measure(other, hours, None)
 
 
+def skipped_against_v3(
+    arm_marks: Sequence[Mark], v3: CellFacts, v3_marks: Sequence[Mark]
+) -> tuple[int, ...]:
+    """The hours condition 2's measure skips: the hour opens from ``V3_START_MS`` to
+    ``V3_END_MS - HOUR_MS`` that are not common boundaries of the arm and ``v3_as_built``. A
+    liquidated v3's hours after its stop count as complete (V6), so they are skipped only where
+    the arm's mark is missing or incomplete. ``Incomputable`` as ``measure_against_v3`` is when
+    v3 left no path."""
+    return skipped_hours(
+        arm_marks,
+        _v3_path(v3, v3_marks),
+        start_ms=V3_START_MS,
+        end_ms=V3_END_MS - HOUR_MS,
+    )
+
+
 # ---- V7 to V9: the four conditions ----------------------------------------------------------
 
 
@@ -298,26 +336,45 @@ def _unknown(condition: int, capital: int, why: Incomputable | str) -> Check:
 
 
 def condition_1(
-    main: CellFacts, main_marks: Sequence[Mark], hold: CellFacts, hold_marks: Sequence[Mark]
+    main: CellFacts,
+    main_marks: Sequence[Mark],
+    hold: CellFacts,
+    hold_marks: Sequence[Mark],
+    *,
+    window: tuple[int, int] | None = None,
 ) -> Check:
-    """Compounded return / maximum drawdown is greater than ``hold_universe``'s (V7)."""
+    """Compounded return / maximum drawdown is greater than ``hold_universe``'s (V7).
+    ``window`` is the run's window, the first and last hour open (both included): when it is
+    given, the check lists the hours of it that are skipped (``Check.skipped_ms``)."""
     try:
         mine, theirs = measure_against_hold(main, main_marks, hold, hold_marks)
     except Incomputable as why:
         return _unknown(1, main.capital, why)
-    return Check(1, main.capital, mine.ratio > theirs.ratio, mine, theirs, None)
+    skipped = (
+        None
+        if window is None
+        else skipped_hours(main_marks, hold_marks, start_ms=window[0], end_ms=window[1])
+    )
+    return Check(1, main.capital, mine.ratio > theirs.ratio, mine, theirs, None, skipped)
 
 
 def condition_2(
     main: CellFacts, main_marks: Sequence[Mark], v3: CellFacts, v3_marks: Sequence[Mark]
 ) -> Check:
-    """Compounded return is greater than ``v3_as_built``'s over their common period (V6, V8)."""
+    """Compounded return is greater than ``v3_as_built``'s over their common period (V6, V8).
+    The check lists the hours of that period that are skipped (``Check.skipped_ms``)."""
     try:
         mine, theirs = measure_against_v3(main, main_marks, v3, v3_marks)
     except Incomputable as why:
         return _unknown(2, main.capital, why)
     return Check(
-        2, main.capital, mine.compounded_return > theirs.compounded_return, mine, theirs, None
+        2,
+        main.capital,
+        mine.compounded_return > theirs.compounded_return,
+        mine,
+        theirs,
+        None,
+        skipped_against_v3(main_marks, v3, v3_marks),
     )
 
 

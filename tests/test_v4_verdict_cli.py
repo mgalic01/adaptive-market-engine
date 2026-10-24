@@ -34,7 +34,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import v4_verdict_fixtures
 from v4_verdict_fixtures import (
+    HOURS,
     START_MS,
     edit_summary,
     expected_for,
@@ -46,11 +48,12 @@ from v4_verdict_fixtures import (
 )
 
 from crypto_grid_bot.combined.artifacts import _canonical
+from crypto_grid_bot.v4.engine import v3_as_built
 from crypto_grid_bot.v4.engine.arms import ARMS, CAPITALS, COST_MULTIPLES, all_cells
 from crypto_grid_bot.v4.engine.market import HOUR_MS
 from crypto_grid_bot.v4.engine.run import ENGINE_ERROR, LIQUIDATED
 from crypto_grid_bot.v4.engine.v3_as_built import V3_CAPITAL_ADAPTER
-from crypto_grid_bot.v4.verdict import inputs
+from crypto_grid_bot.v4.verdict import inputs, rule
 from crypto_grid_bot.v4.verdict.inputs import read_cell
 from crypto_grid_bot.v4.verdict.report import (
     DISPATCH_FORMAT,
@@ -122,6 +125,20 @@ def network_blocked(monkeypatch):
     """No test in this file may resolve a name or open a socket."""
     for owner, name in _SOCKET_CALLS:
         monkeypatch.setattr(owner, name, _refuse)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def short_v3_period():
+    """The fixtures' cells have 50 hours and V3's period is three and a half years, so with the
+    real period the check of condition 2 would list about 30,000 skipped hours (and the progress
+    file and the page would carry them in every one of 144 saves). This module runs with a V3
+    period of the cells' own 50 hours; ``test_v4_verdict_rule`` covers the real constants."""
+    end = START_MS + HOURS * HOUR_MS
+    patch = pytest.MonkeyPatch()
+    for module in (v3_as_built, inputs, rule, v4_verdict_fixtures):
+        patch.setattr(module, "V3_END_MS", end)
+    yield
+    patch.undo()
 
 
 @pytest.fixture(scope="module")
@@ -1061,6 +1078,140 @@ def test_the_comparison_table_has_a_row_per_cell_with_both_measures(base):
     assert "complete" in main_row and "%" in main_row
 
 
+# ---- skipped hours: "skipped for all arms alike and listed" ---------------------------------
+
+
+def hour(index: int) -> int:
+    """The open of the set's ``index``-th hour."""
+    return START_MS + index * HOUR_MS
+
+
+def gap_overrides() -> dict[str, dict[str, Any]]:
+    """Hours missing at different places, at 1,000 USDT and normal costs: v4_main's mark at hour
+    5 is incomplete, hold_universe has no mark at hour 9 and v3_as_built's at hour 7 is
+    incomplete."""
+    v3_cell = "v3_as_built-1000-1x"
+    main, v3 = marks_for(MAIN), marks_for(v3_cell)
+    main[5] = (main[5][0], main[5][1], False)
+    v3[7] = (v3[7][0], v3[7][1], False)
+    hold = [mark for index, mark in enumerate(marks_for(HOLD)) if index != 9]
+    return {MAIN: {"marks": main}, HOLD: {"marks": hold}, v3_cell: {"marks": v3}}
+
+
+def test_the_skipped_hours_are_listed_in_the_checks_and_counted_in_the_pairs(tmp_path):
+    made = world(tmp_path, overrides=gap_overrides())
+    assert made.run() == 0
+    document = made.document()
+    checks = {
+        (check["capital"], check["condition"]): check for check in document["verdict"]["checks"]
+    }
+    # each arm misses a different hour: both are listed, sorted, as integers
+    assert checks[(1000, 1)]["skipped_ms"] == [hour(5), hour(9)]
+    assert checks[(1000, 2)]["skipped_ms"] == [hour(5), hour(7)]
+    assert all(type(item) is int for item in checks[(1000, 1)]["skipped_ms"])
+    assert checks[(10000, 1)]["skipped_ms"] == checks[(10000, 2)]["skipped_ms"] == []
+    for key in ((1000, 3), (1000, 4), (10000, 3), (10000, 4)):
+        assert checks[key]["skipped_ms"] is None  # no hourly path
+    pairs = document["pairs"]
+    assert set(pairs[MAIN]["hold"]) == {"main", "other", "skipped_hours"}
+    assert pairs[MAIN]["hold"]["skipped_hours"] == 2  # a count only, never a list
+    assert pairs[MAIN]["v3"]["skipped_hours"] == 2
+    assert pairs["v4_long_only-1000-1x"]["hold"]["skipped_hours"] == 1  # hold's hour 9
+    assert pairs["v4_long_only-1000-1x"]["v3"]["skipped_hours"] == 1  # v3's hour 7
+    assert pairs[HOLD]["hold"]["skipped_hours"] == 1  # hold_universe against itself
+    assert pairs["v4_main-10000-1x"]["hold"]["skipped_hours"] == 0
+    assert not any("skipped_ms" in pair for rows in pairs.values() for pair in rows.values())
+
+
+def test_the_base_set_skips_no_hour(base):
+    document = base[0].document()
+    for check in document["verdict"]["checks"]:
+        assert check["skipped_ms"] == ([] if check["condition"] in (1, 2) else None)
+    assert all(
+        pair["skipped_hours"] == 0 for rows in document["pairs"].values() for pair in rows.values()
+    )
+
+
+@pytest.mark.parametrize("step", [CELLS + 2, CELLS + CHECKS + 10])
+def test_a_resume_with_skipped_hours_gives_the_same_bytes(tmp_path, monkeypatch, step):
+    reference = world(tmp_path / "reference", overrides=gap_overrides())
+    assert reference.run() == 0
+    made = world(tmp_path / "resumed", overrides=gap_overrides())
+    interrupt_after(monkeypatch, made, step)
+    saved = json.loads((made.progress / "progress.json").read_bytes())
+    assert saved["checks"]["1000:1"]["skipped_ms"] == [hour(5), hour(9)]  # kept in the progress
+    assert made.run() == 0
+    assert made.outputs() == reference.outputs()
+    assert made.document()["verdict"]["checks"][0]["skipped_ms"] == [hour(5), hour(9)]
+
+
+@pytest.mark.parametrize(
+    "hours", [[2 * HOUR_MS, HOUR_MS], [HOUR_MS, HOUR_MS], [HOUR_MS + 1], None, "x"]
+)
+def test_a_check_with_malformed_skipped_hours_in_the_progress_is_refused(
+    shared, monkeypatch, capsys, hours
+):
+    made = shared
+    interrupt_after(monkeypatch, made, CELLS + 1)  # the first check, condition 1, is done
+    path = made.progress / "progress.json"
+    saved = json.loads(path.read_bytes())
+    saved["checks"]["1000:1"]["skipped_ms"] = hours
+    path.write_bytes(_canonical(saved))
+    capsys.readouterr()
+    assert made.run() == 1
+    assert made.written() == []
+    assert "did not write" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("count", [-1, True, "2", None])
+def test_a_pair_with_a_malformed_skipped_count_in_the_progress_is_refused(
+    shared, monkeypatch, capsys, count
+):
+    made = shared
+    interrupt_after(monkeypatch, made, CELLS + CHECKS + 1)  # the first pair is done
+    path = made.progress / "progress.json"
+    saved = json.loads(path.read_bytes())
+    (record,) = saved["pairs"].values()
+    record["skipped_hours"] = count
+    path.write_bytes(_canonical(saved))
+    capsys.readouterr()
+    assert made.run() == 1
+    assert made.written() == []
+    assert "did not write" in capsys.readouterr().err
+
+
+def test_the_page_counts_the_skipped_hours(tmp_path):
+    made = world(tmp_path, overrides=gap_overrides())
+    assert made.run() == 0
+    section = made.page().split("\n## The four conditions\n")[1].split("\n## ")[0]
+    assert "verdict.json" in section and "skipped_ms" in section  # where the hours are listed
+
+    def column(capital: int) -> dict[str, str]:
+        """The 'Skipped hours' cell of each condition's row, for one capital."""
+        table = section.split(f"### Capital {capital} USDT")[1].split("###")[0]
+        rows = [line.split("|")[1:-1] for line in table.splitlines() if line.startswith("| ")]
+        head, body = [cell.strip() for cell in rows[0]], rows[2:]
+        assert "Skipped hours" in head
+        return {row[0].strip(): row[head.index("Skipped hours")].strip() for row in body}
+
+    assert column(1000) == {"1": "2", "2": "2", "3": "n/a", "4": "n/a"}
+    assert column(10000) == {"1": "0", "2": "0", "3": "n/a", "4": "n/a"}
+
+
+def test_a_check_that_could_not_be_computed_has_no_skipped_hours_on_the_page(tmp_path):
+    made = world(tmp_path, omit=(HOLD,))
+    assert made.run() == 0
+    checks = {
+        (check["capital"], check["condition"]): check
+        for check in made.document()["verdict"]["checks"]
+    }
+    assert checks[(1000, 1)]["holds"] is None and checks[(1000, 1)]["skipped_ms"] is None
+    assert checks[(1000, 2)]["skipped_ms"] == []  # v3's cell is there
+    section = made.page().split("\n## The four conditions\n")[1].split("\n## ")[0]
+    row = next(line for line in section.splitlines() if line.startswith("| 1 | return over"))
+    assert "cannot be computed" in row and " n/a " in row
+
+
 # ---- escaping ---------------------------------------------------------------------------------
 
 
@@ -1154,11 +1305,14 @@ def test_a_measure_round_trips_with_an_infinite_ratio():
     assert _canonical(measure_record(measure()))
 
 
+SKIPPED_HOURS = (START_MS + HOUR_MS, START_MS + 5 * HOUR_MS)
+
+
 @pytest.mark.parametrize(
     "check",
     [
-        Check(1, 1000, True, measure(), measure(ratio=D("1.5")), None),
-        Check(2, 10000, False, measure(), measure(), None),
+        Check(1, 1000, True, measure(), measure(ratio=D("1.5")), None, SKIPPED_HOURS),
+        Check(2, 10000, False, measure(), measure(), None, ()),
         Check(3, 1000, True, D("1018"), D("1000"), None),
         Check(4, 10000, False, D("990.5"), D("1000"), None),
         Check(1, 1000, None, None, None, "the two arms have no common hour"),
@@ -1170,28 +1324,66 @@ def test_a_check_round_trips(check):
     assert check_from_record(json.loads(_canonical(record))) == check
 
 
+def test_a_check_record_lists_its_skipped_hours_as_integers_or_null():
+    listed = check_record(Check(1, 1000, True, measure(), measure(), None, SKIPPED_HOURS))
+    assert listed["skipped_ms"] == list(SKIPPED_HOURS)
+    assert all(type(hour) is int for hour in listed["skipped_ms"])
+    for check in (
+        Check(3, 1000, True, D("1018"), D("1000"), None),
+        Check(2, 1000, None, None, None, "no common hour"),
+    ):
+        assert check_record(check)["skipped_ms"] is None
+
+
+def good_record(**changes: Any) -> dict[str, Any]:
+    """A good condition-3 record, changed."""
+    base: dict[str, Any] = {
+        "condition": 3,
+        "capital": 1000,
+        "holds": True,
+        "main": "2",
+        "other": "1",
+        "note": None,
+        "skipped_ms": None,
+    }
+    return {**base, **changes}
+
+
+def hours_record(**changes: Any) -> dict[str, Any]:
+    """A good condition-1 record, changed."""
+    check = Check(1, 1000, True, measure(), measure(ratio=D("1.5")), None, SKIPPED_HOURS)
+    return {**check_record(check), **changes}
+
+
+UNCOMPUTED = {"holds": None, "main": None, "other": None, "note": "x"}
+
+
 @pytest.mark.parametrize(
     "record",
     [
         {},
-        {"condition": 5, "capital": 1000, "holds": None, "main": None, "other": None, "note": "x"},
-        {"condition": 1, "capital": 5, "holds": None, "main": None, "other": None, "note": "x"},
-        {"condition": 3, "capital": 1000, "holds": True, "main": "1", "other": "1", "note": "x"},
-        {"condition": 3, "capital": 1000, "holds": None, "main": None, "other": None, "note": None},
-        {"condition": 3, "capital": 1000, "holds": True, "main": "NaN", "other": "1", "note": None},
-        {"condition": 3, "capital": 1000, "holds": True, "main": "1e3", "other": "1", "note": None},
-        {"condition": 3, "capital": 1000, "holds": "yes", "main": "2", "other": "1", "note": None},
-        {"condition": 3, "capital": 1000, "holds": True, "main": None, "other": "1", "note": None},
-        {"condition": 1, "capital": 1000, "holds": True, "main": "2", "other": "1", "note": None},
-        {
-            "condition": 3,
-            "capital": 1000,
-            "holds": True,
-            "main": "2",
-            "other": "1",
-            "note": None,
-            "x": 1,
-        },
+        good_record(condition=5, **UNCOMPUTED),
+        good_record(capital=5, **UNCOMPUTED),
+        good_record(note="x"),  # it holds, and has a note
+        good_record(holds=None, main=None, other=None),  # it cannot be computed, and has none
+        good_record(main="NaN"),
+        good_record(main="1e3"),
+        good_record(holds="yes"),
+        good_record(main=None),
+        good_record(condition=1),  # Decimals for a condition that compares paths
+        {**good_record(), "x": 1},
+        {key: value for key, value in good_record().items() if key != "skipped_ms"},
+        good_record(skipped_ms=[]),  # condition 3 has no hours
+        good_record(skipped_ms=[], **UNCOMPUTED),  # an uncomputed check has none
+        hours_record(skipped_ms=None),  # a computed condition 1 has its list
+        hours_record(skipped_ms="x"),
+        hours_record(skipped_ms=[2 * HOUR_MS, HOUR_MS]),  # not increasing
+        hours_record(skipped_ms=[HOUR_MS, HOUR_MS]),  # an hour twice
+        hours_record(skipped_ms=[HOUR_MS + 1]),  # not an hour open
+        hours_record(skipped_ms=[-HOUR_MS]),
+        hours_record(skipped_ms=[True]),
+        hours_record(skipped_ms=[str(HOUR_MS)]),
+        hours_record(holds=False),  # its sides say it holds
     ],
 )
 def test_a_malformed_check_record_is_refused(record):

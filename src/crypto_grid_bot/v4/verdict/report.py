@@ -16,7 +16,10 @@ verdict, so a record that contradicts itself is refused rather than believed).
 **The document** (``verdict_document``) is the exact JSON the step writes as ``verdict.json``:
 
 * ``format`` (``v4-verdict-1``), ``expected`` (``inputs.expected_record``), ``verdict`` (outcome,
-  reasons, the 8 checks);
+  reasons, the 8 checks). A check of condition 1 or 2 that was computed has ``skipped_ms``, the
+  sorted hour opens of its range that are not common boundaries of its two arms (the spec: "hours
+  missing from any source are skipped for all arms alike and listed"), a list of integers; any
+  other check has null there;
 * ``cells``: the accepted cells' ``inputs.facts_record``, in the expected file's order, each with
   its eras, years and disclosures;
 * ``missing`` (the cells that are missing or refused), ``refused`` (one ``{folder, step, reason}``
@@ -24,8 +27,9 @@ verdict, so a record that contradicts itself is refused rather than believed).
   ``dispatches`` (the earlier dispatches the dispatch check found);
 * ``pairs``: by cell id, ``{"hold": P, "v3": P}``, V11's reported comparisons of every non-v3 arm at
   each capital and cost against ``hold_universe`` and ``v3_as_built`` at the same capital and cost
-  (condition 1's measure and condition 2's). ``P`` is ``{"main": measure, "other": measure}`` or,
-  when the pair cannot be measured, ``{"incomputable": reason}``. None of it decides anything;
+  (condition 1's measure and condition 2's). ``P`` is ``{"main": measure, "other": measure,
+  "skipped_hours": <the number of hours skipped>}`` (a count only) or, when the pair cannot be
+  measured, ``{"incomputable": reason}``. None of it decides anything;
 * ``analysis``: the name of the analysis step's artifact (V12), by mode.
 
 It holds no timestamp and no path, so a resumed run writes the same bytes as an uninterrupted one.
@@ -33,7 +37,8 @@ It holds no timestamp and no path, so a resumed run writes the same bytes as an 
 **The page** (``render_verdict_page``, Markdown) is built from the document alone. Rehearsal and
 timing pages open with ``SYNTHETIC``; then a title naming the mode; then, in this order: the
 verdict (with a plain-language headline) and its reasons; the four conditions at each capital with
-both sides' numbers (return, drawdown, ratio); the spec's note on the eras; the comparison table of
+both sides' numbers (return, drawdown, ratio) and, for conditions 1 and 2, the number of skipped
+hours (``verdict.json`` lists them); the spec's note on the eras; the comparison table of
 every arm by capital by cost; the eras (and the years of ``v4_main``); the variants and neighbours
 beside ``v4_main`` at 1x; the disclosures (every ``disclosures`` entry of the v3 summaries, so the
 1,000 USDT capital adapter is named, and the synthetic world of a rehearsal); the missing, refused
@@ -56,6 +61,7 @@ from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot.v4.engine.arms import ARMS, CAPITALS, COST_MULTIPLES
+from crypto_grid_bot.v4.engine.market import HOUR_MS
 from crypto_grid_bot.v4.engine.numbers import CONTEXT
 from crypto_grid_bot.v4.engine.v3_as_built import V3_ARM, V3_CAPITAL_ADAPTER
 from crypto_grid_bot.v4.verdict.inputs import (
@@ -132,7 +138,7 @@ _MEASURE_FIELDS = (
     "ratio",
 )
 _MEASURE_INTS = ("hours", "first_ms", "last_ms")
-_CHECK_KEYS = frozenset({"condition", "capital", "holds", "main", "other", "note"})
+_CHECK_KEYS = frozenset({"condition", "capital", "holds", "main", "other", "note", "skipped_ms"})
 
 
 # ---- the record forms -------------------------------------------------------------------------
@@ -209,7 +215,8 @@ def _side(value: PathMeasure | Decimal | None) -> object:
 
 def check_record(check: Check) -> dict[str, object]:
     """A ``Check`` as exact JSON: its two sides are measure records (conditions 1 and 2) or
-    Decimal strings (3 and 4), null when it could not be computed."""
+    Decimal strings (3 and 4), null when it could not be computed. ``skipped_ms`` is the sorted
+    list of the hours its range skipped (conditions 1 and 2 when computed), else null."""
     return {
         "condition": check.condition,
         "capital": check.capital,
@@ -217,7 +224,22 @@ def check_record(check: Check) -> dict[str, object]:
         "main": _side(check.main),
         "other": _side(check.other),
         "note": check.note,
+        "skipped_ms": None if check.skipped_ms is None else list(check.skipped_ms),
     }
+
+
+def _skipped_from_record(value: object) -> tuple[int, ...]:
+    """A list of skipped hours: hour opens, strictly increasing; else a ``ValueError``."""
+    if not isinstance(value, list):
+        raise ValueError("a check record's skipped hours are not a list")
+    previous = -1
+    for hour in value:
+        if type(hour) is not int or hour <= previous or hour % HOUR_MS != 0:
+            raise ValueError(
+                "a check record's skipped hours are not strictly increasing hour opens"
+            )
+        previous = hour
+    return tuple(value)
 
 
 def _holds(condition: int, main: PathMeasure | Decimal, other: PathMeasure | Decimal) -> bool:
@@ -253,19 +275,23 @@ def check_from_record(record: object) -> Check:
         raise ValueError("a check record's note is neither a string nor null")
     if (holds is None) != (note is not None):
         raise ValueError("a check record has a note exactly when it could not be computed")
-    main, other = record["main"], record["other"]
+    main, other, skipped = record["main"], record["other"], record["skipped_ms"]
     if holds is None:
-        if main is not None or other is not None:
-            raise ValueError("a check that could not be computed has no sides")
+        if main is not None or other is not None or skipped is not None:
+            raise ValueError("a check that could not be computed has no sides and no hours")
         return Check(condition, capital, None, None, None, note)
     sides: tuple[PathMeasure | Decimal, PathMeasure | Decimal]
     if condition in (1, 2):
         sides = (measure_from_record(main), measure_from_record(other))
+        hours: tuple[int, ...] | None = _skipped_from_record(skipped)
     else:
         sides = (_figure(main), _figure(other))
+        if skipped is not None:
+            raise ValueError("a check of condition 3 or 4 has no skipped hours")
+        hours = None
     if holds is not _holds(condition, *sides):
         raise ValueError("a check record's holds is not what its two sides say")
-    return Check(condition, capital, holds, sides[0], sides[1], None)
+    return Check(condition, capital, holds, sides[0], sides[1], None, hours)
 
 
 def verdict_record(verdict: Verdict) -> dict[str, object]:
@@ -603,7 +629,10 @@ def _conditions_section(view: _View) -> list[str]:
         "",
         "Each condition at each capital, with both sides' numbers. Return is the compounded return "
         "over the path the condition names, drawdown the maximum drawdown over the same path and "
-        "ratio their quotient (infinite when there is no drawdown and the return is positive).",
+        "ratio their quotient (infinite when there is no drawdown and the return is positive). "
+        "Conditions 1 and 2 skip, for both arms alike, the hours at which either arm has no "
+        "complete mark: the table counts them, and `verdict.json` lists them "
+        "(`verdict.checks[].skipped_ms`).",
     ]
     for capital in CAPITALS_JUDGED:
         rows = []
@@ -619,12 +648,22 @@ def _conditions_section(view: _View) -> list[str]:
                     holds,
                     _side_text(condition, check["main"], False),
                     _side_text(condition, check["other"], True),
+                    NA if check["skipped_ms"] is None else len(check["skipped_ms"]),
                     check["note"] or "",
                 ]
             )
         lines += ["", f"### Capital {capital} USDT", ""]
         lines += _table(
-            ["Condition", "What it compares", "Holds", MAIN_ARM, "Other side", "Note"], rows
+            [
+                "Condition",
+                "What it compares",
+                "Holds",
+                MAIN_ARM,
+                "Other side",
+                "Skipped hours",
+                "Note",
+            ],
+            rows,
         )
     return lines
 

@@ -37,7 +37,11 @@ reason, is continued by running it again with the same arguments.
    cost, by ``rule.measure_against_hold`` and ``measure_against_v3``) is measured when all its
    cells are accepted. A measure loads the marks of at most two cells (``inputs.read_marks``; each
    file must still hash to its accepted facts' ``summary_sha256``), keeps the numbers, saves the
-   progress and drops the marks. A pair that cannot be measured is recorded with its reason;
+   progress and drops the marks. A pair that cannot be measured is recorded with its reason. The
+   checks of conditions 1 and 2 also list their skipped hours (``skipped_ms``): the hour opens of
+   their range (``expected.window``; v3's period) that are not common boundaries of their two
+   arms, as the spec says hours missing from any source are "skipped for all arms alike and
+   listed"; a pair records only how many (``skipped_hours``);
 6. ``rule.decide`` gives the verdict from the accepted cells only (refused and absent cells are
    ``missing``, never ``accepted``); ``report.verdict_document`` and ``report.render_verdict_page``
    build ``O/verdict.json`` (canonical JSON) and ``O/verdict.md`` (the page), both created
@@ -114,6 +118,8 @@ from crypto_grid_bot.v4.verdict.rule import (
     decide,
     measure_against_hold,
     measure_against_v3,
+    skipped_against_v3,
+    skipped_hours,
 )
 
 JSON_FILE = "verdict.json"
@@ -340,9 +346,12 @@ def _check_pair(record: object) -> None:
     if set(record) == {"incomputable"}:
         if type(record["incomputable"]) is not str:
             raise ValueError("a pair's reason is not a string")
-    elif set(record) == {"main", "other"}:
+    elif set(record) == {"main", "other", "skipped_hours"}:
         measure_from_record(record["main"])
         measure_from_record(record["other"])
+        skipped = record["skipped_hours"]
+        if type(skipped) is not int or skipped < 0:
+            raise ValueError("a pair's skipped hours are not a count")
     else:
         raise ValueError("a pair's record is neither a measure pair nor an incomputable one")
 
@@ -471,9 +480,13 @@ def _marks_of(root: Path, facts: CellFacts) -> list[Mark]:
 
 
 def _compute(
-    step: _Step, first_marks: Sequence[Mark], second_marks: Sequence[Mark]
+    step: _Step,
+    first_marks: Sequence[Mark],
+    second_marks: Sequence[Mark],
+    window: tuple[int, int],
 ) -> dict[str, object]:
-    """The record of a measure, from its cells' facts and marks."""
+    """The record of a measure, from its cells' facts and marks. ``window`` is the run's first and
+    last hour open: the range condition 1 and the pairs against ``hold_universe`` skip hours in."""
     first, second = step.first, step.second
     if step.kind == "c3":
         return check_record(condition_3(first))
@@ -482,28 +495,35 @@ def _compute(
     if second is None:
         raise ValueError("a measure against another cell needs that cell")
     if step.kind == "c1":
-        return check_record(condition_1(first, first_marks, second, second_marks))
+        return check_record(condition_1(first, first_marks, second, second_marks, window=window))
     if step.kind == "c2":
         return check_record(condition_2(first, first_marks, second, second_marks))
     try:
         if step.kind == "hold":
             mine, theirs = measure_against_hold(first, first_marks, second, second_marks)
+            skipped = skipped_hours(first_marks, second_marks, start_ms=window[0], end_ms=window[1])
         else:
             mine, theirs = measure_against_v3(first, first_marks, second, second_marks)
+            skipped = skipped_against_v3(first_marks, second, second_marks)
     except Incomputable as why:
         return {"incomputable": str(why)}
-    return {"main": measure_record(mine), "other": measure_record(theirs)}
+    # A pair reports how many hours it skipped, not which (the checks list theirs).
+    return {
+        "main": measure_record(mine),
+        "other": measure_record(theirs),
+        "skipped_hours": len(skipped),
+    }
 
 
-def _run_step(root: Path, step: _Step) -> dict[str, object]:
+def _run_step(root: Path, step: _Step, window: tuple[int, int]) -> dict[str, object]:
     """Make one measure, with the marks of at most two cells held, and drop them."""
     if step.kind in _UNMARKED:
-        return _compute(step, (), ())
+        return _compute(step, (), (), window)
     first = _marks_of(root, step.first)
     if step.second is None or step.second.folder == step.first.folder:
-        return _compute(step, first, first)
+        return _compute(step, first, first, window)
     second = _marks_of(root, step.second)
-    return _compute(step, first, second)
+    return _compute(step, first, second, window)
 
 
 # ---- the outputs ------------------------------------------------------------------------------
@@ -602,7 +622,11 @@ def _entries(
 
 
 def _measure(
-    root: Path, steps: Sequence[_Step], progress: dict[str, Any], progress_path: Path
+    root: Path,
+    steps: Sequence[_Step],
+    window: tuple[int, int],
+    progress: dict[str, Any],
+    progress_path: Path,
 ) -> tuple[int, int]:
     """Module docstring, step 5: make each measure not yet in the progress and save the progress
     after each. Returns how many were computed and how many were resumed."""
@@ -612,7 +636,7 @@ def _measure(
         if step.key in table:
             resumed += 1
             continue
-        table[step.key] = _run_step(root, step)
+        table[step.key] = _run_step(root, step, window)
         save_progress(progress_path, progress)
         computed += 1
     return computed, resumed
@@ -647,7 +671,8 @@ def _run(args: argparse.Namespace) -> int:
     )
 
     steps = plan_steps(classified.accepted)
-    computed, resumed = _measure(args.summaries, steps, progress, progress_path)
+    window = (expected.window["start_ms"], expected.window["end_ms"])
+    computed, resumed = _measure(args.summaries, steps, window, progress, progress_path)
     checks = [
         check_from_record(progress["checks"][step.key])
         for step in steps

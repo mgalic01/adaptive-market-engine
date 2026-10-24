@@ -52,6 +52,8 @@ from crypto_grid_bot.v4.verdict.rule import (
     decide,
     path_measure,
     ratio,
+    skipped_against_v3,
+    skipped_hours,
 )
 
 D = Decimal
@@ -501,6 +503,131 @@ def test_conditions_3_and_4_of_a_cell_that_did_not_complete(outcome: str) -> Non
 def test_condition_3_and_4_with_no_equity_after_the_close() -> None:
     assert condition_3(facts(cost=2, final_after_close=None)).holds is None
     assert condition_4(facts(final_after_close=None)).holds is None
+
+
+# ---- skipped hours: "skipped for all arms alike and listed" ---------------------------------
+
+
+def dense(
+    first: int, last: int, *, incomplete: tuple[int, ...] = (), absent: tuple[int, ...] = ()
+) -> list[Mark]:
+    """A mark at every hour open from ``first`` to ``last`` (both included), complete except at
+    the ``incomplete`` hours, and none at the ``absent`` ones."""
+    return [
+        (hour, D(100), hour not in incomplete)
+        for hour in range(first, last + 1, HOUR_MS)
+        if hour not in absent
+    ]
+
+
+def test_skipped_hours_list_what_either_arm_misses_sorted() -> None:
+    left = marks([1, 2, 3, 4, 5, 6], skip=(1,))  # incomplete at hour 1
+    right = [
+        mark for index, mark in enumerate(marks([1, 2, 3, 4, 5, 6])) if index != 3
+    ]  # no hour 3
+    assert skipped_hours(left, right, start_ms=0, end_ms=5 * HOUR_MS) == (HOUR_MS, 3 * HOUR_MS)
+    # an hour both arms miss is listed once, and both ends of the range are included
+    both = skipped_hours(
+        marks([1, 2, 3], skip=(0, 2)), marks([1, 2, 3], skip=(0,)), start_ms=0, end_ms=2 * HOUR_MS
+    )
+    assert both == (0, 2 * HOUR_MS)
+    # hours outside the range are not listed; hours beyond the marks, inside it, are
+    assert skipped_hours(left, right, start_ms=HOUR_MS, end_ms=3 * HOUR_MS) == (
+        HOUR_MS,
+        3 * HOUR_MS,
+    )
+    assert skipped_hours(left, right, start_ms=4 * HOUR_MS, end_ms=7 * HOUR_MS) == (
+        6 * HOUR_MS,
+        7 * HOUR_MS,
+    )
+    assert skipped_hours([], [], start_ms=0, end_ms=2 * HOUR_MS) == (0, HOUR_MS, 2 * HOUR_MS)
+    assert skipped_hours(left, right, start_ms=4 * HOUR_MS, end_ms=3 * HOUR_MS) == ()
+    with callers_error():  # the range starts at an hour open
+        skipped_hours(left, right, start_ms=5, end_ms=HOUR_MS)
+
+
+def test_condition_1_lists_the_skipped_hours_of_its_window() -> None:
+    """Each arm misses a different hour: both are listed, sorted, and the path has the others."""
+    main = facts(final_after_close=D(120))
+    hold = facts("hold_universe", final_after_close=D(103))
+    main_marks = marks([100, 110, 105, 108, 109, 111], skip=(1,))
+    hold_marks = [m for index, m in enumerate(marks([100, 102, 101, 104, 105, 106])) if index != 3]
+    check = condition_1(main, main_marks, hold, hold_marks, window=(0, 5 * HOUR_MS))
+    assert check.skipped_ms == (HOUR_MS, 3 * HOUR_MS)
+    assert isinstance(check.main, PathMeasure) and check.main.hours == 4
+    # the window decides which hours count: hours past the last mark are skipped too
+    wider = condition_1(main, main_marks, hold, hold_marks, window=(0, 7 * HOUR_MS))
+    assert wider.skipped_ms == (HOUR_MS, 3 * HOUR_MS, 6 * HOUR_MS, 7 * HOUR_MS)
+    # given no window nothing is listed; a check that cannot be computed lists nothing
+    assert condition_1(main, main_marks, hold, hold_marks).skipped_ms is None
+    stopped = facts(outcome=LIQUIDATED)
+    cannot = condition_1(stopped, main_marks, hold, hold_marks, window=(0, 5 * HOUR_MS))
+    assert cannot.holds is None and cannot.skipped_ms is None
+    no_hour = condition_1(
+        main, marks([100], start=9 * HOUR_MS), hold, hold_marks, window=(0, 5 * HOUR_MS)
+    )
+    assert no_hour.holds is None and no_hour.skipped_ms is None
+
+
+def test_condition_2_lists_the_skipped_hours_of_v3s_period() -> None:
+    """Only the period counts (the marks around it do not), and the arms miss different hours."""
+    start = V3_START_MS
+    main_marks = [
+        (start - HOUR_MS, D(50), True),
+        *dense(start, V3_LAST, incomplete=(start + 7 * HOUR_MS,)),
+    ]
+    main_marks.append((V3_END_MS, D(300), True))
+    v3_marks = dense(start - HOUR_MS, V3_END_MS, absent=(start + 3 * HOUR_MS,))
+    check = condition_2(facts(), main_marks, facts("v3_as_built"), v3_marks)
+    assert check.skipped_ms == (start + 3 * HOUR_MS, start + 7 * HOUR_MS)
+    assert check.note is None and check.holds is not None
+    # a period with few marks lists every other hour of it, in order
+    sparse = [(h, D(100), True) for h in (start, start + HOUR_MS, V3_LAST)]
+    sparse_check = condition_2(facts(), sparse, facts("v3_as_built"), sparse)
+    everything = range(start, V3_LAST + 1, HOUR_MS)
+    assert sparse_check.skipped_ms == tuple(
+        h for h in everything if h not in {s for s, _, _ in sparse}
+    )
+    assert len(sparse_check.skipped_ms or ()) == len(everything) - 3
+
+
+def test_condition_2_after_a_v3_liquidation_skips_no_hour_v4_main_marked() -> None:
+    """V6 makes v3's mark complete at every hour after its stop, so an hour after the stop is
+    skipped only where v4_main's mark is missing or incomplete there."""
+    start = V3_START_MS
+    stop = start + 2 * HOUR_MS
+    v3 = facts("v3_as_built", outcome=LIQUIDATED, stop_ms=stop, final_equity=D(40))
+    v3_marks = dense(start, stop)  # the stop hour's open is its last mark
+    complete = condition_2(facts(), dense(start, V3_LAST), v3, v3_marks)
+    assert complete.holds is not None and complete.skipped_ms == ()
+    gaps = (start + 4 * HOUR_MS, start + 9 * HOUR_MS)
+    marked = dense(start, V3_LAST, incomplete=gaps[:1], absent=gaps[1:])
+    check = condition_2(facts(), marked, v3, v3_marks)
+    assert check.skipped_ms == gaps
+    assert isinstance(check.other, PathMeasure) and check.other.last_ms == V3_LAST
+    # before the stop, v3's own missing marks are skipped as for any arm
+    early = condition_2(
+        facts(), dense(start, V3_LAST), v3, dense(start, stop, absent=(start + HOUR_MS,))
+    )
+    assert early.skipped_ms == (start + HOUR_MS,)
+
+
+def test_skipped_against_v3_needs_a_v3_path() -> None:
+    with pytest.raises(Incomputable):
+        skipped_against_v3(
+            dense(V3_START_MS, V3_LAST), facts("v3_as_built", outcome=ENGINE_ERROR), []
+        )
+    complete = skipped_against_v3(
+        dense(V3_START_MS, V3_LAST), facts("v3_as_built"), dense(V3_START_MS, V3_LAST)
+    )
+    assert complete == ()
+
+
+def test_conditions_3_and_4_and_an_unmeasured_check_list_no_hours() -> None:
+    assert condition_3(facts(cost=2, final_after_close=D(1100))).skipped_ms is None
+    assert condition_4(facts(final_after_close=D(1100))).skipped_ms is None
+    absent = decide({}, [], missing=[], reruns=[], dispatches=[])
+    assert all(check.skipped_ms is None for check in absent.checks)
 
 
 # ---- V10: precedence ------------------------------------------------------------------------
