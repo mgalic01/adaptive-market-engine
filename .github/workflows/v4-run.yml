@@ -149,12 +149,15 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   after a cancelled run or a failed plan: downloads v4-data and every v4-summary-*, one folder
 #   per artifact, never a cell's records (Ruling W1); writes the expected file
 #   (scripts/v4_run_plan.py expected: the mode's cells, the data's window and pins, the V3 pack
-#   pin of the run manifest or of the rehearsal's world, and the picks job's pin); in a
-#   registered run judges every other dispatch of the registration again
+#   pin of the run manifest or of the rehearsal's world, and the picks job's pin, or 64 zeros
+#   when the picks job did not succeed: no picks file hashes to them, so every v3 cell counts as
+#   missing and the verdict is incomplete, or fail if a v4_main stopped, rather than not
+#   written); in a registered run judges every other dispatch of the registration again
 #   (scripts/v4_registration.py dispatch-check --judge-all: any that counts, or a check that
 #   could not rule one out, makes the verdict incomplete), its deadline 55 minutes from the
-#   job's start, its first step; then runs scripts/v4_verdict.py under GNU time, whose wall time
-#   and peak memory go to verdict/verdict-timing.json. A rehearsal then writes its eleven
+#   job's start, its first step; then runs scripts/v4_verdict.py under GNU time, whose wall time,
+#   peak memory and exit status go to verdict/verdict-timing.json, after a verdict that failed
+#   too. A rehearsal then writes its eleven
 #   scenarios (scripts/v4_rehearsal.py scenarios: the base set and ten altered ones, from the
 #   summaries and the forced cells), judges each one into its own folders, and checks each
 #   verdict against the scenario's own (check, which fails the job unless all eleven are as
@@ -162,9 +165,11 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # - analysis (every mode), as the verdict: downloads v4-data, guards it, downloads every
 #   v4-cell-* (the 44 cells that are not v3; a v3 cell's folder is v4-v3-cell-*, which no job
 #   downloads), then runs scripts/v4_diagnose.py under GNU time (--manifest in a registered run,
-#   --synthetic otherwise; --planned is the plan's cell_ids), whose wall time and peak memory go
-#   to diagnosis/diagnose-timing.json. A diagnosis that refused a cell writes the others' and
-#   fails the job; its timing and upload still run. The verdict page names its artifact.
+#   --synthetic otherwise; --planned is the plan's cell_ids), whose wall time, peak memory and
+#   exit status go to diagnosis/diagnose-timing.json. A diagnosis that refused a cell writes the
+#   others' and fails the job; its timing and upload still run, as after a diagnosis that wrote
+#   nothing (no cell uploaded a folder: it refuses an empty cells folder). The verdict page
+#   names its artifact.
 # - status (always), whatever the other jobs did, a cancelled run included: needs every other job
 #   and records each one's result (scripts/v4_run_status.py, which reads toJSON(needs), RUN_ID
 #   and RUN_ATTEMPT from the environment), and whether the verdict job ran.
@@ -857,9 +862,10 @@ jobs:
     permissions:
       contents: read
       actions: read
-    # The picks job's pin, which every v3 cell was run with and checked against (none in a timing
-    # run, which has no picks job).
+    # The picks job's result and pin, the pin every v3 cell was run with and checked against
+    # (none in a timing run, which has no picks job).
     env:
+      PICKS_RESULT: ${{ needs.v3-picks.result }}
       PICKS_SHA256: ${{ needs.v3-picks.outputs.picks_sha256 }}
     steps:
       # First of all: the job's start, from which a registered verdict's dispatch check budgets
@@ -908,14 +914,23 @@ jobs:
 
       # What the cells are judged against: the mode's cells, the data's window and pins (each
       # pack verified by its pin), the V3 pack pin from the mode's own source (the run manifest,
-      # the world, or none in a timing run) and the picks job's pin. A registered run's must not
-      # be synthetic, and a rehearsal's and a timing run's must be (v4-d03).
+      # the world, or none in a timing run) and the picks job's pin. A picks job that did not
+      # succeed (failed, skipped or cancelled) gave no pin, and 64 zeros take its place: no picks
+      # file hashes to them, so every v3 cell is refused at its data and counts as missing, and
+      # the verdict is incomplete (fail if a v4_main stopped) rather than not written at all.
+      # The sentinel is keyed on the job's result, so a picks job that succeeded with an empty
+      # or bad pin still fails here. A registered run's data must not be synthetic, and a
+      # rehearsal's and a timing run's must be (v4-d03).
       - name: Write the expected file
         run: |
+          picks="$PICKS_SHA256"
+          if [ "$PICKS_RESULT" != success ]; then
+            picks=0000000000000000000000000000000000000000000000000000000000000000
+          fi
           if [ "$MODE" = registered ]; then
-            python scripts/v4_run_plan.py expected --mode registered --data v4data --out expected.json --manifest config/v4_run_manifest.json --picks-sha256 "$PICKS_SHA256"
+            python scripts/v4_run_plan.py expected --mode registered --data v4data --out expected.json --manifest config/v4_run_manifest.json --picks-sha256 "$picks"
           elif [ "$MODE" = rehearsal ]; then
-            python scripts/v4_run_plan.py expected --mode rehearsal --data v4data --out expected.json --world world --picks-sha256 "$PICKS_SHA256"
+            python scripts/v4_run_plan.py expected --mode rehearsal --data v4data --out expected.json --world world --picks-sha256 "$picks"
           elif [ "$MODE" = timing ]; then
             python scripts/v4_run_plan.py expected --mode timing --data v4data --out expected.json
           else
@@ -957,10 +972,15 @@ jobs:
             exit 1
           fi
 
-      # The verdict's wall time and peak memory (its 2 GB limit), in the folder it made.
+      # The verdict's wall time and peak memory (its 2 GB limit), in its folder, after a verdict
+      # that failed too (the run a timing run exists to measure: at real size, say, out of
+      # memory), with its exit status; such a verdict wrote no folder, so it is made here.
       - id: timing
+        if: ${{ !cancelled() && (steps.verdict.outcome == 'success' || steps.verdict.outcome == 'failure') }}
         name: Keep the verdict's wall time and peak memory
-        run: python scripts/v4_cells_timing.py --time-file verdict.time --verdict-dir verdict
+        run: |
+          mkdir -p verdict
+          python scripts/v4_cells_timing.py --time-file verdict.time --verdict-dir verdict
 
       # A rehearsal's eleven scenarios (Ruling W3): the base set (the summaries just judged) and
       # ten altered sets, with the forced cells of this attempt in place of base cells, a cell
@@ -995,7 +1015,8 @@ jobs:
         run: python scripts/v4_rehearsal.py check --scenarios scenarios --verdicts scenario-verdicts > check.txt
 
       # The verdict, once it is written, whatever failed after it (the job still fails): its
-      # timing, or in a rehearsal a scenario step. A timing run keeps the timing alone.
+      # timing, or in a rehearsal a scenario step. A timing run keeps the timing alone, of a
+      # verdict that succeeded or failed.
       - if: ${{ !cancelled() && steps.verdict.outcome == 'success' && inputs.mode == 'registered' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1072,6 +1093,12 @@ jobs:
           merge-multiple: false
           path: cells
 
+      # download-artifact makes no folder when no artifact matches (no cell uploaded one): the
+      # diagnosis then meets an empty cells folder, not a missing one, and refuses it in its own
+      # words (no cell folder holds a summary.json), with nothing written.
+      - name: Keep a cells folder when no cell uploaded one
+        run: mkdir -p cells
+
       - name: Check that GNU time is installed
         run: |
           if [ ! -x /usr/bin/time ]; then
@@ -1096,13 +1123,17 @@ jobs:
             exit 1
           fi
 
+      # As the verdict's: after a diagnosis that succeeded or failed, with its exit status; one
+      # that failed before writing (out of memory, say) made no folder, so it is made here.
       - id: timing
         if: ${{ !cancelled() && (steps.diagnose.outcome == 'success' || steps.diagnose.outcome == 'failure') }}
         name: Keep the diagnosis's wall time and peak memory
-        run: python scripts/v4_cells_timing.py --time-file diagnose.time --diagnosis-dir diagnosis
+        run: |
+          mkdir -p diagnosis
+          python scripts/v4_cells_timing.py --time-file diagnose.time --diagnosis-dir diagnosis
 
-      # The diagnosis, also a partial one (the upload's if-no-files-found fails a run that wrote
-      # nothing); a timing run keeps its timing alone, once it was written.
+      # The diagnosis, also a partial one, and of a diagnosis that wrote nothing its timing alone;
+      # a timing run keeps its timing alone, once it was written.
       - if: ${{ !cancelled() && (steps.diagnose.outcome == 'success' || steps.diagnose.outcome == 'failure') && inputs.mode == 'registered' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

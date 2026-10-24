@@ -12,7 +12,8 @@ cell's ``records.jsonl``, which is about 135 MB for a V4 cell).
 
 It refuses, writing nothing and exiting 1: a time file that is missing (the runner has no
 ``/usr/bin/time``), one that is not the report of GNU ``time -v`` (exactly one elapsed line and
-one peak-memory line, a clean exit status), a cell folder without ``records.jsonl``, and a
+one peak-memory line, a clean exit status, no terminating signal), a cell folder without
+``records.jsonl``, and a
 ``timing.json`` that already exists (a cell's files are never replaced); a ``timing.json`` whose
 write fails is removed again, so no partial file is left. Standard output carries the cell's id,
 seconds, megabytes and bytes: times and sizes only, never a price.
@@ -28,9 +29,13 @@ The ``analysis`` job of ``.github/workflows/v4-run.yml`` times its diagnosis the
 ``--time-file verdict.time --verdict-dir verdict`` times the verdict step of v4-run.yml's
 ``verdict`` job (``scripts/v4_verdict.py``) the same way: it writes
 ``<verdict dir>/verdict-timing.json`` with ``step`` (``verdict``), ``wall_seconds``,
-``peak_rss_mb`` and ``exit_status``, in the folder the verdict made, which must exist, and never
-over a file. The three targets exclude each other. Standard output carries the step's seconds,
-megabytes and exit status: times only, never a count of cells, an outcome or the verdict.
+``peak_rss_mb`` and ``exit_status``, in a folder that must exist, and never over a file. A
+verdict that failed (it exits 1 having written nothing, or is killed) is timed too, with its
+status: that is the run a timing run must not lose, and the workflow makes the folder for it.
+For both steps, a command killed by a signal N (out of memory, say), whose exit status GNU time
+leaves undefined, is timed with 128 + N, the status GNU time then exits with. The three targets
+exclude each other. Standard output carries the step's seconds, megabytes and exit status: times
+only, never a count of cells, an outcome or the verdict.
 """
 
 from __future__ import annotations
@@ -58,6 +63,9 @@ _PEAK_LINE = re.compile(
     r"^[ \t]*Maximum resident set size \(kbytes\): (?P<value>[0-9]+)[ \t]*$", re.MULTILINE
 )
 _EXIT_LINE = re.compile(r"^[ \t]*Exit status: (?P<value>[0-9]+)[ \t]*$", re.MULTILINE)
+_SIGNAL_LINE = re.compile(
+    r"^[ \t]*Command terminated by signal (?P<value>[0-9]+)[ \t]*$", re.MULTILINE
+)
 _CLOCK = re.compile(
     r"(?:(?P<hours>[0-9]+):)?(?P<minutes>[0-9]{1,2}):(?P<seconds>[0-9]{2}(?:\.[0-9]+)?)"
 )
@@ -91,16 +99,28 @@ def _wall_seconds(clock: str) -> Decimal:
 def parse_time_output(text: str, *, allow_failure: bool = False) -> Timing:
     """The wall seconds and peak resident kilobytes of one ``/usr/bin/time -v`` report of a
     command that exited 0; anything else is a ``ValueError``. With ``allow_failure`` a command
-    that exited with another status is timed too, with that status (one exit line at most)."""
+    that exited with another status is timed too, with that status (one exit line at most).
+
+    A command killed by a signal (the kernel's out-of-memory kill, say) is reported by GNU time as
+    ``Command terminated by signal N`` with ``Exit status: 0``, its exit status being undefined:
+    with ``allow_failure`` it is timed with the status GNU time itself then exits with, 128 + N;
+    without, it is refused, as a failed command is."""
     wall = _wall_seconds(_one(_ELAPSED_LINE, text, "elapsed wall clock"))
     peak = int(_one(_PEAK_LINE, text, "maximum resident set size"))
     if peak <= 0:
         raise ValueError("the maximum resident set size is not positive")
     statuses = [int(status) for status in _EXIT_LINE.findall(text)]
+    signals = [int(signal) for signal in _SIGNAL_LINE.findall(text)]
+    if len(signals) > 1:
+        raise ValueError(f"{len(signals)} terminating signal lines, expected one at most")
     if allow_failure:
         if len(statuses) > 1:
             raise ValueError(f"{len(statuses)} exit status lines, expected one at most")
+        if signals:
+            return Timing(wall, peak, 128 + signals[0])
         return Timing(wall, peak, statuses[0] if statuses else 0)
+    if signals:
+        raise ValueError(f"the timed command was terminated by signal {signals[0]}")
     for status in statuses:
         if status != 0:
             raise ValueError(f"the timed command exited with status {status}")

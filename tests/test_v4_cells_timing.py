@@ -89,6 +89,9 @@ REALISTIC = (
 REALISTIC_FAILED = "\tCommand exited with non-zero status 1\n" + REALISTIC.replace(
     "Exit status: 0", "Exit status: 1"
 )
+# The same command killed by a signal (9: the kernel's out-of-memory kill): GNU time adds a first
+# line, and prints "Exit status: 0", the status of a killed command being undefined.
+REALISTIC_KILLED = "Command terminated by signal 9\n" + REALISTIC
 
 
 def test_parse_reads_the_wall_seconds_and_the_peak_resident_kilobytes():
@@ -153,6 +156,7 @@ REFUSED = [
     (gnu_time(kilobytes=0), "the maximum resident set size is not positive"),
     (gnu_time(exit_status=1), "the timed command exited with status 1"),
     (REALISTIC_FAILED, "the timed command exited with status 1"),
+    (REALISTIC_KILLED, "the timed command was terminated by signal 9"),
     (  # two values: ambiguous
         gnu_time() + "\tMaximum resident set size (kbytes): 99\n",
         "2 maximum resident set size lines, expected one: not GNU time -v output",
@@ -483,3 +487,50 @@ def test_verdict_dir_writes_verdict_timing(tmp_path, capsys):
         with pytest.raises(SystemExit):
             parser.parse_args(["--time-file", "t", "--verdict-dir", "v", *other])
     capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("flag", "file_name", "step"),
+    [
+        ("--verdict-dir", "verdict-timing.json", "verdict"),
+        ("--diagnosis-dir", "diagnose-timing.json", "diagnose"),
+    ],
+)
+def test_a_step_that_failed_or_was_killed_is_timed_with_its_status(
+    tmp_path, capsys, flag, file_name, step
+):
+    """A timing run must not lose the run that failed (Ruling W2): a verdict or a diagnosis that
+    exited 1, or that was killed (out of memory: GNU time says "Exit status: 0" then), is timed
+    with its peak memory and a status that says so, 128 + the signal for a killed one (the status
+    GNU time itself exits with)."""
+    for text, status in ((REALISTIC_FAILED, 1), (REALISTIC_KILLED, 128 + 9)):
+        folder = tmp_path / str(status)
+        folder.mkdir()
+        (tmp_path / "step.time").write_text(text, encoding="ascii")
+        code = v4_cells_timing.main(["--time-file", str(tmp_path / "step.time"), flag, str(folder)])
+        captured = capsys.readouterr()
+        assert (code, captured.err) == (0, ""), status
+        assert json.loads((folder / file_name).read_text(encoding="ascii")) == {
+            "step": step,
+            "wall_seconds": 5025.0,
+            "peak_rss_mb": 2103.8,
+            "exit_status": status,
+        }
+        assert captured.out == (
+            f"v4_cells_timing: {step}: 5025.00 s, 2103.8 MB peak, exit status {status}\n"
+        )
+
+
+def test_signal_lines_are_read_once_and_refused_for_a_cell(tmp_path, capsys):
+    killed = v4_cells_timing.parse_time_output(REALISTIC_KILLED, allow_failure=True)
+    assert killed == v4_cells_timing.Timing(Decimal(5025), 2154308, 137)
+    with pytest.raises(ValueError, match="2 terminating signal lines"):
+        v4_cells_timing.parse_time_output(
+            "Command terminated by signal 9\n" + REALISTIC_KILLED, allow_failure=True
+        )
+    # A cell's timing refuses a killed command, as a failed one, and writes nothing.
+    folder = cell_folder(tmp_path)
+    time_file(tmp_path, REALISTIC_KILLED)
+    code, out, err = run(tmp_path, capsys)
+    assert code == 1 and out == "" and "terminated by signal 9" in err
+    assert not (folder / "timing.json").exists()

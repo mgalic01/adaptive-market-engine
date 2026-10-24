@@ -45,13 +45,16 @@ verified by its pin); its v3 pins come from the mode's own source, and from no o
   and ``--world`` are refused.
 
 ``--picks-sha256`` is the pin of ``v3_picks.json``: 64 lowercase hex digits, required in the modes
-that have v3 cells (``registered`` and ``rehearsal``). A timing run has no picks job, so it takes
-none (an empty one, from a workflow that passes the same arguments in every mode, is none). The
-refusals above, a mismatch of the pins and an ``E`` that already exists (never replaced, refused
-before ``D`` is read) write nothing; if the file written does not read back as the expected
-document, it is removed again. The folder of ``E`` is created if missing. Standard output carries
-one line: the mode, the cell count, the window's hours, the data's end month and the file's
-SHA-256.
+that have v3 cells (``registered`` and ``rehearsal``), where an empty one is refused. When the
+workflow's picks job did not succeed, its verdict job passes 64 zeros, a pin no picks file hashes
+to: every v3 cell is then refused at step ``data`` and counts as missing (V2), so the verdict is
+incomplete, or fail if a ``v4_main`` cell stopped (V10), rather than not written at all. A timing
+run has no picks job, so it takes none (an empty one, from a workflow that passes the same
+arguments in every mode, is none). The refusals above, a mismatch of the pins and an ``E`` that
+already exists (never replaced, refused before ``D`` is read) write nothing; if the file written
+does not read back as the expected document, it is removed again. The folder of ``E`` is created
+if missing. Standard output carries one line: the mode, the cell count, the window's hours, the
+data's end month and the file's SHA-256.
 
 **Exit status**: 0 once the output is written; 1 on any refusal or failure, with nothing written;
 2 for bad arguments (argparse's own).

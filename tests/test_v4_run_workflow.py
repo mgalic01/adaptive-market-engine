@@ -29,6 +29,7 @@ it (``-e -o pipefail``): either for real on small files (the pin checks), or wit
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import functools
 import hashlib
@@ -51,8 +52,22 @@ from typing import Any
 import pytest
 import yaml
 
+from crypto_grid_bot.combined.artifacts import _canonical
 from crypto_grid_bot.combined.driver.packs import _write_gzip_json
+from crypto_grid_bot.v4.engine.market import Market
+from crypto_grid_bot.v4.engine.run import LIQUIDATED, data_record
 from crypto_grid_bot.v4.engine.v3_as_built import PICKS_FILE
+from crypto_grid_bot.v4.synthetic import (
+    CoinSpec,
+    Series,
+    World,
+    every_month,
+    month_start,
+    write_world,
+)
+from crypto_grid_bot.v4.synthetic import (
+    path as price_path,
+)
 from crypto_grid_bot.v4.verdict import inputs as verdict_inputs
 from crypto_grid_bot.v4.verdict import report as verdict_report
 
@@ -69,6 +84,7 @@ import v4_run_status  # noqa: E402
 import v4_v3_cell  # noqa: E402
 import v4_v3_pack  # noqa: E402
 import v4_verdict  # noqa: E402
+import v4_verdict_fixtures  # noqa: E402
 
 WORKFLOW = ROOT / ".github" / "workflows" / "v4-run.yml"
 CELLS_WORKFLOW = ROOT / ".github" / "workflows" / "v4-cells.yml"
@@ -144,6 +160,12 @@ DIAGNOSED = (
 # Each mode's prefix of its outputs (Ruling W3): a synthetic verdict never passes for the
 # registered run's.
 OUTPUT_PREFIX = {"registered": "v4-", "rehearsal": "v4-rehearsal-", "timing": "v4-timing-"}
+# The verdict job's picks pin when the picks job did not succeed: no picks file hashes to it.
+NO_PICKS = "0" * 64
+VERDICT_RAN = (
+    "${{ !cancelled() && (steps.verdict.outcome == 'success' || "
+    "steps.verdict.outcome == 'failure') }}"
+)
 
 
 # ---- reading the workflow -----------------------------------------------------------------------
@@ -474,6 +496,7 @@ def context(mode: str) -> dict[str, str]:
         "needs.plan.outputs.registration_sha256": PLAN_SHA,
         "needs.plan.outputs.v3_pack_sha256": PLAN_PACK,
         "needs.v3-picks.outputs.picks_sha256": PICKS_SHA,
+        "needs.v3-picks.result": "success",
         "needs.plan.outputs.cell_ids": CELL_IDS,
         "toJSON(needs)": "{}",
     }
@@ -1605,13 +1628,21 @@ def test_verdict_expects_the_modes_cells_against_the_modes_pins(tmp_path):
     expected = index_of("verdict", "v4_run_plan.py expected")
     assert "if" not in verdict_steps[expected]
     assert jobs()["verdict"]["env"] == {
-        "PICKS_SHA256": "${{ needs.v3-picks.outputs.picks_sha256 }}"
+        "PICKS_RESULT": "${{ needs.v3-picks.result }}",
+        "PICKS_SHA256": "${{ needs.v3-picks.outputs.picks_sha256 }}",
     }
-    for mode in MODES:
-        done, calls, _ = run_recorded("verdict", verdict_steps[expected], mode, tmp_path / mode)
+
+    def expected_call(mode: str, folder: str, **known: str) -> argparse.Namespace:
+        step = verdict_steps[expected]
+        done, calls, _ = run_recorded(
+            "verdict", step, mode, tmp_path / folder, known={**context(mode), **known}
+        )
         assert done.returncode == 0, done.stderr
         (call,) = calls
-        args = v4_run_plan.build_parser().parse_args(call[2:])
+        return v4_run_plan.build_parser().parse_args(call[2:])
+
+    for mode in MODES:
+        args = expected_call(mode, mode)
         assert (args.command, args.mode, args.data, args.out) == (
             "expected",
             mode,
@@ -1625,6 +1656,23 @@ def test_verdict_expects_the_modes_cells_against_the_modes_pins(tmp_path):
         }
         assert (args.manifest, args.world) == source[mode], mode
         assert args.picks_sha256 == (None if mode == "timing" else PICKS_SHA), mode
+        # A picks job that did not succeed gave no pin: 64 zeros take its place, so the verdict
+        # is still written (its v3 cells missing); a timing run is unchanged.
+        for result in ("failure", "skipped", "cancelled"):
+            known = {"needs.v3-picks.result": result, "needs.v3-picks.outputs.picks_sha256": ""}
+            args = expected_call(mode, f"{mode}-{result}", **known)
+            assert args.picks_sha256 == (None if mode == "timing" else NO_PICKS), (mode, result)
+            assert (args.manifest, args.world) == source[mode], (mode, result)
+        # The sentinel is keyed on the job's result: a picks job that succeeded with no pin, or
+        # a bad one, passes it on, and the script refuses it (nothing is written).
+        if mode != "timing":
+            for pin in ("", "A" * 64, "0" * 63):
+                args = expected_call(mode, f"{mode}-bad-{len(pin)}", **{
+                    "needs.v3-picks.outputs.picks_sha256": pin,
+                })  # fmt: skip
+                assert args.picks_sha256 == pin, (mode, pin)
+                with pytest.raises(v4_run_plan.PlanError):
+                    v4_run_plan._picks(mode, args.picks_sha256)
     # A rehearsal's world is downloaded before the expected file reads its rehearsal.json.
     (world,) = [
         i
@@ -1632,6 +1680,85 @@ def test_verdict_expects_the_modes_cells_against_the_modes_pins(tmp_path):
         if is_download(s) and s["with"].get("name") == "v4-rehearsal-world"
     ]
     assert world < expected and verdict_steps[world]["if"] == "${{ inputs.mode == 'rehearsal' }}"
+
+
+@pytest.fixture(scope="module")
+def small_data(tmp_path_factory) -> Path:
+    """A synthetic data pack of three months of one coin, written in a moment."""
+    btc = CoinSpec(
+        "BTCUSDT", Series(month_start("2025-01"), price_path("100", (24 * 90, "0.0002")))
+    )
+    world = World("2025-03", (btc,), every_month("2025-01", "2025-03", ("BTCUSDT",)))
+    return write_world(tmp_path_factory.mktemp("world"), world)
+
+
+def test_a_verdict_without_picks_counts_the_v3_cells_missing(tmp_path, small_data, capsys):
+    # The picks job's sentinel, round trip: the expected file takes it (the real write_expected,
+    # on a synthetic world, and read_expected reads it back) ...
+    world = tmp_path / "world"
+    world.mkdir()
+    document = {
+        "format": v4_rehearsal.WORLD_FORMAT,
+        "scale": "rehearsal",
+        "data": data_record(Market.load(small_data).pins),
+        "v3_pack_sha256": "1" * 64,
+        "registration_sha256": "2" * 64,
+    }
+    (world / v4_rehearsal.WORLD_FILE).write_bytes(_canonical(document))
+    out = tmp_path / "expected.json"
+    v4_run_plan.write_expected(
+        "rehearsal",
+        small_data,
+        out,
+        manifest=None,
+        world=v4_rehearsal.read_world(world),
+        picks_sha256=NO_PICKS,
+    )
+    assert verdict_inputs.read_expected(out).picks_sha256 == NO_PICKS
+    assert v4_run_plan._picks("registered", NO_PICKS) == NO_PICKS
+    for empty in ("", None):  # an empty pin is still refused
+        with pytest.raises(v4_run_plan.PlanError):
+            v4_run_plan._picks("registered", empty)
+
+    # ... and a v3 cell judged against it is refused at its data (no picks file hashes to it), so
+    # it counts as missing (V2): the verdict is incomplete, and a stopped v4_main still fails it.
+    fixtures = v4_verdict_fixtures
+    zero = fixtures.write_expected(
+        tmp_path / "zero.json", fixtures.expected_for(picks_sha256=NO_PICKS)
+    )
+    v3_cells = [c for c in fixtures.expected_for().cells if c.startswith("v3_as_built-")]
+    assert len(v3_cells) == 4
+
+    def judge(name: str, overrides: Mapping[str, Mapping[str, object]] | None) -> dict[str, Any]:
+        summaries = tmp_path / name / "summaries"
+        fixtures.full_set(summaries, overrides=overrides)  # the v3 cells carry the real picks pin
+        if name == "complete":
+            folder = summaries / f"v4-summary-{v3_cells[0]}-attempt-1"
+            with pytest.raises(verdict_inputs.CellRefused) as refused:
+                verdict_inputs.read_cell(folder, verdict_inputs.read_expected(zero))
+            assert refused.value.step == "data"
+        argv = ["--summaries", str(summaries), "--expected", str(zero)]
+        argv += ["--progress", str(tmp_path / name / "progress")]
+        argv += ["--out", str(tmp_path / name / "verdict")]
+        assert v4_verdict.main(argv) == 0
+        verdict = json.loads((tmp_path / name / "verdict" / "verdict.json").read_bytes())
+        assert sorted(verdict["missing"]) == sorted(v3_cells), name
+        refused = sorted((row["folder"], row["step"]) for row in verdict["refused"])
+        assert refused == sorted((f"v4-summary-{c}-attempt-1", "data") for c in v3_cells), name
+        return verdict
+
+    assert judge("complete", None)["verdict"]["outcome"] == "incomplete"
+    main = "v4_main-1000-1x"
+    stopped = {
+        main: {
+            "outcome": LIQUIDATED,
+            "marks": fixtures.marks_for(main)[:20],
+            "final_after_close": None,
+            "equity_2025": None,
+        }
+    }
+    assert judge("stopped", stopped)["verdict"]["outcome"] == "fail"
+    capsys.readouterr()
 
 
 def test_verdict_runs_after_failed_cells_but_not_after_a_failed_plan():
@@ -1828,6 +1955,24 @@ def test_registered_verdict_rechecks_other_dispatches(tmp_path):
     assert after[index_of_upload("verdict", f"v4-verdict{ATTEMPT}")] == "success"
 
 
+# GNU time -v's reports (the lines the timing helper reads) of a command that exited 1, and of one
+# killed by signal 9 (out of memory), for which GNU time prints "Exit status: 0".
+FAILED_REPORT = (
+    "Command exited with non-zero status 1\n"
+    "\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:02.50\n"
+    "\tMaximum resident set size (kbytes): 2097152\n"
+    "\tExit status: 1\n"
+)
+KILLED_REPORT = (
+    "Command terminated by signal 9\n"
+    "\tElapsed (wall clock) time (h:mm:ss or m:ss): 3:00.00\n"
+    "\tMaximum resident set size (kbytes): 2200000\n"
+    "\tExit status: 0\n"
+)
+# The step each timing file names.
+STEP_NAMES = {"verdict": "verdict", "analysis": "diagnose"}
+
+
 def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
     # Each runs its CLI under GNU time, checked first as in a cell job, and keeps the wall time
     # and peak memory in its folder (scripts/v4_cells_timing.py): the verdict's 2 GB limit and the
@@ -1854,11 +1999,12 @@ def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
         for line in clis:
             assert line.startswith(f"/usr/bin/time -v -o {time_file} python scripts/"), line
         assert job_steps[timing]["id"] == "timing"
+        folder = Path(target.split()[1])
         command = f"python scripts/v4_cells_timing.py --time-file {time_file} {target}"
-        assert run_text(job_steps[timing]) == command
+        # The folder is made first: a step that failed before writing made none.
+        assert run_text(job_steps[timing]) == f"mkdir -p {folder.as_posix()} {command}"
         args = v4_cells_timing.build_parser().parse_args(shlex.split(command)[2:])
         assert args.time_file == Path(time_file)
-        folder = Path(target.split()[1])
         assert (args.verdict_dir if job == "verdict" else args.diagnosis_dir) == folder
         (upload,) = [
             i
@@ -1871,10 +2017,34 @@ def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
         )
         assert steps_that_run(job, "timing")[upload] == "success"
         assert steps_that_run(job, "timing", failing=[timing])[upload] == "skipped"
-    # The verdict's timing runs once the verdict wrote its folder (a verdict that failed wrote
-    # none); the analysis' after a diagnosis that ran, one that refused a cell included.
-    assert "if" not in steps("verdict")[index_of("verdict", "--verdict-dir verdict")]
+        # A step that failed (at real size, out of memory, say: the run a timing run exists to
+        # measure) is timed too, and its timing uploaded; a step that never ran is not.
+        after_failure = steps_that_run(job, "timing", failing=[timed])
+        assert (after_failure[timing], after_failure[upload]) == ("success", "success"), job
+        never_ran = steps_that_run(job, "timing", failing=[check])
+        assert (never_ran[timing], never_ran[upload]) == ("skipped", "skipped"), job
+        # The step itself, with a time file of a command that failed and no folder: it makes
+        # the folder, and the timing helper keeps the failure's time, memory and exit status.
+        work = tmp_path / f"{job}-failed"
+        work.mkdir()
+        done, calls, _ = run_recorded(job, job_steps[timing], "timing", work)
+        assert done.returncode == 0 and (work / folder).is_dir(), done.stderr
+        assert calls == [shlex.split(command)], job
+        for report, status in ((FAILED_REPORT, 1), (KILLED_REPORT, 128 + 9)):
+            (work / time_file).write_text(report, encoding="ascii")
+            (work / folder / timing_file).unlink(missing_ok=True)
+            argv = ["--time-file", str(work / time_file), target.split()[0], str(work / folder)]
+            assert v4_cells_timing.main(argv) == 0, (job, status)
+            written = json.loads((work / folder / timing_file).read_text(encoding="ascii"))
+            assert (written["step"], written["exit_status"]) == (STEP_NAMES[job], status), job
+    # Each timing runs after its step succeeded or failed, never after one that did not run.
+    assert steps("verdict")[index_of("verdict", "--verdict-dir verdict")]["if"] == VERDICT_RAN
     assert steps("analysis")[index_of("analysis", "--diagnosis-dir")]["if"] == DIAGNOSED
+    # The registered and rehearsal verdicts are uploaded only once written.
+    judged = index_of("verdict", "--summaries summaries --expected")
+    for mode in ("registered", "rehearsal"):
+        upload = index_of_upload("verdict", f"{OUTPUT_PREFIX[mode]}verdict{ATTEMPT}")
+        assert steps_that_run("verdict", mode, failing=[judged])[upload] == "skipped", mode
 
     # A timing run's verdict, traced: its 44 cells' summaries, no v3 pin, no dispatch check.
     events = trace("verdict", "timing", tmp_path)
@@ -1893,7 +2063,7 @@ def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
     ]  # fmt: skip
 
 
-def test_analysis_downloads_cells_not_v3_cells(tmp_path):
+def test_analysis_downloads_cells_not_v3_cells(tmp_path, small_data, capsys):
     job = jobs()["analysis"]
     assert job["env"] == {"PLANNED_CELLS": "${{ needs.plan.outputs.cell_ids }}"}
     # Ruling W1: the analysis reads every v4-cell-* folder (the 44 cells that are not v3, the
@@ -1955,6 +2125,30 @@ def test_analysis_downloads_cells_not_v3_cells(tmp_path):
         assert (refused[timing], refused[upload]) == ("success", "success"), mode
         unguarded = steps_that_run("analysis", mode, failing=[guard])
         assert {unguarded[diagnose], unguarded[timing], unguarded[upload]} == {"skipped"}, mode
+
+    # download-artifact makes no folder when no artifact matches (no cell uploaded one): the
+    # cells folder is made next, before the diagnosis, in every mode.
+    (download,) = [
+        i for i, s in enumerate(analysis_steps) if is_download(s) and s["with"] == CELL_FOLDERS
+    ]
+    made = index_of("analysis", "mkdir -p cells")
+    assert made == download + 1 and made < diagnose
+    assert run_text(analysis_steps[made]) == "mkdir -p cells" and "if" not in analysis_steps[made]
+    for name, exists in (("none", False), ("some", True)):
+        folder = tmp_path / "made" / name
+        (folder / "cells" if exists else folder).mkdir(parents=True)
+        done = run_script(str(analysis_steps[made]["run"]), folder, {})
+        assert done.returncode == 0 and (folder / "cells").is_dir(), done.stderr
+    # The diagnosis, given that empty folder, refuses it in its own words and writes nothing (it
+    # diagnoses no set without a cell); its timing and its upload then still run, so a timing
+    # run keeps its time (test_verdict_and_analysis_are_timed_as_the_cells_are).
+    capsys.readouterr()
+    empty = tmp_path / "made" / "none" / "cells"
+    out = tmp_path / "made" / "none" / "diagnosis"
+    argv = ["--data", str(small_data), "--cells", str(empty), "--planned", CELL_IDS]
+    assert v4_diagnose.main([*argv, "--out", str(out), "--synthetic"]) == 1
+    assert "no cell folder holds a summary.json" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_mode_names_its_outputs():
