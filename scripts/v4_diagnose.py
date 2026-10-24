@@ -7,14 +7,20 @@ pre-2025 data run (plan ``docs/superpowers/plans/2026-10-23-v4-diagnostic-run.md
 adds no trading rule: it reads what the spec's "Records" and "Reports" write, and its timing
 section is the "Verification" bullet's timing run (cell times, memory and output sizes).
 
-``--data D --cells C --planned IDS --out O``:
+``--data D --cells C --planned IDS --out O [--manifest M [--repo R] | --synthetic]``:
 
 1. refuses an ``O`` that already holds ``diagnosis.json`` or ``diagnosis.md``, and a ``--planned``
    that is not a comma-separated list of distinct cell ids of ``all_cells()`` (the plan job's
    ``cell_ids``, the cells the dispatch asked for);
-2. runs ``v4_cells_guard``'s own check on ``D`` (owner decision v4-d03: no market data from
-   2025-01 on) before any pack is read, then loads the packs (``Market.load``) and refuses an
-   ``end_month`` after the guard's ``LATEST_ALLOWED``;
+2. runs a guard on ``D`` before any pack is read, then loads the packs (``Market.load``).
+   By default it is ``v4_cells_guard``'s own check (owner decision v4-d03: no market data from
+   2025-01 on), and an ``end_month`` after the guard's ``LATEST_ALLOWED`` is refused. The
+   registered run's analysis (``.github/workflows/v4-run.yml``) is where 2025+ data is opened,
+   and only the registered data: ``--manifest M`` runs ``v4_run_guard``'s check that ``D``'s pins
+   are the run manifest's (and ``R``'s config file, the current folder's unless ``--repo`` says
+   otherwise, hashes to its ``config_sha256``), and ``--synthetic`` its check that ``D`` is a
+   synthetic world (the rehearsal and timing modes). Either replaces the default check and
+   skips the month bound; the two exclude each other, and ``--repo`` goes with ``--manifest``;
 3. takes every subfolder of ``C`` holding a ``summary.json`` (the workflow puts each cell in
    ``C/v4-cell-<cell id>/``; the cell's id is its summary's ``cell``, never the folder's name).
    For each one: ``summary.json`` must be canonical JSON; ``receipt.json`` is read with
@@ -181,6 +187,7 @@ from pathlib import Path
 from typing import Any
 
 import v4_cells_guard
+import v4_run_guard
 from v4_cells_timing import TIMING_FILE
 
 from crypto_grid_bot.backtest.klines import month_bounds_ms
@@ -2103,12 +2110,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out", type=Path, required=True, help="the folder for diagnosis.json and .md"
     )
+    registered = parser.add_mutually_exclusive_group()
+    registered.add_argument(
+        "--manifest",
+        type=Path,
+        help="the registered run: the run manifest whose pins the data's must equal "
+        "(v4_run_guard; no month bound)",
+    )
+    registered.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="a synthetic world (v4_run_guard; no month bound)",
+    )
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        help="with --manifest: the checkout holding the manifest's config file (default: .)",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Diagnose the cells (module docstring); the exit status."""
     args = build_parser().parse_args(argv)
+    if args.repo is not None and args.manifest is None:
+        return _fail("refused: --repo goes with --manifest")
     out = Path(args.out)
     found = [name for name in OUTPUT_FILES if (out / name).exists()]
     if found:
@@ -2118,13 +2144,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         planned = planned_cells(args.planned, order)
     except ValueError as exc:
         return _fail("refused: --planned is not a list of distinct cell ids", exc)
-    if v4_cells_guard.main(["--data", str(args.data)]) != 0:
-        return _fail("refused: the data directory fails the reserved-window guard")
+    # The registered run's analysis opens 2025+ data, and only the registered data (v4-d03):
+    # --manifest and --synthetic swap the month bound for v4_run_guard's own checks.
+    bounded = args.manifest is None and not args.synthetic
+    if bounded:
+        if v4_cells_guard.main(["--data", str(args.data)]) != 0:
+            return _fail("refused: the data directory fails the reserved-window guard")
+    else:
+        if args.synthetic:
+            guard_argv = ["--data", str(args.data), "--synthetic"]
+        else:
+            guard_argv = ["--data", str(args.data), "--manifest", str(args.manifest)]
+            guard_argv += ["--repo", str(args.repo or Path("."))]
+        if v4_run_guard.main(guard_argv) != 0:
+            return _fail("refused: the data directory fails the run guard")
     try:
         market = Market.load(Path(args.data))
     except Exception as exc:
         return _fail("refused: loading the data directory failed", exc)
-    if market.end_month > v4_cells_guard.LATEST_ALLOWED:
+    if bounded and market.end_month > v4_cells_guard.LATEST_ALLOWED:
         return _fail("refused: the packs end after the reserved window opens")
     try:
         folders = sorted(path for path in Path(args.cells).iterdir() if path.is_dir())

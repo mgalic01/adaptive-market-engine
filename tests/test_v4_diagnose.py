@@ -32,6 +32,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import gc
+import hashlib
 import io
 import json
 import re
@@ -50,6 +51,7 @@ from typing import Any
 
 import pytest
 from v4_synthetic import (
+    CONFIG_SHA256,
     DAY,
     HOUR,
     CoinSpec,
@@ -61,6 +63,7 @@ from v4_synthetic import (
     hours_in,
     month_start,
     path,
+    read_data_json,
     write_world,
 )
 
@@ -1538,6 +1541,187 @@ def test_diagnose_refuses_data_past_2024_12(cells_dir, tmp_path, monkeypatch):
     code, stdout, stderr = run_main(v4_diagnose, diagnose_argv(data, cells_dir, tmp_path / "out"))
     assert code == 1 and stdout == "" and not (tmp_path / "out").exists()
     assert "2025-01 is after the latest month 2024-12" in stderr
+
+
+# ---- the registered run's data: --manifest and --synthetic (step 4b, task 6) --------------------
+
+LATE_FIRST, LATE_LAST = "2025-01", "2025-02"
+HOLD_CELL = CellSpec("hold_universe", CAPITAL, COSTS).cell_id
+PRE2025_CONFIG = Path(__file__).resolve().parents[1] / "config" / "v4_data_pre2025.json"
+OTHER_PIN = "f" * 64
+GUARD_REFUSED = "v4_diagnose: refused: the data directory fails the reserved-window guard\n"
+RUN_GUARD_REFUSED = "v4_diagnose: refused: the data directory fails the run guard\n"
+
+
+def late_world() -> World:
+    """BTCUSDT alone, spot only, rising, over 2025-01 and 2025-02: a world that reaches 2025-02
+    (as ``tests/test_v4_cell_cli.py``'s ``cli_world`` does, there with four coins over fourteen
+    months), small enough for a ``hold_universe`` cell to replay in a second."""
+    hours = hours_in(LATE_FIRST, LATE_LAST)
+    btc = CoinSpec(
+        "BTCUSDT",
+        Series(month_start(LATE_FIRST), path("90000", (hours, "0.0003"), noise="0.002", seed=7)),
+    )
+    return World(LATE_LAST, (btc,), every_month(LATE_FIRST, LATE_LAST, ("BTCUSDT",)))
+
+
+@pytest.fixture(scope="module")
+def late_dir(tmp_path_factory) -> Path:
+    return write_world(tmp_path_factory.mktemp("late-world"), late_world())
+
+
+@pytest.fixture(scope="module")
+def late_cells(late_dir, tmp_path_factory) -> Path:
+    """``hold_universe`` replayed on the 2025 world through ``v4_cell.py``, in the folder layout
+    the workflow downloads."""
+    root = tmp_path_factory.mktemp("late-cells")
+    cells = root / "cells"
+    cells.mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        for owner, name in _SOCKET_CALLS:
+            patch.setattr(owner, name, _refuse)
+        argv = ["run", "--data", str(late_dir), "--arm", "hold_universe", "--capital", str(CAPITAL)]
+        code, _, stderr = run_main(v4_cell, [*argv, "--costs", str(COSTS), "--out", str(root)])
+        assert (code, stderr) == (0, "")
+    (root / HOLD_CELL).rename(cells / f"v4-cell-{HOLD_CELL}")
+    return cells
+
+
+def late_argv(data: Path, cells: Path, out: Path, *extra: str) -> list[str]:
+    return [*diagnose_argv(data, cells, out, planned=HOLD_CELL), *extra]
+
+
+def run_manifest_of(root: Path, data: Path, **changes: str) -> tuple[Path, Path]:
+    """A checkout and a run manifest for the world ``data``: the checkout holds
+    ``config/v4_data.json`` with the bytes whose SHA-256 is the synthetic worlds' config pin, so
+    the manifest can name the world's own pins; ``changes`` replace what they name."""
+    repo = root / "repo"
+    (repo / "config").mkdir(parents=True)
+    (repo / "config" / "v4_data.json").write_bytes(b"v4 synthetic world")
+    document = read_data_json(data)
+    fields = {
+        "config_path": "config/v4_data.json",
+        "config_sha256": document["config_sha256"],
+        "end_month": document["end_month"],
+        "daily_sha256": document["packs"]["daily"]["sha256"],
+        "index_sha256": document["packs"]["hourly_index"]["sha256"],
+        **changes,
+    }
+    manifest = root / "manifest.json"
+    manifest.write_bytes(
+        _canonical({"schema": "v4-run-manifest-1", "data": fields, "v3_pack_sha256": "3" * 64})
+    )
+    return repo, manifest
+
+
+def no_load(cls: type, folder: Path) -> Market:
+    raise AssertionError("Market.load ran on data the guard refused")
+
+
+def test_diagnose_default_still_refuses_2025(late_dir, late_cells, tmp_path, monkeypatch):
+    """With neither option the diagnosis is the diagnostic run's, as before: a data run that
+    reaches 2025 is refused by ``v4_cells_guard``'s own rule before any pack is read."""
+    assert read_data_json(late_dir)["end_month"] == LATE_LAST
+    monkeypatch.setattr(v4_diagnose.Market, "load", classmethod(no_load))
+    out = tmp_path / "out"
+    code, stdout, stderr = run_main(v4_diagnose, late_argv(late_dir, late_cells, out))
+    assert code == 1 and stdout == "" and not out.exists()
+    assert "2025-02 is after the latest month 2024-12" in stderr
+    assert stderr.endswith(GUARD_REFUSED)
+
+
+def test_diagnose_synthetic_accepts_a_2025_world(late_dir, late_cells, tmp_path):
+    """``--synthetic`` runs the run guard's synthetic check instead of the month bound: the world
+    reaches 2025-02 and is diagnosed. Standard output opens with the guard's line."""
+    out = tmp_path / "diagnosis"
+    code, stdout, stderr = run_main(
+        v4_diagnose, late_argv(late_dir, late_cells, out, "--synthetic")
+    )
+    assert (code, stderr) == (0, "")
+    assert stdout.splitlines()[0] == (
+        f"v4_run_guard: data end_month {LATE_LAST}, config_sha256 {CONFIG_SHA256}: "
+        "accepted (synthetic world)"
+    )
+    document = json.loads((out / "diagnosis.json").read_text(encoding="ascii"))
+    assert document["data"]["end_month"] == LATE_LAST
+    assert [entry["cell"]["id"] for entry in document["cells"]] == [HOLD_CELL]
+
+
+def test_diagnose_synthetic_refuses_a_real_data_run(late_dir, late_cells, tmp_path, monkeypatch):
+    """A data run whose config pin is not the synthetic worlds' (the pre-2025 config's, say) is
+    refused before any pack is read, whatever months it holds."""
+    pin = hashlib.sha256(PRE2025_CONFIG.read_bytes()).hexdigest()
+    real = tmp_path / "real"
+    shutil.copytree(late_dir, real)
+    document = read_data_json(real)
+    (real / "data.json").write_text(
+        json.dumps({**document, "config_sha256": pin}), encoding="ascii"
+    )
+    monkeypatch.setattr(v4_diagnose.Market, "load", classmethod(no_load))
+    out = tmp_path / "out"
+    code, stdout, stderr = run_main(v4_diagnose, late_argv(real, late_cells, out, "--synthetic"))
+    assert code == 1 and stdout == "" and not out.exists()
+    assert "not the synthetic worlds' pin" in stderr and pin not in stderr
+    assert stderr.endswith(RUN_GUARD_REFUSED)
+
+
+def test_diagnose_manifest_accepts_the_registered_data(late_dir, late_cells, tmp_path):
+    """``--manifest`` takes data whose pins are the manifest's, 2025 or not (v4-d03: the
+    registered run is where that data is opened); the config file is read from ``--repo``."""
+    repo, manifest = run_manifest_of(tmp_path, late_dir)
+    out = tmp_path / "diagnosis"
+    argv = late_argv(late_dir, late_cells, out, "--manifest", str(manifest), "--repo", str(repo))
+    code, stdout, stderr = run_main(v4_diagnose, argv)
+    assert (code, stderr) == (0, "")
+    assert stdout.splitlines()[0] == (
+        f"v4_run_guard: data end_month {LATE_LAST}, config_sha256 {CONFIG_SHA256}: "
+        "accepted (registered pins)"
+    )
+    assert (out / "diagnosis.json").is_file() and (out / "diagnosis.md").is_file()
+
+
+@pytest.mark.parametrize("key", ["config_sha256", "end_month", "daily_sha256", "index_sha256"])
+def test_diagnose_manifest_refuses_other_pins(late_dir, late_cells, tmp_path, monkeypatch, key):
+    """Data whose pins are not the manifest's, each pin changed in turn, is refused before any
+    pack is read; nothing is written."""
+    other = {"config_sha256": OTHER_PIN, "end_month": "2025-01"}
+    other |= {"daily_sha256": OTHER_PIN, "index_sha256": OTHER_PIN}
+    repo, manifest = run_manifest_of(tmp_path, late_dir, **{key: other[key]})
+    monkeypatch.setattr(v4_diagnose.Market, "load", classmethod(no_load))
+    out = tmp_path / "out"
+    argv = late_argv(late_dir, late_cells, out, "--manifest", str(manifest), "--repo", str(repo))
+    code, stdout, stderr = run_main(v4_diagnose, argv)
+    assert code == 1 and stdout == "" and not out.exists()
+    assert f"{key} is not the run manifest's" in stderr
+    assert stderr.endswith(RUN_GUARD_REFUSED)
+
+
+def test_diagnose_manifest_refuses_a_config_file_with_another_hash(
+    late_dir, late_cells, tmp_path, monkeypatch
+):
+    repo, manifest = run_manifest_of(tmp_path, late_dir)
+    (repo / "config" / "v4_data.json").write_bytes(b"another config")
+    monkeypatch.setattr(v4_diagnose.Market, "load", classmethod(no_load))
+    argv = late_argv(late_dir, late_cells, tmp_path / "out", "--manifest", str(manifest))
+    code, stdout, stderr = run_main(v4_diagnose, [*argv, "--repo", str(repo)])
+    assert code == 1 and stdout == "" and "does not hash to" in stderr
+    assert stderr.endswith(RUN_GUARD_REFUSED)
+
+
+def test_diagnose_manifest_and_synthetic_exclude_each_other(late_dir, late_cells, tmp_path, capsys):
+    argv = late_argv(late_dir, late_cells, tmp_path / "out", "--manifest", "m", "--synthetic")
+    with pytest.raises(SystemExit):
+        v4_diagnose.build_parser().parse_args(argv)
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_diagnose_repo_goes_with_manifest(late_dir, late_cells, tmp_path):
+    out = tmp_path / "out"
+    code, stdout, stderr = run_main(
+        v4_diagnose, late_argv(late_dir, late_cells, out, "--synthetic", "--repo", str(tmp_path))
+    )
+    assert code == 1 and stdout == "" and not out.exists()
+    assert stderr == "v4_diagnose: refused: --repo goes with --manifest\n"
 
 
 def test_diagnose_refuses_an_out_folder_that_holds_a_diagnosis(diagnosis, world_dir, cells_dir):
