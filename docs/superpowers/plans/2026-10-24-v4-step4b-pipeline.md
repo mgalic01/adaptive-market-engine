@@ -96,6 +96,8 @@ Each ruling states the decision and what it costs if it is wrong. Tasks cite the
 
   *Cost: none, as the spec's precedence.*
 
+  *Changed by owner decision v4-d25 (2026-10-24), the owner's answer to Bob's review of PR #298, which found the spec's "anything missing means incomplete" wider than the 8 required cells above.* Step 2's first item now covers every cell of the run (the expected file's: 48 in a registered run and a rehearsal, 44 in a timing run): any that is missing, refused or `engine_error`, or, in an arm other than `v4_main`, `accounting_failure`, makes the verdict incomplete. A `liquidated` or `limit_unrestorable` cell of another arm is a reported result and does not. Steps 1 and 3 are unchanged. `decide` takes the expected cells, and `REQUIRED` is retired. *Cost: a glitch in any reported cell leaves the run without a passing verdict; the owner accepted that.*
+
 **Reporting and resuming**
 
 - **V11. Reported comparisons.** Every non-v3 arm, at each capital and cost, is reported against `hold_universe` and against `v3_as_built` at the same capital and cost. The first uses condition 1's measure, the second condition 2's. Each cell's own `compounded_return`, `max_drawdown`, eras and years are reported too. Variants and neighbours are grouped beside `v4_main`. None of this decides anything. *Cost: compute time only.*

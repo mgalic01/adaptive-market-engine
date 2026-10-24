@@ -51,7 +51,12 @@ from crypto_grid_bot.combined.artifacts import _canonical
 from crypto_grid_bot.v4.engine import v3_as_built
 from crypto_grid_bot.v4.engine.arms import ARMS, CAPITALS, COST_MULTIPLES, all_cells
 from crypto_grid_bot.v4.engine.market import HOUR_MS
-from crypto_grid_bot.v4.engine.run import ENGINE_ERROR, LIQUIDATED
+from crypto_grid_bot.v4.engine.run import (
+    ACCOUNTING_FAILURE,
+    ENGINE_ERROR,
+    LIMIT_UNRESTORABLE,
+    LIQUIDATED,
+)
 from crypto_grid_bot.v4.engine.v3_as_built import V3_CAPITAL_ADAPTER
 from crypto_grid_bot.v4.verdict import inputs, rule
 from crypto_grid_bot.v4.verdict.inputs import read_cell
@@ -102,6 +107,7 @@ PAIRS = len(NON_V3) * len(CAPITALS) * len(COST_MULTIPLES) * 2
 STEPS = CELLS + CHECKS + PAIRS
 MAIN = "v4_main-1000-1x"
 HOLD = "hold_universe-1000-1x"
+REPORTED = "v4_vol25-10000-2x"  # a cell no condition reads
 
 
 class NetworkBlocked(OSError):
@@ -236,11 +242,13 @@ def dispatch_check_of(made: World) -> tuple[str, ...]:
     return ("--dispatch-reasons", str(reasons_file(made.root, [])))
 
 
-def stopped(cell_id: str = MAIN, *, spoiled: bool = False) -> dict[str, dict[str, Any]]:
-    """An override that makes a cell liquidated after 20 hours; ``spoiled`` also gives it a
-    reason a liquidation does not have, so ``read_cell`` refuses it."""
+def stopped(
+    cell_id: str = MAIN, *, spoiled: bool = False, outcome: str = LIQUIDATED
+) -> dict[str, dict[str, Any]]:
+    """An override that makes a cell liquidated (or ``outcome``, another stop) after 20 hours;
+    ``spoiled`` also gives a liquidation a reason it does not have, so ``read_cell`` refuses it."""
     keywords: dict[str, Any] = {
-        "outcome": LIQUIDATED,
+        "outcome": outcome,
         "marks": marks_for(cell_id)[:20],
         "final_after_close": None,
         "equity_2025": None,
@@ -935,6 +943,47 @@ def test_a_v3_engine_error_is_incomplete(tmp_path):
     assert "incomputable" in document["pairs"][MAIN]["v3"]
 
 
+def test_a_missing_reported_cell_is_incomplete(tmp_path):
+    """Owner decision v4-d25: every cell of the run counts, so a missing cell that no condition
+    reads makes the verdict incomplete while every check holds. The page lists it."""
+    made = world(tmp_path, omit=(REPORTED,))
+    assert made.run() == 0
+    document = made.document()
+    assert document["verdict"]["outcome"] == "incomplete"
+    assert document["missing"] == [REPORTED]
+    assert all(check["holds"] is True for check in document["verdict"]["checks"])
+    assert document["verdict"]["reasons"] == [f"cell {REPORTED} is missing or refused"]
+    section = made.page().split("\n## Missing, refused and re-run cells, and other dispatches\n")[1]
+    assert REPORTED in section
+
+
+@pytest.mark.parametrize("outcome", [ENGINE_ERROR, ACCOUNTING_FAILURE])
+def test_a_reported_cell_that_failed_is_incomplete(tmp_path, outcome):
+    """v4-d25: an engine error, or outside v4_main an accounting failure, in a cell no condition
+    reads is accepted (neither missing nor refused) and still makes the verdict incomplete."""
+    made = world(tmp_path, overrides={REPORTED: {"outcome": outcome}})
+    assert made.run() == 0
+    document = made.document()
+    assert document["verdict"]["outcome"] == "incomplete"
+    assert document["missing"] == [] and document["refused"] == []
+    assert REPORTED in {cell["cell_id"] for cell in document["cells"]}
+    assert all(check["holds"] is True for check in document["verdict"]["checks"])
+    reasons = document["verdict"]["reasons"]
+    assert len(reasons) == 1 and reasons[0].startswith(f"cell {REPORTED} ended in an ")
+
+
+@pytest.mark.parametrize("outcome", [LIQUIDATED, LIMIT_UNRESTORABLE])
+def test_a_reported_stop_is_a_result_and_the_set_still_passes(tmp_path, outcome):
+    """v4-d25: a reported arm's liquidation or unrestorable limit is a full summary, a result:
+    it is reported (its pairs cannot be measured) and the verdict is still the conditions'."""
+    made = world(tmp_path, overrides=stopped(REPORTED, outcome=outcome))
+    assert made.run() == 0
+    document = made.document()
+    assert document["verdict"]["outcome"] == "pass"
+    assert document["verdict"]["reasons"] == []
+    assert "incomputable" in document["pairs"][REPORTED]["hold"]
+
+
 def test_the_timing_set_has_no_v3_cell_and_is_incomplete(tmp_path):
     made = world(tmp_path, mode="timing")
     assert made.run() == 0
@@ -942,6 +991,9 @@ def test_the_timing_set_has_no_v3_cell_and_is_incomplete(tmp_path):
     assert len(document["cells"]) == 44
     assert document["verdict"]["outcome"] == "incomplete"
     assert document["missing"] == []  # the expected file lists the 44 only
+    # its 44 cells count (v4-d25); the v3 cells are not its, so only condition 2 is incomplete
+    assert not any("missing or refused" in reason for reason in document["verdict"]["reasons"])
+    assert [c["condition"] for c in document["verdict"]["checks"] if c["holds"] is None] == [2, 2]
     assert made.page().startswith(SYNTHETIC)
     assert all("v3" not in key for key in document["pairs"])
     assert all(sorted(rows) == ["hold"] for rows in document["pairs"].values())
@@ -1269,7 +1321,7 @@ def test_a_check_that_could_not_be_computed_has_no_skipped_hours_on_the_page(tmp
 
 def _document_with(**keywords: Any) -> dict[str, Any]:
     expected = expected_for()
-    verdict = decide({}, [], missing=[], reruns=[], dispatches=[])
+    verdict = decide({}, [], expected=(), missing=[], reruns=[], dispatches=[])
     arguments: dict[str, Any] = {
         "accepted": {},
         "refused": {},

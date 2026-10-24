@@ -602,9 +602,9 @@ def _headline(view: _View) -> str:
     if outcome == "fail":
         return f"{failed} of the {len(checks)} checks do not hold, so V4.0 fails the rule."
     return (
-        "The verdict cannot be given: something the rule needs is missing, refused, re-run, "
-        "repeated by another dispatch or cannot be computed, and an incomplete run is never a "
-        "pass. The reasons say which."
+        "The verdict cannot be given: a cell of the run is missing, refused or ended in an "
+        "error, or something was re-run, repeated by another dispatch or cannot be computed, and "
+        "an incomplete run is never a pass. The reasons say which."
     )
 
 

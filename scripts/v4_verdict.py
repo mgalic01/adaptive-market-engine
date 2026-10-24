@@ -45,7 +45,8 @@ reason, is continued by running it again with the same arguments.
    arms, as the spec says hours missing from any source are "skipped for all arms alike and
    listed"; a pair records only how many (``skipped_hours``);
 6. ``rule.decide`` gives the verdict from the accepted cells only (refused and absent cells are
-   ``missing``, never ``accepted``); ``report.verdict_document`` and ``report.render_verdict_page``
+   ``missing``, never ``accepted``) and the expected file's cells, every one of which counts
+   (owner decision v4-d25); ``report.verdict_document`` and ``report.render_verdict_page``
    build ``O/verdict.json`` (canonical JSON) and ``O/verdict.md`` (the page), both created
    exclusively (V14); if the second cannot be written, the first is removed again, and so is a
    folder this step made, so a failed write leaves no file.
@@ -697,6 +698,7 @@ def _run(args: argparse.Namespace) -> int:
     verdict = decide(
         classified.accepted,
         checks,
+        expected=expected.cells,
         missing=classified.missing,
         reruns=classified.reruns,
         dispatches=dispatches,

@@ -41,10 +41,17 @@ are skipped for all arms alike.
   computed, so the verdict is incomplete.
 * **V10, precedence** (``decide``), in this order. First **fail** if an accepted ``v4_main``
   summary, at either capital and either cost, is ``liquidated``, ``limit_unrestorable`` or
-  ``accounting_failure``. Otherwise **incomplete** if one of the 8 required cells is missing,
-  refused or ``engine_error``, if a re-run or another dispatch of the same registration was found,
-  or if a condition cannot be computed. Otherwise **pass** if all 8 checks hold (4 conditions x 2
-  capitals), else **fail**.
+  ``accounting_failure``. Otherwise **incomplete** if a cell of the run is missing, refused or
+  ``engine_error``, or, in an arm other than ``v4_main``, ``accounting_failure`` (a cell whose own
+  accounting failed is not usable evidence); if a re-run of a cell, another dispatch of the same
+  registration or a re-run of one of this run's jobs was found; or if a condition cannot be
+  computed. Otherwise **pass** if all 8 checks hold (4 conditions x 2 capitals), else **fail**.
+  Changed by owner decision v4-d25 (2026-10-24): every cell of the run counts (``expected``, the
+  expected file's cells: the 48 of a registered run and a rehearsal, the 44 of a timing run, whose
+  verdict is not a result), not only the 8 the conditions read. A ``liquidated`` or
+  ``limit_unrestorable`` cell of another arm is a full summary, a reported result, and does not by
+  itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves condition 1
+  incomputable, V7).
 
 **Decisions of this module** (beyond the rulings, each cheap):
 
@@ -59,10 +66,13 @@ are skipped for all arms alike.
   conditions 1 and 2. (For ``v4_main`` the precedence has already failed the verdict.)
 * ``decide`` returns all 8 checks, ordered by capital then condition. A check the caller did not
   supply is filled in as incomputable, and says so. Its ``reasons`` list every finding, in this
-  order: the stopped ``v4_main`` cells, the required cells that are missing or refused, those that
-  ended in an engine error, a re-run, another dispatch, the conditions that cannot be computed, and
-  the conditions that do not hold. The outcome is the precedence's; the reasons are everything the
-  owner needs to read beside it.
+  order: the stopped ``v4_main`` cells, the cells of the run that are missing or refused, those
+  that ended in an engine error, those of other arms that ended in an accounting failure, a
+  re-run, another dispatch (or a re-run of one of this run's jobs), the conditions that cannot be
+  computed, and the conditions that do not hold. The outcome is the precedence's; the reasons are
+  everything the owner needs to read beside it.
+* ``decide`` refuses, as a caller's ``ValueError``, an accepted or missing cell that is not one of
+  ``expected``: the verdict step's are always the expected file's.
 * **Skipped hours** (the spec: "hours missing from any source are skipped for all arms alike and
   listed"). ``skipped_hours`` gives the hour opens of a range that are not common boundaries of two
   arms. A computed ``condition_1`` (over its ``window``, the run's first and last hour open, a
@@ -101,16 +111,6 @@ Mark = tuple[int, Decimal, bool]  # (hour open in ms, equity, complete), as inpu
 INFINITY = Decimal("Infinity")
 STOP_FAILS = frozenset({LIQUIDATED, LIMIT_UNRESTORABLE, ACCOUNTING_FAILURE})
 CAPITALS_JUDGED = (1000, 10000)
-REQUIRED = (
-    "v4_main-1000-1x",
-    "v4_main-1000-2x",
-    "v4_main-10000-1x",
-    "v4_main-10000-2x",
-    "hold_universe-1000-1x",
-    "hold_universe-10000-1x",
-    "v3_as_built-1000-1x",
-    "v3_as_built-10000-1x",
-)
 MAIN_ARM = "v4_main"
 CONDITION_LABELS: Mapping[int, str] = {
     1: "return over drawdown against hold_universe",
@@ -427,21 +427,35 @@ def _label(check: Check) -> str:
 
 
 def _absent(capital: int, condition: int) -> Check:
-    return Check(condition, capital, None, None, None, "not computed: a required cell is missing")
+    return Check(
+        condition,
+        capital,
+        None,
+        None,
+        None,
+        "not computed: a cell it reads is missing, refused or not in this run",
+    )
 
 
 def decide(
     accepted: Mapping[str, CellFacts],
     checks: Sequence[Check],
     *,
+    expected: Sequence[str],
     missing: Collection[str],
     reruns: Collection[str],
     dispatches: Collection[str],
 ) -> Verdict:
-    """V10. ``accepted`` is the accepted cells by id; ``missing`` the cells that are missing or
-    refused (only the 8 required ones count); ``reruns`` and ``dispatches`` what was found of
-    another attempt or another dispatch of the same registration (any at all is incomplete);
-    ``checks`` the conditions computed so far (a check not supplied counts as incomputable)."""
+    """V10, as owner decision v4-d25 has it. ``expected`` is the run's cells (the expected file's,
+    in order), every one of which counts; ``accepted`` the accepted cells by id; ``missing`` the
+    expected cells that are missing or refused (an accepted or missing cell that is not expected
+    is a caller's ``ValueError``); ``reruns`` what was found of a re-run of a cell and
+    ``dispatches`` of another dispatch of the same registration or a re-run of one of this run's
+    jobs (any at all is incomplete); ``checks`` the conditions computed so far (a check not
+    supplied counts as incomputable)."""
+    run = set(expected)
+    if not run.issuperset(accepted) or not run.issuperset(missing):
+        raise ValueError("an accepted or missing cell is not one of the run's expected cells")
     found = _by_key(checks)
     ordered = tuple(found.get(key) or _absent(*key) for key in _KEYS)
 
@@ -450,20 +464,34 @@ def decide(
         key=lambda cell: cell.cell_id,
     )
     lost = set(missing)
-    gone = [cell for cell in REQUIRED if cell not in accepted or cell in lost]
-    errored = [
-        cell for cell in REQUIRED if cell not in gone and accepted[cell].outcome == ENGINE_ERROR
+    gone = [cell for cell in expected if cell not in accepted or cell in lost]
+    usable = [(cell, accepted[cell]) for cell in expected if cell not in gone]
+    errored = [cell for cell, facts in usable if facts.outcome == ENGINE_ERROR]
+    # v4-d25: outside v4_main (where the precedence has failed it) a cell whose own accounting
+    # failed is not usable evidence. A reported arm's liquidation or unrestorable limit is a full
+    # summary, a result, and is not listed here.
+    unaccounted = [
+        cell
+        for cell, facts in usable
+        if facts.arm != MAIN_ARM and facts.outcome == ACCOUNTING_FAILURE
     ]
     unknown = [check for check in ordered if check.holds is None]
     failed = [check for check in ordered if check.holds is False]
 
     reasons = [f"a v4_main cell stopped: {cell.cell_id} is {cell.outcome}" for cell in stops]
-    reasons += [f"required cell {cell} is missing or refused" for cell in gone]
-    reasons += [f"required cell {cell} ended in an engine error" for cell in errored]
+    reasons += [f"cell {cell} is missing or refused" for cell in gone]
+    reasons += [f"cell {cell} ended in an engine error" for cell in errored]
+    reasons += [
+        f"cell {cell} ended in an accounting failure, so it is not usable evidence"
+        for cell in unaccounted
+    ]
     if reruns:
         reasons.append("a re-run of a cell was found")
     if dispatches:
-        reasons.append("another dispatch of the same registration was found")
+        reasons.append(
+            "another dispatch of this registration, or a re-run of one of this run's jobs, "
+            "was found"
+        )
     for check in unknown:
         reasons.append(
             f"{_label(check)} cannot be computed" + (f": {check.note}" if check.note else "")
@@ -473,7 +501,7 @@ def decide(
     outcome: Literal["pass", "fail", "incomplete"]
     if stops:
         outcome = "fail"
-    elif gone or errored or reruns or dispatches or unknown:
+    elif gone or errored or unaccounted or reruns or dispatches or unknown:
         outcome = "incomplete"
     elif failed:
         outcome = "fail"
