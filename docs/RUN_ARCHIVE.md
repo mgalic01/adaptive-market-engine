@@ -136,7 +136,8 @@ folder per artifact. The layout is that of the V4 cells runs' archives (for exam
   root).
 
 Then offer the owner the deletion of the run's artifacts on GitHub. Nothing is deleted without the
-owner's confirmation. GitHub keeps each artifact one day (v4-d10), so download the same day.
+owner's confirmation. GitHub keeps each artifact one day (`retention-days: 1` in `v4-run.yml`), so
+download the same day.
 
 **By mode:**
 - **Rehearsal:** every artifact. It is synthetic and holds no market data.
