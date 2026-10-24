@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib
 import io
 import json
 import re
@@ -309,6 +310,35 @@ def test_expected_registered_takes_the_manifests_v3_pin(tmp_path, data_dir, mark
     assert stdout.startswith("v4_run_plan expected: mode registered, 48 cells, ")
 
 
+def test_a_registered_expected_file_never_imports_the_rehearsal_script(
+    tmp_path, data_dir, market, monkeypatch
+):
+    """The registered verdict job runs ``expected`` without ``--world``: importing the plan, and
+    writing a registered expected file, leave ``scripts/v4_rehearsal.py`` unimported. Only the
+    rehearsal's branch imports it, for ``read_world``."""
+    for name in ("v4_run_plan", "v4_rehearsal"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    fresh = importlib.import_module("v4_run_plan")
+    assert "v4_rehearsal" not in sys.modules
+    assert not hasattr(fresh, "read_world")
+    monkeypatch.setattr(fresh, "CONFIG_SHA256", sha("a real config"))  # as real_config does
+    manifest = write_manifest_file(tmp_path / "config" / "v4_run_manifest.json", market)
+    out = tmp_path / "expected.json"
+    argv = expected_argv("registered", data_dir, out, world=None, manifest=manifest, picks=PICKS)
+    code, _, stderr = run_cli(fresh, argv)
+    assert (code, stderr) == (0, "")
+    assert "v4_rehearsal" not in sys.modules
+    # The rehearsal's branch imports it, and reads the world with it.
+    world = write_world_file(tmp_path / "world", market)
+    monkeypatch.setattr(fresh, "CONFIG_SHA256", v4_run_plan.CONFIG_SHA256)
+    argv = expected_argv(
+        "rehearsal", data_dir, tmp_path / "r.json", world=world, manifest=None, picks=PICKS
+    )
+    code, _, stderr = run_cli(fresh, argv)
+    assert (code, stderr) == (0, "")
+    assert "v4_rehearsal" in sys.modules
+
+
 @pytest.mark.parametrize("empty_pin_given", [False, True])
 def test_expected_timing_has_44_cells_and_no_v3_pins(tmp_path, data_dir, empty_pin_given):
     """A timing run has no picks job: its pin is absent, or given empty by a workflow that passes
@@ -578,6 +608,7 @@ def test_status_reads_needs_from_the_environment_and_writes_canonical_json(tmp_p
             "v3-cell": "success",
         },
         "verdict_ran": True,
+        "notes": [],
     }
     assert b"include" not in raw  # the jobs' outputs are not kept: results only
     assert stdout == (
@@ -667,20 +698,42 @@ def test_status_refuses_a_needs_that_is_not_the_workflows(tmp_path, monkeypatch,
     assert not target.exists()
 
 
-@pytest.mark.parametrize(
-    ("mode", "registration"),
-    [("live", REGISTRATION), ("registered", "A" * 64), ("registered", "a" * 63)]
-    + [("registered", "a" * 64 + "\n"), ("", REGISTRATION)],
-)
-def test_status_refuses_a_bad_mode_or_registration(tmp_path, monkeypatch, mode, registration):
+@pytest.mark.parametrize("mode", ["live", ""])
+def test_status_refuses_a_bad_mode(tmp_path, monkeypatch, mode):
     status_env(monkeypatch)
     target = tmp_path / "status.json"
-    code, _, stderr = run_cli(
-        v4_run_status, status_argv(target, mode=mode, registration=registration)
-    )
-    assert code == 1
-    assert ("mode" in stderr) or ("registration" in stderr)
+    code, _, stderr = run_cli(v4_run_status, status_argv(target, mode=mode))
+    assert code == 1 and "mode" in stderr
     assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "registration",
+    ["A" * 64, "a" * 63, "a" * 64 + "\n", "SECRET-registration", "a" * 65, " " + "a" * 63],
+)
+def test_status_records_a_malformed_registration_as_null_with_a_note(
+    tmp_path, monkeypatch, registration
+):
+    """The dispatch's registration_sha256 is free text: whatever it is, the job records what
+    happened. One of another form is recorded as null, ``notes`` says so (never quoting it), a
+    warning says the same, and the record is written (exit 0)."""
+    status_env(monkeypatch, needs_of(verdict="skipped"))
+    target = tmp_path / "status.json"
+    code, stdout, stderr = run_cli(v4_run_status, status_argv(target, registration=registration))
+    assert code == 0
+    document = json.loads(target.read_bytes())
+    assert document["registration_sha256"] is None
+    assert document["notes"] == [v4_run_status.MALFORMED_REGISTRATION]
+    assert document["jobs"]["verdict"] == "skipped" and document["verdict_ran"] is False
+    assert stderr == f"::warning::v4_run_status: {v4_run_status.MALFORMED_REGISTRATION}\n"
+    assert registration.strip() not in stderr + stdout + target.read_text(encoding="ascii")
+    assert stdout.startswith("v4_run_status: mode registered, run 40123456789 attempt 1, ")
+    # A well-formed one, or none, leaves no note.
+    for good in (REGISTRATION, ""):
+        out = tmp_path / f"good-{len(good)}.json"
+        code, _, stderr = run_cli(v4_run_status, status_argv(out, registration=good))
+        assert (code, stderr) == (0, "")
+        assert json.loads(out.read_bytes())["notes"] == []
 
 
 def test_status_never_replaces_an_existing_file(tmp_path, monkeypatch):

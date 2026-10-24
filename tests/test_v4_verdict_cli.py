@@ -228,6 +228,14 @@ def reasons_file(root: Path, earlier: list[str]) -> Path:
     return path
 
 
+def dispatch_check_of(made: World) -> tuple[str, ...]:
+    """The arguments the workflow adds in ``made``'s mode: a registered run's verdict reads the
+    dispatch check's file (here, no earlier dispatch); a rehearsal's and a timing run's none."""
+    if made.expected.mode != "registered":
+        return ()
+    return ("--dispatch-reasons", str(reasons_file(made.root, [])))
+
+
 def stopped(cell_id: str = MAIN, *, spoiled: bool = False) -> dict[str, dict[str, Any]]:
     """An override that makes a cell liquidated after 20 hours; ``spoiled`` also gives it a
     reason a liquidation does not have, so ``read_cell`` refuses it."""
@@ -367,7 +375,7 @@ def test_the_page_names_the_analysis_artifact(base):
 )
 def test_the_analysis_artifact_is_named_by_mode(tmp_path, mode, artifact):
     made = world(tmp_path, mode=mode)
-    assert made.run() == 0
+    assert made.run(*dispatch_check_of(made)) == 0
     section = made.page().split("\n## The analysis artifact\n")[1]
     assert f"`{artifact}<n>`" in section
 
@@ -992,6 +1000,20 @@ def test_a_missing_dispatch_reasons_file_is_refused(shared):
     assert made.written() == []
 
 
+def test_a_registered_verdict_without_dispatch_reasons_is_refused(tmp_path, capsys):
+    """A registered run's other dispatches are an input of its verdict (Ruling G4): without the
+    dispatch check's file, none could be told from a check that never ran. Refused, exit 1,
+    nothing written (no output, no progress); with the file, the same set is judged."""
+    made = world(tmp_path, mode="registered")
+    assert made.run() == 1
+    err = capsys.readouterr().err
+    assert err == "v4_verdict: refused: a registered run's verdict needs --dispatch-reasons\n"
+    assert made.written() == [] and not made.out.exists() and not made.progress.exists()
+    assert made.run(*dispatch_check_of(made)) == 0
+    assert made.document()["verdict"]["outcome"] == "pass"
+    capsys.readouterr()
+
+
 def test_read_dispatch_reasons(tmp_path):
     path = reasons_file(tmp_path, ["a", "b"])
     assert read_dispatch_reasons(path) == ("a", "b")
@@ -1018,11 +1040,41 @@ def test_timing_page_says_synthetic(tmp_path):
 
 def test_a_registered_page_is_not_called_synthetic(tmp_path):
     made = world(tmp_path, mode="registered")
-    assert made.run() == 0
+    assert made.run(*dispatch_check_of(made)) == 0
     page = made.page()
     assert "synthetic" not in page.lower()
     first = page.split("\n", 1)[0]
     assert first.startswith("# ") and "registered" in first.lower()
+    # Only a registered run's pass is V4.0's pass under the registered rule.
+    assert made.document()["verdict"]["outcome"] == "pass"
+    assert "**PASS.** v4_main met all 8 checks" in page
+    assert "under the registered rule V4.0 passes" in page
+
+
+def test_a_synthetic_pass_names_its_mode_never_the_registered_rule(base):
+    """A rehearsal's or a timing run's pass is a test of the pipeline: its headline names the
+    mode and never says V4.0 passes under the registered rule."""
+    made, _ = base  # a rehearsal's set, which passes
+    page = made.page()
+    assert made.document()["verdict"]["outcome"] == "pass"
+    assert "**PASS.** The synthetic rehearsal's verdict is pass" in page
+    assert "registered rule" not in page and "V4.0 passes" not in page
+    # The same document as a timing run's (a timing set has no v3 cell, so the CLI never
+    # passes one): the page names the timing run.
+    document = made.document()
+    timing = {**document, "expected": {**document["expected"], "mode": "timing"}}
+    timing_page = render_verdict_page(timing)
+    assert "**PASS.** The synthetic timing run's verdict is pass" in timing_page
+    assert "registered rule" not in timing_page and "V4.0 passes" not in timing_page
+
+
+def test_a_synthetic_fail_names_its_mode(tmp_path):
+    """A stopped v4_main fails a rehearsal's set: its headline names the rehearsal, not V4.0."""
+    made = world(tmp_path, mode="rehearsal", overrides=stopped())
+    assert made.run() == 0
+    page = made.page()
+    assert made.document()["verdict"]["outcome"] == "fail"
+    assert "fails the synthetic rehearsal's verdict" in page and "fails V4.0" not in page
 
 
 def test_v3_adapter_disclosed(base):
@@ -1042,7 +1094,7 @@ def test_v3_adapter_disclosed(base):
 
 def test_a_registered_page_discloses_the_adapter_and_not_a_synthetic_world(tmp_path):
     made = world(tmp_path, mode="registered")
-    assert made.run() == 0
+    assert made.run(*dispatch_check_of(made)) == 0
     section = made.page().split("\n## Disclosures\n")[1].split("\n## ")[0]
     assert V3_CAPITAL_ADAPTER in section
     assert "synthetic" not in section.lower()

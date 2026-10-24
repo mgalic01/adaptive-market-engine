@@ -65,11 +65,14 @@ are skipped for all arms alike.
   owner needs to read beside it.
 * **Skipped hours** (the spec: "hours missing from any source are skipped for all arms alike and
   listed"). ``skipped_hours`` gives the hour opens of a range that are not common boundaries of two
-  arms. A computed ``condition_1`` (given its ``window``, the run's first and last hour open) and
-  ``condition_2`` (the V3 period, ``skipped_against_v3``, where a liquidated v3's hours after its
-  stop count as complete) carry them in ``Check.skipped_ms``; every other check has None.
+  arms. A computed ``condition_1`` (over its ``window``, the run's first and last hour open, a
+  required keyword) and ``condition_2`` (the V3 period, ``skipped_against_v3``, where a liquidated
+  v3's hours after its stop count as complete) carry them in ``Check.skipped_ms``; every other
+  check has None.
 * ``Check.note``, ``Incomputable`` messages and ``Verdict.reasons`` are words and cell ids only:
-  never an equity, a return or a quoted dispatch (public logs carry no figures).
+  never an equity, a return or a quoted dispatch. They still name outcomes (a stopped cell, a
+  missing one, a condition that does not hold), so they are for the verdict's artifacts only
+  (``verdict.json`` and ``verdict.md``, which stay on the owner's PC), never for a public log.
 
 Every division and subtraction runs under ``CONTEXT``. No live execution; no API keys.
 """
@@ -341,20 +344,17 @@ def condition_1(
     hold: CellFacts,
     hold_marks: Sequence[Mark],
     *,
-    window: tuple[int, int] | None = None,
+    window: tuple[int, int],
 ) -> Check:
     """Compounded return / maximum drawdown is greater than ``hold_universe``'s (V7).
-    ``window`` is the run's window, the first and last hour open (both included): when it is
-    given, the check lists the hours of it that are skipped (``Check.skipped_ms``)."""
+    ``window`` (required: a computed check always lists its skipped hours, as
+    ``report.check_from_record`` requires) is the run's window, the first and last hour open
+    (both included); the check lists the hours of it that are skipped (``Check.skipped_ms``)."""
     try:
         mine, theirs = measure_against_hold(main, main_marks, hold, hold_marks)
     except Incomputable as why:
         return _unknown(1, main.capital, why)
-    skipped = (
-        None
-        if window is None
-        else skipped_hours(main_marks, hold_marks, start_ms=window[0], end_ms=window[1])
-    )
+    skipped = skipped_hours(main_marks, hold_marks, start_ms=window[0], end_ms=window[1])
     return Check(1, main.capital, mine.ratio > theirs.ratio, mine, theirs, None, skipped)
 
 

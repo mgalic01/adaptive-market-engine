@@ -59,6 +59,9 @@ from crypto_grid_bot.v4.verdict.rule import (
 D = Decimal
 V3_LAST = V3_END_MS - HOUR_MS
 SECRET = D("8675309.4271")  # an equity that must never show in a note or a reason
+# Condition 1's window (a required keyword): the hours 0 to 3, those of most tests' marks. The
+# tests of its skipped hours give their own.
+WINDOW = (0, 3 * HOUR_MS)
 
 
 @contextlib.contextmanager
@@ -177,7 +180,7 @@ def test_infinity_is_not_greater_than_itself() -> None:
     +infinity is not greater than itself."""
     main = facts(final_after_close=D(106))
     hold = facts("hold_universe", final_after_close=D(104))
-    check = condition_1(main, marks([100, 102, 104]), hold, marks([100, 101, 102]))
+    check = condition_1(main, marks([100, 102, 104]), hold, marks([100, 101, 102]), window=WINDOW)
     assert isinstance(check.main, PathMeasure) and isinstance(check.other, PathMeasure)
     assert check.main.ratio == INFINITY and check.other.ratio == INFINITY
     assert check.holds is False
@@ -253,12 +256,16 @@ def test_condition_1_ends_with_the_final_after_close() -> None:
     and final 103, the finite ratio of the hold is beaten."""
     main = facts(final_after_close=D(120))
     rising = facts("hold_universe", final_after_close=D(103))
-    flat_up = condition_1(main, marks([100, 110, 105]), rising, marks([100, 101, 102]))
+    flat_up = condition_1(
+        main, marks([100, 110, 105]), rising, marks([100, 101, 102]), window=WINDOW
+    )
     assert isinstance(flat_up.main, PathMeasure) and isinstance(flat_up.other, PathMeasure)
     assert flat_up.other.max_drawdown == 0 and flat_up.other.ratio == INFINITY
     assert flat_up.holds is False
 
-    dipped = condition_1(main, marks([100, 110, 105]), rising, marks([100, 102, 101]))
+    dipped = condition_1(
+        main, marks([100, 110, 105]), rising, marks([100, 102, 101]), window=WINDOW
+    )
     assert dipped.condition == 1 and dipped.capital == 1000 and dipped.note is None
     assert isinstance(dipped.main, PathMeasure) and isinstance(dipped.other, PathMeasure)
     assert dipped.main.compounded_return == D("0.2")
@@ -274,7 +281,7 @@ def test_condition_1_compares_ratios_not_returns() -> None:
     """A higher return with a deeper fall does not beat a calmer path."""
     main = facts(final_after_close=D(150))
     hold = facts("hold_universe", final_after_close=D(110))
-    check = condition_1(main, marks([100, 50, 100]), hold, marks([100, 105, 104]))
+    check = condition_1(main, marks([100, 50, 100]), hold, marks([100, 105, 104]), window=WINDOW)
     assert isinstance(check.main, PathMeasure) and isinstance(check.other, PathMeasure)
     assert check.main.compounded_return == D("0.5") > check.other.compounded_return == D("0.1")
     assert check.main.ratio == 1 < check.other.ratio  # 0.5 / 0.5 against 0.1 / (1/105)
@@ -286,7 +293,7 @@ def test_condition_1_uses_only_hours_both_arms_marked_complete() -> None:
     hold = facts("hold_universe", final_after_close=D(103))
     main_marks = marks([100, 999, 110, 105], skip=(1,))
     hold_marks = marks([100, 101, 102, 101], skip=(3,))
-    check = condition_1(main, main_marks, hold, hold_marks)
+    check = condition_1(main, main_marks, hold, hold_marks, window=WINDOW)
     assert isinstance(check.main, PathMeasure) and isinstance(check.other, PathMeasure)
     assert check.main.hours == 2 and check.other.hours == 2
     assert (check.main.start_equity, check.other.start_equity) == (D(100), D(100))
@@ -309,7 +316,7 @@ def test_condition_1_needs_both_arms_complete(main_changes, hold_changes) -> Non
     """V7: both must be complete, and any other outcome of hold_universe is incomplete."""
     main = facts(**main_changes)
     hold = facts("hold_universe", **hold_changes)
-    check = condition_1(main, marks([100, 110, 105]), hold, marks([100, 102, 101]))
+    check = condition_1(main, marks([100, 110, 105]), hold, marks([100, 102, 101]), window=WINDOW)
     assert check.holds is None and check.main is None and check.other is None
     assert check.note
 
@@ -317,7 +324,7 @@ def test_condition_1_needs_both_arms_complete(main_changes, hold_changes) -> Non
 def test_condition_1_first_equity_not_positive_is_incomputable() -> None:
     main = facts(final_after_close=D(120))
     hold = facts("hold_universe", final_after_close=D(103))
-    check = condition_1(main, marks([0, 110, 105]), hold, marks([100, 102, 101]))
+    check = condition_1(main, marks([0, 110, 105]), hold, marks([100, 102, 101]), window=WINDOW)
     assert check.holds is None and check.note
 
 
@@ -325,13 +332,17 @@ def test_empty_common_boundaries_are_incomputable() -> None:
     main = facts(final_after_close=D(120))
     hold = facts("hold_universe", final_after_close=D(103))
     # no hour in common
-    check = condition_1(main, marks([100, 110]), hold, marks([100, 102], start=9 * HOUR_MS))
+    check = condition_1(
+        main, marks([100, 110]), hold, marks([100, 102], start=9 * HOUR_MS), window=WINDOW
+    )
     assert (check.holds, check.main, check.other) == (None, None, None) and check.note
     # every common hour incomplete on one side
-    check = condition_1(main, marks([100, 110], skip=(0, 1)), hold, marks([100, 102]))
+    check = condition_1(
+        main, marks([100, 110], skip=(0, 1)), hold, marks([100, 102]), window=WINDOW
+    )
     assert check.holds is None and check.note
     # no marks at all
-    assert condition_1(main, [], hold, []).holds is None
+    assert condition_1(main, [], hold, [], window=WINDOW).holds is None
     # condition 2 with a v4 path wholly outside v3's period
     v3 = facts("v3_as_built")
     outside = marks([100, 110], start=V3_END_MS)
@@ -342,9 +353,9 @@ def test_empty_common_boundaries_are_incomputable() -> None:
 def test_conditions_of_two_unlike_cells_are_a_callers_error() -> None:
     main = facts(final_after_close=D(120))
     with callers_error():
-        condition_1(main, marks([100]), facts("hold_universe", 10000), marks([100]))
+        condition_1(main, marks([100]), facts("hold_universe", 10000), marks([100]), window=WINDOW)
     with callers_error():
-        condition_1(main, marks([100]), facts("hold_universe", cost=2), marks([100]))
+        condition_1(main, marks([100]), facts("hold_universe", cost=2), marks([100]), window=WINDOW)
     with callers_error():
         condition_2(main, marks([100]), facts("v3_as_built", 10000), marks([100]))
     with callers_error():
@@ -558,8 +569,11 @@ def test_condition_1_lists_the_skipped_hours_of_its_window() -> None:
     # the window decides which hours count: hours past the last mark are skipped too
     wider = condition_1(main, main_marks, hold, hold_marks, window=(0, 7 * HOUR_MS))
     assert wider.skipped_ms == (HOUR_MS, 3 * HOUR_MS, 6 * HOUR_MS, 7 * HOUR_MS)
-    # given no window nothing is listed; a check that cannot be computed lists nothing
-    assert condition_1(main, main_marks, hold, hold_marks).skipped_ms is None
+    # the window is required: a computed check always lists its skipped hours (a computed check
+    # of condition 1 with none is a record check_from_record refuses)
+    with pytest.raises(TypeError, match="window"):
+        condition_1(main, main_marks, hold, hold_marks)  # type: ignore[call-arg]
+    # a check that cannot be computed lists nothing
     stopped = facts(outcome=LIQUIDATED)
     cannot = condition_1(stopped, main_marks, hold, hold_marks, window=(0, 5 * HOUR_MS))
     assert cannot.holds is None and cannot.skipped_ms is None
@@ -786,9 +800,15 @@ def test_notes_and_reasons_are_words_never_a_figure() -> None:
     hold = facts("hold_universe", **figures)
     v3_path = marks([SECRET], start=V3_START_MS)
     notes = [
-        condition_1(main, marks([SECRET, 110]), facts("hold_universe", outcome=LIQUIDATED), []),
-        condition_1(main, marks([0, 110]), hold, marks([0, 110])),
-        condition_1(main, marks([SECRET]), hold, marks([SECRET], start=HOUR_MS)),
+        condition_1(
+            main,
+            marks([SECRET, 110]),
+            facts("hold_universe", outcome=LIQUIDATED),
+            [],
+            window=WINDOW,
+        ),
+        condition_1(main, marks([0, 110]), hold, marks([0, 110]), window=WINDOW),
+        condition_1(main, marks([SECRET]), hold, marks([SECRET], start=HOUR_MS), window=WINDOW),
         condition_2(main, v3_path, facts("v3_as_built", outcome=ENGINE_ERROR), []),
         condition_2(
             main,

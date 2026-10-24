@@ -10,11 +10,13 @@ reason, is continued by running it again with the same arguments.
 ``--summaries S --expected E --progress P --out O [--dispatch-reasons F]``:
 
 1. refuses an ``O`` that already holds ``verdict.json`` or ``verdict.md``; reads ``E`` with
-   ``inputs.read_expected``; reads ``F`` if there is one (canonical JSON ``{"format":
-   "v4-dispatch-check-1", "earlier": [<non-empty strings>]}``, which
+   ``inputs.read_expected``; refuses an ``E`` of mode ``registered`` without ``F`` (a registered
+   run's other dispatches are its verdict's input); reads ``F`` if there is one (canonical JSON
+   ``{"format": "v4-dispatch-check-1", "earlier": [<non-empty strings>]}``, which
    ``v4_registration.py dispatch-check --judge-all`` writes: the earlier dispatches of the same
-   registration; any other shape is refused, and without ``F`` there are none); lists the
-   subfolders of ``S`` in sorted order (the workflow downloads each cell's artifact into one);
+   registration; any other shape is refused, and without ``F`` (a rehearsal or a timing run)
+   there are none); lists the subfolders of ``S`` in sorted order (the workflow downloads each
+   cell's artifact into one);
    and computes the **inputs digest**: the SHA-256 of the canonical JSON of ``E``'s own SHA-256,
    each subfolder's name with the SHA-256 of its ``summary.json`` and of its ``receipt.json`` (null
    when it has none) and the dispatch reasons;
@@ -580,7 +582,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--dispatch-reasons",
         type=Path,
         default=None,
-        help="the dispatch check's file of earlier dispatches; without it there are none",
+        help="the dispatch check's file of earlier dispatches (required for a registered run); "
+        "without it there are none",
     )
     return parser
 
@@ -648,6 +651,10 @@ def _run(args: argparse.Namespace) -> int:
     if held:
         raise _Stop(f"refused: the out folder already holds {', '.join(held)}")
     expected = _expected(args.expected)
+    if expected.mode == "registered" and args.dispatch_reasons is None:
+        # A registered run's other dispatches are an input of its verdict (Ruling G4): without
+        # the dispatch check's file, none could be told from a check that never ran.
+        raise _Stop("refused: a registered run's verdict needs --dispatch-reasons")
     dispatches = _dispatches(args.dispatch_reasons)
     folders = _folders(args.summaries)
     listing = {

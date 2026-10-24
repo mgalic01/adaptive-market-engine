@@ -12,7 +12,10 @@ script: ``RUN_ID`` (``github.run_id``), ``RUN_ATTEMPT`` (``github.run_attempt``)
 1. ``M`` is one of ``inputs.MODES`` (``rehearsal``, ``timing``, ``registered``); ``S`` is 64
    lowercase hex digits, or empty (a timing or a rehearsal run may have none, and a plan job that
    stopped early has no output to give: the workflow passes the dispatch's own input), recorded as
-   null; ``RUN_ID`` is 1 to 20 digits and ``RUN_ATTEMPT`` 1 to 6, neither with a leading zero;
+   null. ``S`` is the dispatch's free-text input, and the job records what happened in every
+   case: an ``S`` of any other form is recorded as null too, ``notes`` says so (never quoting
+   it), and a ``::warning::`` line on standard error says the same. ``RUN_ID`` is 1 to 20 digits
+   and ``RUN_ATTEMPT`` 1 to 6, neither with a leading zero;
 2. ``NEEDS`` is a JSON object with unique keys that lists exactly the workflow's other jobs
    (``v4_registration``: ``plan``, ``v3-pack``, ``v3-picks``, ``scenarios``, ``verdict``,
    ``analysis``, ``cell`` and ``v3-cell``), each an object whose ``result`` is one of GitHub's
@@ -21,9 +24,10 @@ script: ``RUN_ID`` (``github.run_id``), ``RUN_ATTEMPT`` (``github.run_attempt``)
 3. it creates ``F`` exclusively (a file that exists is refused) with the canonical JSON
    (``combined.artifacts._canonical``: sorted keys, no spaces, ASCII, no newline) of ``{"format":
    "v4-run-status-1", "mode": M, "run_id": int, "run_attempt": int, "registration_sha256": S or
-   null, "jobs": {name: result}, "verdict_ran": bool}``. ``verdict_ran`` says whether the
-   ``verdict`` job ran to an end, success or failure (a skipped or cancelled one did not). It says
-   nothing of the verdict itself, which the job's exit status never carries.
+   null, "jobs": {name: result}, "verdict_ran": bool, "notes": [<words>]}``. ``verdict_ran``
+   says whether the ``verdict`` job ran to an end, success or failure (a skipped or cancelled one
+   did not). It says nothing of the verdict itself, which the job's exit status never carries.
+   ``notes`` is empty unless something was recorded in place of an input (step 1).
 
 **Exit status**: 0 once the file is written; 1 on any refusal, with nothing written; 2 for bad
 arguments (argparse's own).
@@ -32,7 +36,8 @@ arguments (argparse's own).
 many jobs ended each way and whether the verdict job ran. Never a price, an equity, a cell's
 outcome or the verdict (owner rule: public logs). A refusal is one line on standard error,
 ``::error::v4_run_status: <what was wrong>: refused``, which names a variable or a job and never
-quotes a value of ``NEEDS``.
+quotes a value of ``NEEDS``; each note is one line there too, ``::warning::v4_run_status:
+<note>``, which quotes no input.
 """
 
 from __future__ import annotations
@@ -64,6 +69,11 @@ MAX_NEEDS_BYTES = 1 << 20
 _HEX64 = re.compile("[0-9a-f]{64}")
 _RUN_ID = re.compile("[1-9][0-9]{0,19}")
 _RUN_ATTEMPT = re.compile("[1-9][0-9]{0,5}")
+# The note of a registration_sha256 of another form, recorded as null (module docstring, step 1).
+MALFORMED_REGISTRATION = (
+    "the dispatch's registration_sha256 is neither empty nor 64 lowercase hex digits: "
+    "recorded as null"
+)
 
 
 class StatusError(ValueError):
@@ -125,8 +135,11 @@ def status_document(
     ``RUN_ID``, ``RUN_ATTEMPT`` and ``NEEDS`` are read."""
     if not isinstance(mode, str) or mode not in MODES:
         raise StatusError(f"unknown mode: one of {', '.join(MODES)} required")
-    if registration_sha256 and _HEX64.fullmatch(registration_sha256) is None:
-        raise StatusError("--registration-sha256 is neither empty nor 64 lowercase hex digits")
+    notes: list[str] = []
+    registration: str | None = registration_sha256 or None
+    if registration is not None and _HEX64.fullmatch(registration) is None:
+        registration = None
+        notes.append(MALFORMED_REGISTRATION)
     run_id = _variable(environment, "RUN_ID", _RUN_ID)
     run_attempt = _variable(environment, "RUN_ATTEMPT", _RUN_ATTEMPT)
     needs = environment.get("NEEDS")
@@ -138,9 +151,10 @@ def status_document(
         "mode": mode,
         "run_id": run_id,
         "run_attempt": run_attempt,
-        "registration_sha256": registration_sha256 or None,
+        "registration_sha256": registration,
         "jobs": jobs,
         "verdict_ran": jobs["verdict"] in RAN,
+        "notes": notes,
     }
 
 
@@ -164,7 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--registration-sha256",
         required=True,
-        help="the dispatch's registration pin: 64 lowercase hex digits, or empty",
+        help="the dispatch's registration pin: 64 lowercase hex digits, or empty (any other is "
+        "recorded as null, with a note)",
     )
     parser.add_argument("--out", type=Path, required=True, help="the new status.json")
     return parser
@@ -190,6 +205,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         with contextlib.suppress(OSError):
             target.unlink(missing_ok=True)  # created here, since FileExistsError is handled above
         return _refuse(f"writing the output file failed ({type(exc).__name__})")
+    for note in cast("list[str]", document["notes"]):
+        print(f"::warning::v4_run_status: {note}", file=sys.stderr, flush=True)
     print(_counts_line(document), flush=True)
     return 0
 

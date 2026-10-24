@@ -1591,10 +1591,22 @@ def late_argv(data: Path, cells: Path, out: Path, *extra: str) -> list[str]:
     return [*diagnose_argv(data, cells, out, planned=HOLD_CELL), *extra]
 
 
+@pytest.fixture
+def taken_for_real(monkeypatch):
+    """The run guard takes the synthetic worlds for real data: its synthetic pin is replaced, so
+    a registered guard (``--manifest``), which refuses the synthetic worlds' pin, judges a small
+    synthetic world by the manifest's pins alone, as it judges the registered data."""
+    monkeypatch.setattr(
+        v4_diagnose.v4_run_guard, "CONFIG_SHA256", hashlib.sha256(b"real").hexdigest()
+    )
+
+
 def run_manifest_of(root: Path, data: Path, **changes: str) -> tuple[Path, Path]:
     """A checkout and a run manifest for the world ``data``: the checkout holds
     ``config/v4_data.json`` with the bytes whose SHA-256 is the synthetic worlds' config pin, so
-    the manifest can name the world's own pins; ``changes`` replace what they name."""
+    the manifest can name the world's own pins; ``changes`` replace what they name. The run
+    guard refuses that pin with ``--manifest`` unless the test takes the world for real data
+    (``taken_for_real``)."""
     repo = root / "repo"
     (repo / "config").mkdir(parents=True)
     (repo / "config" / "v4_data.json").write_bytes(b"v4 synthetic world")
@@ -1665,7 +1677,22 @@ def test_diagnose_synthetic_refuses_a_real_data_run(late_dir, late_cells, tmp_pa
     assert stderr.endswith(RUN_GUARD_REFUSED)
 
 
-def test_diagnose_manifest_accepts_the_registered_data(late_dir, late_cells, tmp_path):
+def test_diagnose_manifest_refuses_a_synthetic_world(late_dir, late_cells, tmp_path, monkeypatch):
+    """The run guard's second line of defence: with ``--manifest`` a synthetic world is refused
+    even when the manifest names its very pins, before any pack is read."""
+    repo, manifest = run_manifest_of(tmp_path, late_dir)
+    monkeypatch.setattr(v4_diagnose.Market, "load", classmethod(no_load))
+    out = tmp_path / "out"
+    argv = late_argv(late_dir, late_cells, out, "--manifest", str(manifest), "--repo", str(repo))
+    code, stdout, stderr = run_main(v4_diagnose, argv)
+    assert code == 1 and stdout == "" and not out.exists()
+    assert "synthetic worlds' pin: a registered run never opens synthetic data" in stderr
+    assert stderr.endswith(RUN_GUARD_REFUSED)
+
+
+def test_diagnose_manifest_accepts_the_registered_data(
+    late_dir, late_cells, tmp_path, taken_for_real
+):
     """``--manifest`` takes data whose pins are the manifest's, 2025 or not (v4-d03: the
     registered run is where that data is opened); the config file is read from ``--repo``."""
     repo, manifest = run_manifest_of(tmp_path, late_dir)
@@ -1681,7 +1708,9 @@ def test_diagnose_manifest_accepts_the_registered_data(late_dir, late_cells, tmp
 
 
 @pytest.mark.parametrize("key", ["config_sha256", "end_month", "daily_sha256", "index_sha256"])
-def test_diagnose_manifest_refuses_other_pins(late_dir, late_cells, tmp_path, monkeypatch, key):
+def test_diagnose_manifest_refuses_other_pins(
+    late_dir, late_cells, tmp_path, monkeypatch, key, taken_for_real
+):
     """Data whose pins are not the manifest's, each pin changed in turn, is refused before any
     pack is read; nothing is written."""
     other = {"config_sha256": OTHER_PIN, "end_month": "2025-01"}
@@ -1697,7 +1726,7 @@ def test_diagnose_manifest_refuses_other_pins(late_dir, late_cells, tmp_path, mo
 
 
 def test_diagnose_manifest_refuses_a_config_file_with_another_hash(
-    late_dir, late_cells, tmp_path, monkeypatch
+    late_dir, late_cells, tmp_path, monkeypatch, taken_for_real
 ):
     repo, manifest = run_manifest_of(tmp_path, late_dir)
     (repo / "config" / "v4_data.json").write_bytes(b"another config")

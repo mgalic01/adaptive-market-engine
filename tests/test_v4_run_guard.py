@@ -229,6 +229,25 @@ def test_run_guard_refuses_a_manifest_of_other_pins(registered, capsys, key):
     assert key in err
 
 
+def test_run_guard_registered_refuses_synthetic_data_whatever_the_manifest(registered, capsys):
+    """A second line of defence: data whose config_sha256 is the synthetic worlds' pin is refused
+    with --manifest even when the manifest names exactly those pins and the config file hashes to
+    the pin (b"v4 synthetic world" does). Without the guard's own check this would be accepted:
+    only the verdict job's expected file would refuse it, after the cells ran."""
+    synthetic_config = b"v4 synthetic world"
+    assert hashlib.sha256(synthetic_config).hexdigest() == CONFIG_SHA256
+    write_data(registered.data, data_json(config_sha256=CONFIG_SHA256))
+    registered.manifest.write_bytes(manifest_bytes(config_sha256=CONFIG_SHA256))
+    write_repo(registered.repo, synthetic_config)
+    before = tree(registered.root)
+    err = assert_one_refusal(*guard(capsys, *registered_argv(registered)))
+    assert "synthetic" in err and "config_sha256" in err and CONFIG_SHA256 not in err
+    assert tree(registered.root) == before
+    manifest = read_manifest(registered.manifest.read_bytes())
+    with pytest.raises(ValueError, match="synthetic"):
+        v4_run_guard.check_registered_data(registered.data, manifest, registered.repo)
+
+
 def test_run_guard_refuses_a_config_file_with_another_hash(registered, capsys):
     """The pins agree, but the config file of the checkout is not the one data.json was made
     from: its bytes hash to another value."""

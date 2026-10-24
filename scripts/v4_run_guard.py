@@ -12,10 +12,13 @@ anything else. ``v4_cells_guard.py`` itself is unchanged.
 ``--data D --manifest M [--repo R]`` reads ``D/data.json`` (format ``v4-data/1``) and the run
 manifest ``M`` (``v4_registration.read_manifest``), and exits 0 only if
 
-1. ``data.json``'s ``config_sha256``, ``end_month`` and the pins of its daily pack
+1. ``data.json``'s ``config_sha256`` is not ``crypto_grid_bot.v4.synthetic.CONFIG_SHA256``, the
+   synthetic worlds' pin (a second line of defence: the verdict job's expected file refuses
+   synthetic data too, but only after the cells ran);
+2. ``data.json``'s ``config_sha256``, ``end_month`` and the pins of its daily pack
    (``packs.daily.sha256``) and hourly index (``packs.hourly_index.sha256``) equal the manifest's
    ``config_sha256``, ``end_month``, ``daily_sha256`` and ``index_sha256``; and
-2. the manifest's ``config_path``, under ``R`` (the current folder unless given), hashes to
+3. the manifest's ``config_path``, under ``R`` (the current folder unless given), hashes to
    ``config_sha256``: the data was made from the very config file the run is registered with.
 
 The packs themselves are verified against these pins when ``Market.load`` reads them, so the
@@ -166,8 +169,16 @@ def check_registered_data(data_dir: Path, manifest: RunManifest, repo: Path) -> 
     """Accept only the registered data: ``data_dir``'s ``data.json`` pins (``config_sha256``,
     ``end_month``, ``daily_sha256`` and ``index_sha256``) must equal ``manifest``'s ``data``, and
     the manifest's ``config_path`` under ``repo`` must hash to ``config_sha256``. Returns the
-    four pins. Anything else is a ``ValueError`` naming the pin or the file, never a value."""
+    four pins. Anything else is a ``ValueError`` naming the pin or the file, never a value.
+    Data whose ``config_sha256`` is the synthetic worlds' pin (``CONFIG_SHA256``) is refused
+    first, whatever the manifest says: a second line of defence, before any cell runs, beside the
+    expected file's own refusal of synthetic data in a registered run."""
     pins = _data_pins(data_dir)
+    if pins["config_sha256"] == CONFIG_SHA256:
+        raise ValueError(
+            f"{DATA_FILE}'s config_sha256 is the synthetic worlds' pin: a registered run never "
+            "opens synthetic data"
+        )
     for key, found in pins.items():
         if found != manifest.data[key]:
             raise ValueError(f"{DATA_FILE}'s {key} is not the run manifest's")

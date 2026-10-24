@@ -5,7 +5,7 @@ holds no state and reads only what it is given a path to (the dispatch reasons f
 ``read_dispatch_reasons``, and canonical JSON files, via ``read_canonical_json``).
 
 **Record forms** (the progress file's and ``verdict.json``'s, owned here). A ``PathMeasure`` is an
-object of its eight fields, a ``Check`` an object of its six, a ``Verdict`` its outcome, its
+object of its eight fields, a ``Check`` an object of its seven, a ``Verdict`` its outcome, its
 reasons and its eight checks. Every Decimal is its ``str``; the one infinite value is a ratio, and
 it is the string ``"Infinity"``. ``measure_from_record`` and ``check_from_record`` are the inverses
 and refuse anything but exactly what the writers write: the exact keys, exact types, a Decimal
@@ -36,13 +36,14 @@ It holds no timestamp and no path, so a resumed run writes the same bytes as an 
 
 **The page** (``render_verdict_page``, Markdown) is built from the document alone. Rehearsal and
 timing pages open with ``SYNTHETIC``; then a title naming the mode; then, in this order: the
-verdict (with a plain-language headline) and its reasons; the four conditions at each capital with
-both sides' numbers (return, drawdown, ratio) and, for conditions 1 and 2, the number of skipped
-hours (``verdict.json`` lists them); the spec's note on the eras; the comparison table of
-every arm by capital by cost; the eras (and the years of ``v4_main``); the variants and neighbours
-beside ``v4_main`` at 1x; the disclosures (every ``disclosures`` entry of the v3 summaries, so the
-1,000 USDT capital adapter is named, and the synthetic world of a rehearsal); the missing, refused
-and re-run cells and the other dispatches; the analysis artifact's name.
+verdict (with a plain-language headline, which on a rehearsal's or a timing run's page names the
+mode and never says that V4.0 passes or fails) and its reasons; the four conditions at each
+capital with both sides' numbers (return, drawdown, ratio) and, for conditions 1 and 2, the
+number of skipped hours (``verdict.json`` lists them); the spec's note on the eras; the comparison
+table of every arm by capital by cost; the eras (and the years of ``v4_main``); the variants and
+neighbours beside ``v4_main`` at 1x; the disclosures (every ``disclosures`` entry of the v3
+summaries, so the 1,000 USDT capital adapter is named, and the synthetic world of a rehearsal);
+the missing, refused and re-run cells and the other dispatches; the analysis artifact's name.
 
 Every value that comes from a file or a run is escaped for Markdown (``escape``): a backslash, a
 ``|``, a backtick and a ``<`` get a backslash and every line break (and any control character)
@@ -102,6 +103,11 @@ MODE_TITLES: Mapping[str, str] = {
     "registered": "registered run",
     "rehearsal": "rehearsal (synthetic data)",
     "timing": "timing run (synthetic data)",
+}
+# What a rehearsal's and a timing run's headline calls the run: never V4.0 (``_headline``).
+SYNTHETIC_RUNS: Mapping[str, str] = {
+    "rehearsal": "synthetic rehearsal",
+    "timing": "synthetic timing run",
 }
 # The analysis job's artifact by mode (plan, Task 10); ``<n>`` is the run attempt.
 ANALYSIS_ARTIFACTS: Mapping[str, str] = {
@@ -562,21 +568,36 @@ _CELL_HEAD = (
 
 
 def _headline(view: _View) -> str:
+    """The verdict's plain-language headline. Only a registered run's speaks of V4.0 under the
+    registered rule; a rehearsal's or a timing run's names its mode (``SYNTHETIC_RUNS``), since
+    its verdict, on synthetic data, tests the pipeline and says nothing of V4.0."""
     checks = view.verdict["checks"]
     failed = sum(1 for check in checks if check["holds"] is False)
     outcome = view.verdict["outcome"]
     stopped = any(
         cell["arm"] == MAIN_ARM and cell["outcome"] in STOP_FAILS for cell in view.cells.values()
     )
+    synthetic = SYNTHETIC_RUNS.get(view.mode)
+    if outcome == "pass" and synthetic is not None:
+        return (
+            f"The {synthetic}'s verdict is pass: {MAIN_ARM} met all {len(checks)} checks on "
+            "synthetic data. It tests the pipeline and says nothing of V4.0."
+        )
     if outcome == "pass":
         return (
             f"{MAIN_ARM} met all {len(checks)} checks, the four conditions at both capitals, so "
             "under the registered rule V4.0 passes. That means promising, not proven."
         )
+    failing = "V4.0" if synthetic is None else f"the {synthetic}'s verdict"
     if outcome == "fail" and stopped:
         return (
             f"{MAIN_ARM} was stopped in at least one cell (liquidated, a limit it could not "
-            "restore, or an accounting failure), which fails V4.0 whatever else is missing."
+            f"restore, or an accounting failure), which fails {failing} whatever else is missing."
+        )
+    if outcome == "fail" and synthetic is not None:
+        return (
+            f"{failed} of the {len(checks)} checks do not hold, so the {synthetic}'s verdict "
+            "is fail."
         )
     if outcome == "fail":
         return f"{failed} of the {len(checks)} checks do not hold, so V4.0 fails the rule."

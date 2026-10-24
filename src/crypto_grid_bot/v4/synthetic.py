@@ -70,7 +70,7 @@ import hashlib
 import json
 import math
 import random
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Context, Decimal, localcontext
@@ -785,13 +785,21 @@ def _timing_coin(item: _Listing) -> CoinSpec:
 
 class _TimingCoins(Sequence[CoinSpec]):
     """The timing world's coins, each built (its whole price path) when it is asked for and not
-    kept: a world of 80 coins is then cheap to make, and ``write_world`` holds one at a time."""
+    kept: a world of 80 coins is then cheap to make, and ``write_world`` holds one at a time.
+
+    Its iteration is its own, over the listings: ``Sequence``'s default ``__iter__`` calls
+    ``self[i]`` until an ``IndexError``, so an ``IndexError`` raised while building a coin would
+    end the world there, silently, with the coins after it missing. Here it propagates."""
 
     def __init__(self, listings: Sequence[_Listing]) -> None:
         self._listings = tuple(listings)
 
     def __len__(self) -> int:
         return len(self._listings)
+
+    def __iter__(self) -> Iterator[CoinSpec]:
+        for item in self._listings:
+            yield _timing_coin(item)
 
     @overload
     def __getitem__(self, index: int) -> CoinSpec: ...

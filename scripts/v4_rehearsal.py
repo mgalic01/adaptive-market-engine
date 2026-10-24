@@ -198,8 +198,9 @@ SCALES = ("rehearsal", "timing")
 # The checkout whose tracked code world.tar's repository commits at its code pin: this one.
 CHECKOUT = Path(__file__).resolve().parents[1]
 # The run manifest's data config path in world.tar: the registered run's (scripts/v4_data.py's
-# default). The world's config pin is CONFIG_SHA256, which no file hashes to, so a registered
-# guard (v4_run_guard.py --manifest) never accepts the world; a rehearsal's is --synthetic.
+# default). The world's config pin is CONFIG_SHA256, which no real config file hashes to and
+# which a registered guard (v4_run_guard.py --manifest) refuses outright, so that guard never
+# accepts the world; a rehearsal's is --synthetic.
 REHEARSAL_CONFIG_PATH = "config/v4_data.json"
 
 # The forced outcomes (Ruling W3), the first hour a forced fault may hit, and the forced cells.

@@ -32,6 +32,7 @@ from crypto_grid_bot.combined import baseline_v3
 from crypto_grid_bot.combined.artifacts import _canonical
 from crypto_grid_bot.combined.driver.v3_pack import read_v3_pack
 from crypto_grid_bot.trend.orchestration import Attempt
+from crypto_grid_bot.v4 import synthetic
 from crypto_grid_bot.v4.engine import run
 from crypto_grid_bot.v4.engine.arms import MAIN_LOOKBACKS
 from crypto_grid_bot.v4.engine.market import Market
@@ -366,6 +367,34 @@ def test_timing_world_shape_scaled_down(tmp_path):
     assert loaded.window_start_ms == month_start("2023-03")
     assert loaded.window_end_ms == month_start("2023-07") - HOUR
     assert loaded.universe("2023-04") == world.universes["2023-04"]
+
+
+def test_timing_world_iteration_never_hides_an_index_error(monkeypatch):
+    """An ``IndexError`` raised while a coin is built propagates out of the world's coins:
+    ``Sequence``'s default iteration, which stops at the first ``IndexError``, would end the world
+    there and silently drop every coin after it (shown below), so ``write_world`` would write a
+    short timing world."""
+    world = timing_world(**SCALED)
+    real = synthetic._timing_coin
+    built: list[str] = []
+
+    def failing(item):
+        if len(built) == 3:
+            raise IndexError("a bug inside the coin's builder")
+        built.append(item.symbol)
+        return real(item)
+
+    monkeypatch.setattr(synthetic, "_timing_coin", failing)
+    with pytest.raises(IndexError, match="builder"):
+        list(world.coins)
+    assert built == ["BTCUSDT", "S01USDT", "S02USDT"]
+    # What the default iteration would have done: three coins of twelve, and no error.
+    built.clear()
+    assert len(list(Sequence.__iter__(world.coins))) == 3 < len(world.coins) == 12
+    # Unharmed, every coin comes out, in order, as indexing gives them.
+    monkeypatch.setattr(synthetic, "_timing_coin", real)
+    coins = list(world.coins)
+    assert [coin.symbol for coin in coins] == [world.coins[i].symbol for i in range(12)]
 
 
 def test_timing_world_at_its_defaults_is_the_real_packs_size_without_building_it():

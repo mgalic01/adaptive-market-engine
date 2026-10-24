@@ -40,7 +40,8 @@ verified by its pin); its v3 pins come from the mode's own source, and from no o
 - ``rehearsal``: ``--world`` is the world folder, whose ``rehearsal.json`` (``read_world``) must be
   of the rehearsal scale and gives the pin, and whose ``data`` must be ``D``'s pins; ``D`` must be
   synthetic (its ``config_sha256`` is ``synthetic.CONFIG_SHA256``, v4-d03); ``--manifest`` is
-  refused;
+  refused. ``scripts/v4_rehearsal.py`` (``read_world``) is imported only when ``--world`` is
+  given, so a registered run's verdict job never imports the rehearsal script;
 - ``timing``: no source, no v3 pin (both null in the file); ``D`` must be synthetic; ``--manifest``
   and ``--world`` are refused.
 
@@ -78,7 +79,6 @@ from typing import cast
 
 from v4_cell import _say
 from v4_registration import RunManifest, read_manifest
-from v4_rehearsal import read_world
 
 from crypto_grid_bot.combined.artifacts import _canonical
 from crypto_grid_bot.v4.engine.arms import ARMS, CellSpec, all_cells
@@ -307,6 +307,10 @@ def expected_command(args: argparse.Namespace) -> int:
                 raise PlanError(f"--manifest cannot be read ({_reason(exc)})") from None
         world = None
         if args.world is not None:
+            # Imported here, in the rehearsal's branch only: a registered run's verdict job never
+            # imports the rehearsal script.
+            from v4_rehearsal import read_world
+
             try:
                 world = read_world(Path(args.world))
             except (OSError, ValueError) as exc:
