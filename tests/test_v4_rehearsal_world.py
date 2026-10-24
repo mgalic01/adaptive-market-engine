@@ -2,7 +2,9 @@
 and the CLI that writes them (``scripts/v4_rehearsal.py``).
 
 One module-scoped fixture writes the rehearsal world once through the CLI (``world --scale
-rehearsal``): five years of hourly bars for four coins and V3's input pack, about 300,000 rows. The
+rehearsal``): five years of hourly bars for four coins and V3's input pack, about 300,000 rows, and
+the world's repository built from this checkout (``world.tar``, gated in
+``tests/test_v4_rehearsal_force.py``). The
 timing world is never written at its real size here (owner rule: no heavy work on the owner's PC;
 at its defaults it holds about 7 million rows): its plan is checked at the defaults, which builds no
 price, and a scaled-down world of the same shape is written and loaded.
@@ -61,7 +63,7 @@ from crypto_grid_bot.v4.synthetic import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import v4_rehearsal  # noqa: E402
-from v4_rehearsal import DATA_DIR, V3_DIR, WORLD_FILE, WORLD_FORMAT  # noqa: E402
+from v4_rehearsal import DATA_DIR, V3_DIR, WORLD_FILE, WORLD_FORMAT, WORLD_TAR  # noqa: E402
 from v4_v3_pack import EXPECTED_PACK_SHA256, PACK_FILE  # noqa: E402
 
 REAL_ROWS = 7_003_893  # the hourly rows of step 2's real pack (docs/RUN_ARCHIVE.md)
@@ -163,7 +165,8 @@ def test_rehearsal_world_window_and_pins(rehearsal, market):
     assert world["data"] == run.data_record(market.pins)
     assert world["scale"] == "rehearsal"
     assert world["format"] == WORLD_FORMAT
-    assert world["registration_sha256"] is None
+    registration = world["registration_sha256"]  # world.tar's registration (task 7)
+    assert isinstance(registration, str)
     v3_pin = world["v3_pack_sha256"]
     assert isinstance(v3_pin, str)
     assert v3_pin != EXPECTED_PACK_SHA256  # a synthetic pack, never V3.1's
@@ -172,11 +175,12 @@ def test_rehearsal_world_window_and_pins(rehearsal, market):
     assert rehearsal.stdout == (
         f"v4_rehearsal world: scale rehearsal, {header['coin_packs']} coins, "
         f"{header['hourly_rows']} hourly rows, daily sha256 {pins['daily_sha256']}, "
-        f"index sha256 {pins['index_sha256']}, v3 pack sha256 {v3_pin}\n"
+        f"index sha256 {pins['index_sha256']}, v3 pack sha256 {v3_pin}, "
+        f"registration sha256 {registration}\n"
     )
     assert header["coin_packs"] == 4
     assert sorted(item.name for item in rehearsal.root.iterdir()) == sorted(
-        [DATA_DIR, V3_DIR, WORLD_FILE]  # no staging folder is left behind
+        [DATA_DIR, V3_DIR, WORLD_FILE, WORLD_TAR]  # no staging folder is left behind
     )
     raw = (rehearsal.root / WORLD_FILE).read_bytes()
     assert raw == _canonical(json.loads(raw))
@@ -280,6 +284,29 @@ def test_world_leaves_nothing_after_a_failure(tmp_path, monkeypatch):
     )  # the type of the exception, never its text
 
 
+def test_world_leaves_nothing_when_the_repository_fails(tmp_path, monkeypatch):
+    def broken(root: object, checkout: object, manifest: object) -> tuple[Path, str]:
+        raise RuntimeError("secret detail 4242.5")
+
+    def pack(fields: object, target: Path) -> str:
+        target.write_bytes(b"a stand-in pack")
+        return "c" * 64
+
+    # As above, a three-month world and a stand-in V3 pack keep this fast: what is tested is the
+    # clean-up of a folder that holds the data and the pack when its repository cannot be built.
+    monkeypatch.setattr(v4_rehearsal, "rehearsal_world", small_world)
+    monkeypatch.setattr(v4_rehearsal, "rehearsal_v3_fields", lambda: None)
+    monkeypatch.setattr(v4_rehearsal, "write_v3_pack", pack)
+    monkeypatch.setattr(v4_rehearsal, "build_rehearsal_repo", broken)
+    out = tmp_path / "world"
+    code, stdout, stderr = run_cli(["world", "--scale", "rehearsal", "--out", str(out)])
+    assert (code, stdout) == (1, "")
+    assert not out.exists()
+    assert stderr == (
+        "v4_rehearsal world: writing the world failed; the folder is removed: RuntimeError\n"
+    )
+
+
 def test_world_at_the_timing_scale_writes_no_v3_pack(tmp_path, monkeypatch):
     """The timing scale through the command, with the preset scaled down (the real one holds about
     7 million rows): a data pack and a world file whose V3 pin is null."""
@@ -293,7 +320,8 @@ def test_world_at_the_timing_scale_writes_no_v3_pack(tmp_path, monkeypatch):
     assert world["data"] == run.data_record(Market.load(out / DATA_DIR).pins)
     rows = read_data_json(out / DATA_DIR)["hourly_rows"]
     assert stdout.startswith(f"v4_rehearsal world: scale timing, 12 coins, {rows} hourly rows, ")
-    assert stdout.endswith(", v3 pack sha256 none\n")
+    assert stdout.endswith(", v3 pack sha256 none, registration sha256 none\n")
+    assert world["registration_sha256"] is None  # no repository: a timing run is not gated
 
 
 def test_world_refuses_a_scale_that_is_not_synthetic(tmp_path, capsys):
