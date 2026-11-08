@@ -48,7 +48,7 @@ step 1 runs again from the new B, and the freeze of step 0, item 3 starts there.
 | `F:\` | none | That disk was formatted (owner, 2026-11-08). There is no second copy (below) |
 | `E:/v4-registration-wt` | `~/Projects/v4-registration-wt` | A worktree on the Linux disk |
 
-**One copy (owner, 2026-11-09).** The run's results are kept on one disk, the WD 750 GB hard disk,
+**One copy (owner, 2026-11-08).** The run's results are kept on one disk, the WD 750 GB hard disk,
 label BACKUPS. This replaces the F: backup of 2026-10-24: steps 7, 12c and 12f below read
 accordingly. Once the run has ended and its copy is verified, its GitHub copies are deleted, so
 the BACKUPS disk then holds the only copy. The owner chose this knowing that a failure of that disk
@@ -615,7 +615,7 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
 **c. Check the copy on the disk.** `sha256sum -c SHA256SUMS.txt` passes from the archive root,
-read back after the download. There is no second copy (owner, 2026-11-09).
+read back after the download. There is no second copy (owner, 2026-11-08).
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -639,7 +639,7 @@ read back after the download. There is no second copy (owner, 2026-11-09).
 - **the verdict record**, `docs/reviews/<date>-claude-v4-verdict.md`.
 
 **f. Delete the GitHub copies** of the run's artifacts, and of the two data runs', as soon as all of
-these hold (owner, 2026-11-09, so it is not asked again):
+these hold (owner, 2026-11-08, so it is not asked again):
 - every job of the run has ended, and no re-run under step 12a is still possible or waiting;
 - every artifact is downloaded and its zip equals GitHub's digest (12b);
 - `sha256sum -c SHA256SUMS.txt` passes on the disk (12c).

@@ -16,7 +16,7 @@ were written with. Read them as follows:
 - **`F:\` no longer exists.** The owner formatted that disk, the Kingston 960 GB SSD, so every
   copy listed below on `F:` is gone. **The copies on the BACKUPS disk are now the only ones**,
   including the V4 data run's.
-- **One copy from now on (owner, 2026-11-09).** New results are kept only on the BACKUPS disk. Once
+- **One copy from now on (owner, 2026-11-08).** New results are kept only on the BACKUPS disk. Once
   a run has ended and its copy is verified, its GitHub artifacts are deleted, so that disk then holds
   the only copy.
 - **The old `C:` drive is gone.** A Windows image backup dated 2026-11-05 is on the BACKUPS disk in
@@ -168,7 +168,7 @@ one folder per artifact. The layout is that of the V4 cells runs' archives (for 
 
 Then delete the run's artifacts on GitHub, as soon as the run has ended, no re-run is still possible
 or waiting, every zip equals GitHub's digest and `sha256sum -c SHA256SUMS.txt` passes on the disk
-(owner, 2026-11-09). If any of these fails, delete nothing and tell the owner. GitHub keeps each artifact one day (`retention-days: 1` in `v4-run.yml`), so
+(owner, 2026-11-08). If any of these fails, delete nothing and tell the owner. GitHub keeps each artifact one day (`retention-days: 1` in `v4-run.yml`), so
 download the same day.
 
 **By mode:**
