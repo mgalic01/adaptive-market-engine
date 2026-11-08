@@ -16,8 +16,9 @@ were written with. Read them as follows:
 - **`F:\` no longer exists.** The owner formatted that disk, the Kingston 960 GB SSD, so every
   copy listed below on `F:` is gone. **The copies on the BACKUPS disk are now the only ones**,
   including the V4 data run's.
-- **The new backup disk** is the same Kingston SSD, mounted at `/mnt/runs-backup/` once it is set up.
-  Record each copy made there in its run's section or in a review file.
+- **One copy from now on (owner, 2026-11-09).** New results are kept only on the BACKUPS disk. Once
+  a run has ended and its copy is verified, its GitHub artifacts are deleted, so that disk then holds
+  the only copy.
 - **The old `C:` drive is gone.** A Windows image backup dated 2026-11-05 is on the BACKUPS disk in
   `WindowsImageBackup/`; its contents have not been checked.
 - **The code is on GitHub.** The clone is `~/Projects/adaptive-market-engine`.
@@ -154,11 +155,6 @@ The registered run comes in step 5, on the owner's go
 ([the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md)). Give each run its
 own section here once it is archived, as above.
 
-**The registered run also gets a verified backup** (owner, 2026-10-24; disk confirmed 2026-11-08):
-a copy in `/mnt/runs-backup/v4-run-<run id>-backup/` (Kingston 960 GB SSD, a separate physical
-disk), checked with `sha256sum -c SHA256SUMS.txt` there and with the same file list as the working
-copy's. The rehearsal and the timing run are synthetic and have no backup copy.
-
 **Where.** Each run goes to `/mnt/backups/v4-run-<run id>/` (WD 750 GB hard disk, label BACKUPS),
 one folder per artifact. The layout is that of the V4 cells runs' archives (for example
 `E:\v4-v3-run-40040422092\`, written by its `scripts\fetch_v4_cells.py`):
@@ -170,8 +166,9 @@ one folder per artifact. The layout is that of the V4 cells runs' archives (for 
 - `SHA256SUMS.txt`: the SHA-256 of every file (`sha256sum -c SHA256SUMS.txt` from the archive
   root).
 
-Then offer the owner the deletion of the run's artifacts on GitHub. Nothing is deleted without the
-owner's confirmation. GitHub keeps each artifact one day (`retention-days: 1` in `v4-run.yml`), so
+Then delete the run's artifacts on GitHub, as soon as the run has ended, no re-run is still possible
+or waiting, every zip equals GitHub's digest and `sha256sum -c SHA256SUMS.txt` passes on the disk
+(owner, 2026-11-09). If any of these fails, delete nothing and tell the owner. GitHub keeps each artifact one day (`retention-days: 1` in `v4-run.yml`), so
 download the same day.
 
 **By mode:**

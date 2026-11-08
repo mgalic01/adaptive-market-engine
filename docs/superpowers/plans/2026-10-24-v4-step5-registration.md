@@ -45,8 +45,14 @@ step 1 runs again from the new B, and the freeze of step 0, item 3 starts there.
 | In this plan | Now | Notes |
 | --- | --- | --- |
 | `E:\` | `/mnt/backups/` | The WD 750 GB disk, label BACKUPS, NTFS. Same disk and same files |
-| `F:\` | `/mnt/runs-backup/` | The Kingston 960 GB SSD, which was formatted (owner, 2026-11-08) and is the new backup disk. It must be set up, and the archives copied, before the go in step 7 |
+| `F:\` | none | That disk was formatted (owner, 2026-11-08). There is no second copy (below) |
 | `E:/v4-registration-wt` | `~/Projects/v4-registration-wt` | A worktree on the Linux disk |
+
+**One copy (owner, 2026-11-09).** The run's results are kept on one disk, the WD 750 GB hard disk,
+label BACKUPS. This replaces the F: backup of 2026-10-24: steps 7, 12c and 12f below read
+accordingly. Once the run has ended and its copy is verified, its GitHub copies are deleted, so
+the BACKUPS disk then holds the only copy. The owner chose this knowing that a failure of that disk
+would lose results of a run that cannot be repeated.
 
 **Tools.** `gh` is not installed on Kali. Each `gh` command below means the same call through
 GitHub's REST API, with `GITHUB_TOKEN` from the environment. The download in step 12b uses the
@@ -71,7 +77,7 @@ and do not skip it because a digest passed during the download.
 - **The run.** It starts the test once on GitHub, never cancels it and never repeats it. One
   exception: the final verdict step alone may be run again once, if GitHub's machines (not the
   code) broke it.
-- **Afterwards.** The results come to your PC (E:, with a checked copy on F:). Only you decide
+- **Afterwards.** The results come to your PC (the BACKUPS disk, checked, the only copy). Only you decide
   what is said about them in public.
 - **Who does what.** Claude prepares every file and check. The reviewers check them. You give
   the go. GitHub runs the test.
@@ -479,10 +485,9 @@ experiment re-run. Raising its limit would be a `.github/` change after P, so a 
   1. the merge with a merge commit;
   2. the registered data run;
   3. one registered dispatch;
-  4. the download of every artifact to `/mnt/backups/` and the verified copy on
-     `/mnt/runs-backup/`.
+  4. the download of every artifact to `/mnt/backups/`, and its check.
 
-  The deletion of GitHub's copies is not covered: it is asked separately.
+  The deletion of GitHub's copies is not asked again: step 12f says when it happens.
 - the questions still open at the end of this plan: the main freeze and the result event's
   status.
 
@@ -609,9 +614,8 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
-**c. A verified backup on the Kingston SSD,** in `/mnt/runs-backup/v4-run-<id>-backup/`:
-- `sha256sum -c SHA256SUMS.txt` passes there;
-- the file list equals the working copy's.
+**c. Check the copy on the disk.** `sha256sum -c SHA256SUMS.txt` passes from the archive root,
+read back after the download. There is no second copy (owner, 2026-11-09).
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -630,13 +634,18 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
     the manifest's SHA-256, the data run's id and `verdict.json`'s SHA-256;
   - `report`, the verdict record;
   - `metrics` and `reason`;
-- **a "V4 registered run <id>" section** in `docs/RUN_ARCHIVE.md`, with both copies and their
+- **a "V4 registered run <id>" section** in `docs/RUN_ARCHIVE.md`, with its copy and its
   status;
 - **the verdict record**, `docs/reviews/<date>-claude-v4-verdict.md`.
 
-**f. Offer the deletion** of the run's GitHub artifacts, and of the two data runs', once both
-local copies are verified. Delete only on the owner's confirmation. They also expire on their
-own after a day.
+**f. Delete the GitHub copies** of the run's artifacts, and of the two data runs', as soon as all of
+these hold (owner, 2026-11-09, so it is not asked again):
+- every job of the run has ended, and no re-run under step 12a is still possible or waiting;
+- every artifact is downloaded and its zip equals GitHub's digest (12b);
+- `sha256sum -c SHA256SUMS.txt` passes on the disk (12c).
+
+If any of these fails, nothing is deleted and the owner is told. The artifacts also expire on their
+own after a day. Logs are not artifacts and stay.
 
 ## Outcomes that use up the run without a verdict
 
@@ -764,6 +773,6 @@ recommended option. They are owner decisions v4-d26 to v4-d29 in the spec:
 1. **The main freeze:** from B to the dispatch, about one to two days, nothing else lands on
    main. Other PRs wait, Codex's and Bob's included.
 2. **What the go covers:** the merge, step 9's data run, the one dispatch, the download to
-   `/mnt/backups/` and the backup on `/mnt/runs-backup/`, and the Zagreb time of the dispatch.
+   `/mnt/backups/`, and the Zagreb time of the dispatch.
 3. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
    `invalid`.
