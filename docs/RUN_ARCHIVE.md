@@ -19,6 +19,10 @@ were written with. Read them as follows:
 - **One copy from now on (owner, 2026-11-08).** New results are kept only on the BACKUPS disk. Once
   a run has ended and its copy is verified, its GitHub artifacts are deleted, so that disk then holds
   the only copy.
+- **Results on GitHub are not private while they exist (owner accepted, 2026-11-08).** The
+  repository is public, so anyone with read access can download a run's artifacts between their
+  upload and their deletion. v4-d10 still governs everything agents do: nobody publishes or
+  discusses the results. The owner chose this over encrypting the artifacts.
 - **The old `C:` drive is gone.** A Windows image backup dated 2026-11-05 is on the BACKUPS disk in
   `WindowsImageBackup/`; its contents have not been checked.
 - **The code is on GitHub.** The clone is `~/Projects/adaptive-market-engine`.

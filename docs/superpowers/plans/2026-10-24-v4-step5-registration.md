@@ -54,6 +54,10 @@ accordingly. Once the run has ended and its copy is verified, its GitHub copies 
 the BACKUPS disk then holds the only copy. The owner chose this knowing that a failure of that disk
 would lose results of a run that cannot be repeated.
 
+**Artifacts are readable while they exist (owner accepted, 2026-11-08).** The repository is public,
+so anyone with read access can download the run's artifacts between upload and the deletion in step
+12f. The owner chose this over encrypting them, so the workflow keeps no stored secret.
+
 **Tools.** `gh` is not installed on Kali. Each `gh` command below means the same call through
 GitHub's REST API, with `GITHUB_TOKEN` from the environment. The download in step 12b uses the
 `fetch_v4_cells.py` in the newest rehearsal's archive, which calls that API instead of `gh`.
