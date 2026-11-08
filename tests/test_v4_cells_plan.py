@@ -39,7 +39,9 @@ def test_the_default_inputs_make_the_eight_arms_at_10000_and_1x():
 
 def test_every_diagnostic_arm_capital_and_cost_makes_the_32_cells_in_the_runs_order():
     cells = v4_cells_plan.build_cells(ALL_ARMS, "1000,10000", "1,2")
-    assert cells == tuple(cell for cell in all_cells() if cell.arm in DIAGNOSTIC_ARMS)
+    assert cells == tuple(
+        cell for cell in all_cells() if cell.arm in DIAGNOSTIC_ARMS and cell.capital != 100
+    )
     assert len(cells) == 32
 
 
@@ -241,3 +243,12 @@ def test_the_plan_refuses_arms_outside_the_diagnostic_set(tmp_path, capsys, arm)
 def test_the_workflow_dispatch_defaults_are_a_plan_main_accepts(tmp_path, capsys):
     code, out, _, _ = plan(tmp_path, capsys)
     assert code == 0 and "8 cells planned" in out
+
+
+def test_the_diagnostic_workflow_refuses_the_100_capital():
+    """v4-d30: the 100 USDT cells are first run in the registered run, as the v4-d22 arms are, so
+    nobody sees a result at 100 before the registration fixes the test."""
+    with pytest.raises(ValueError):
+        v4_cells_plan.build_cells(ALL_ARMS, "100", "1")
+    with pytest.raises(ValueError):
+        v4_cells_plan.build_cells(ALL_ARMS, "100,1000", "1")

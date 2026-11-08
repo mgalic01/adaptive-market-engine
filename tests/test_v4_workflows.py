@@ -41,7 +41,12 @@ from typing import Any
 import pytest
 import yaml
 
-from crypto_grid_bot.v4.engine.arms import CAPITALS, COST_MULTIPLES, DIAGNOSTIC_ARMS, CellSpec
+from crypto_grid_bot.v4.engine.arms import (
+    COST_MULTIPLES,
+    DIAGNOSTIC_ARMS,
+    DIAGNOSTIC_CAPITALS,
+    CellSpec,
+)
 from crypto_grid_bot.v4.engine.v3_as_built import PICKS_FILE, V3_ARM
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -897,7 +902,7 @@ def test_v4_v3_workflow_cells_job_matrix_and_environment():
     # The four cells of the arm, one job each, one failed cell leaving the others running.
     expected = [
         {"cell": CellSpec(V3_ARM, capital, costs).cell_id, "capital": capital, "costs": costs}
-        for capital in CAPITALS
+        for capital in DIAGNOSTIC_CAPITALS
         for costs in COST_MULTIPLES
     ]
     assert len(expected) == 4

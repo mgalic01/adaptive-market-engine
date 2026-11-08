@@ -1405,7 +1405,7 @@ def test_read_expected_reads_what_it_is_given(mode, tmp_path):
 
     assert got == expected
     assert got.mode == mode
-    assert len(got.cells) == (44 if mode == "timing" else 48)
+    assert len(got.cells) == (66 if mode == "timing" else 72)
     assert got.cells == tuple(
         c.cell_id for c in all_cells() if mode != "timing" or c.arm != "v3_as_built"
     )
@@ -1514,12 +1514,12 @@ def test_read_expected_refuses_a_missing_file_and_a_huge_one(tmp_path, monkeypat
 
 @pytest.mark.parametrize("mode", MODES)
 def test_every_cell_of_the_standard_sets_is_accepted(mode, tmp_path):
-    """The fixtures that tasks 4 and 7 build on write what ``read_cell`` accepts: 48 cells (44
+    """The fixtures that tasks 4 and 7 build on write what ``read_cell`` accepts: 72 cells (44
     for timing), each with its own facts, and the standard paths have the shape the fixtures
     claim."""
     expected = full_set(tmp_path, hours=50, mode=mode)
     folders = sorted(tmp_path.iterdir())
-    assert len(folders) == len(expected.cells) == (44 if mode == "timing" else 48)
+    assert len(folders) == len(expected.cells) == (66 if mode == "timing" else 72)
     facts = {read_cell(folder, expected).cell_id: read_cell(folder, expected) for folder in folders}
     assert list(facts) == sorted(expected.cells)
     assert all(item.outcome == "complete" and item.marks == 50 for item in facts.values())
@@ -1549,7 +1549,7 @@ def test_full_set_overrides_and_omissions(tmp_path):
         omit={"hold_universe-1000-1x"},
     )
     assert not (tmp_path / "v4-summary-hold_universe-1000-1x-attempt-1").exists()
-    assert len(list(tmp_path.iterdir())) == 47
+    assert len(list(tmp_path.iterdir())) == 71
     liquidated = read_cell(tmp_path / "v4-summary-v4_main-1000-1x-attempt-1", expected)
     assert (liquidated.outcome, liquidated.marks) == ("liquidated", 20)
     errored = read_cell(tmp_path / "v4-summary-hold_universe-10000-1x-attempt-1", expected)

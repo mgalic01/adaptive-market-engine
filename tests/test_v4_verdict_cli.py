@@ -101,7 +101,7 @@ HEADINGS = (
     "## The analysis artifact",
 )
 NON_V3 = [name for name, spec in ARMS.items() if spec.family != "v3"]
-CELLS = 48
+CELLS = 72
 CHECKS = 8
 PAIRS = len(NON_V3) * len(CAPITALS) * len(COST_MULTIPLES) * 2
 STEPS = CELLS + CHECKS + PAIRS
@@ -852,8 +852,8 @@ def test_the_counts_line_names_what_was_read_and_what_was_resumed(shared, monkey
     capsys.readouterr()
     assert made.run() == 0
     out = capsys.readouterr().out
-    assert "48 accepted, 0 refused, 0 missing" in out
-    assert "(38 read, 10 resumed)" in out
+    assert "72 accepted, 0 refused, 0 missing" in out
+    assert "(62 read, 10 resumed)" in out
     assert f"{CHECKS} checks, {PAIRS} pairs ({CHECKS + PAIRS} computed, 0 resumed)" in out
 
 
@@ -988,10 +988,10 @@ def test_the_timing_set_has_no_v3_cell_and_is_incomplete(tmp_path):
     made = world(tmp_path, mode="timing")
     assert made.run() == 0
     document = made.document()
-    assert len(document["cells"]) == 44
+    assert len(document["cells"]) == 66
     assert document["verdict"]["outcome"] == "incomplete"
-    assert document["missing"] == []  # the expected file lists the 44 only
-    # its 44 cells count (v4-d25); the v3 cells are not its, so only condition 2 is incomplete
+    assert document["missing"] == []  # the expected file lists the 66 only
+    # its 66 cells count (v4-d25); the v3 cells are not its, so only condition 2 is incomplete
     assert not any("missing or refused" in reason for reason in document["verdict"]["reasons"])
     assert [c["condition"] for c in document["verdict"]["checks"] if c["holds"] is None] == [2, 2]
     assert made.page().startswith(SYNTHETIC)
@@ -1141,7 +1141,12 @@ def test_v3_adapter_disclosed(base):
     carried = {
         cell["cell_id"]: cell["disclosures"] for cell in document["cells"] if cell["disclosures"]
     }
-    assert set(carried) == {"v3_as_built-1000-1x", "v3_as_built-1000-2x"}
+    assert set(carried) == {
+        "v3_as_built-100-1x",
+        "v3_as_built-100-2x",
+        "v3_as_built-1000-1x",
+        "v3_as_built-1000-2x",
+    }
 
 
 def test_a_registered_page_discloses_the_adapter_and_not_a_synthetic_world(tmp_path):

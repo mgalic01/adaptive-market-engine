@@ -17,7 +17,7 @@ spaces, ASCII, no newline):
 
 - ``config/v4_registration.json`` (``read_registration``): exactly ``schema``
   (``v4-registration-1``), ``code_pin`` (40 lowercase hex), ``run_manifest_sha256``, ``spec``
-  (``{path, sha256}``), ``cells`` (the 48 ids of ``arms.all_cells()``, in order) and ``trial_id``.
+  (``{path, sha256}``), ``cells`` (the 72 ids of ``arms.all_cells()``, in order) and ``trial_id``.
   It never holds its own SHA-256: the dispatch passes it.
 - ``config/v4_run_manifest.json`` (``read_manifest``): exactly ``schema`` (``v4-run-manifest-1``),
   ``data`` (``{config_path, config_sha256, end_month, daily_sha256, index_sha256}``) and
@@ -230,7 +230,7 @@ class RunManifest:
 @dataclass(frozen=True, slots=True)
 class Registration:
     """The registration file: the code pin, the run manifest's pin, the spec (``{path,
-    sha256}``), the 48 cells and the trial that registers them."""
+    sha256}``), the 72 cells and the trial that registers them."""
 
     code_pin: str
     run_manifest_sha256: str
@@ -259,7 +259,7 @@ class GateError(ValueError):
 
 
 def registered_cells() -> tuple[str, ...]:
-    """The 48 cell ids a registration lists: ``arms.all_cells()``, in order."""
+    """The 72 cell ids a registration lists: ``arms.all_cells()``, in order."""
     return tuple(cell.cell_id for cell in all_cells())
 
 
@@ -1248,7 +1248,7 @@ def build_rehearsal_repo(root: Path, checkout: Path, manifest: RunManifest) -> t
        ``marker_bytes()``; its first parent holds the registration event, as
        ``trial_register.check_ready`` requires;
     4. ``RUN_MANIFEST`` (``manifest``), ``REGISTRATION`` (the code pin, the manifest's SHA-256, the
-       spec, the 48 cells, trial ``v4-0-synthetic``) and the trial's ``completion``, binding the
+       spec, the 72 cells, trial ``v4-0-synthetic``) and the trial's ``completion``, binding the
        code pin (its code inventory and digest as ``check_ready`` computes them), the
        registration and the run manifest.
 

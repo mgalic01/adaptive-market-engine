@@ -47,11 +47,16 @@ are skipped for all arms alike.
   registration or a re-run of one of this run's jobs was found; or if a condition cannot be
   computed. Otherwise **pass** if all 8 checks hold (4 conditions x 2 capitals), else **fail**.
   Changed by owner decision v4-d25 (2026-10-24): every cell of the run counts (``expected``, the
-  expected file's cells: the 48 of a registered run and a rehearsal, the 44 of a timing run, whose
-  verdict is not a result), not only the 8 the conditions read. A ``liquidated`` or
-  ``limit_unrestorable`` cell of another arm is a full summary, a reported result, and does not by
-  itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves condition 1
+  expected file's cells at 1,000 and 10,000 USDT: the 48 of a registered run and a rehearsal, the
+  44 of a timing run, whose verdict is not a result), not only the 8 the conditions read. A
+  ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary, a reported result,
+  and does not by itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves condition 1
   incomputable, V7).
+* **v4-d30, the 100 USDT cells are reported only** (owner, 2026-11-08). The run's 24 cells at 100
+  USDT are run and reported, but the precedence reads only the judged capitals: nothing about a
+  100 USDT cell, ``v4_main``'s included, fails the verdict or makes it incomplete. Whatever would
+  have counted there is listed in the reasons as ``reported only``. A re-run stays incomplete
+  whichever cell it touched, because it breaks the run's one-shot rule rather than a result.
 
 **Decisions of this module** (beyond the rulings, each cheap):
 
@@ -69,8 +74,8 @@ are skipped for all arms alike.
   order: the stopped ``v4_main`` cells, the cells of the run that are missing or refused, those
   that ended in an engine error, those of other arms that ended in an accounting failure, a
   re-run, another dispatch (or a re-run of one of this run's jobs), the conditions that cannot be
-  computed, and the conditions that do not hold. The outcome is the precedence's; the reasons are
-  everything the owner needs to read beside it.
+  computed, the conditions that do not hold, and what is ``reported only`` at 100 USDT. The outcome
+  is the precedence's; the reasons are everything the owner needs to read beside it.
 * ``decide`` refuses, as a caller's ``ValueError``, an accepted or missing cell that is not one of
   ``expected``: the verdict step's are always the expected file's.
 * **Skipped hours** (the spec: "hours missing from any source are skipped for all arms alike and
@@ -437,6 +442,28 @@ def _absent(capital: int, condition: int) -> Check:
     )
 
 
+def _cell_capital(cell_id: str) -> int:
+    """The capital in a cell id, ``<arm>-<capital>-<cost>x``."""
+    return int(cell_id.rsplit("-", 2)[1])
+
+
+def _reported_only(
+    cells: Sequence[str], accepted: Mapping[str, CellFacts], lost: Collection[str]
+) -> list[str]:
+    """v4-d30: what would have counted at a judged capital, for the cells that are reported only.
+    Listed for the reader; the outcome never reads it."""
+    found = []
+    for cell in cells:
+        facts = accepted.get(cell)
+        if facts is None or cell in lost:
+            found.append(f"reported only: {cell} is missing or refused")
+        elif facts.outcome in (ENGINE_ERROR, ACCOUNTING_FAILURE) or (
+            facts.arm == MAIN_ARM and facts.outcome in STOP_FAILS
+        ):
+            found.append(f"reported only: {cell} is {facts.outcome}")
+    return found
+
+
 def decide(
     accepted: Mapping[str, CellFacts],
     checks: Sequence[Check],
@@ -456,16 +483,24 @@ def decide(
     run = set(expected)
     if not run.issuperset(accepted) or not run.issuperset(missing):
         raise ValueError("an accepted or missing cell is not one of the run's expected cells")
+    judged = [cell for cell in expected if _cell_capital(cell) in CAPITALS_JUDGED]
+    reported = [cell for cell in expected if _cell_capital(cell) not in CAPITALS_JUDGED]
     found = _by_key(checks)
     ordered = tuple(found.get(key) or _absent(*key) for key in _KEYS)
 
     stops = sorted(
-        (cell for cell in accepted.values() if cell.arm == MAIN_ARM and cell.outcome in STOP_FAILS),
+        (
+            cell
+            for cell in accepted.values()
+            if cell.arm == MAIN_ARM
+            and cell.outcome in STOP_FAILS
+            and cell.capital in CAPITALS_JUDGED
+        ),
         key=lambda cell: cell.cell_id,
     )
     lost = set(missing)
-    gone = [cell for cell in expected if cell not in accepted or cell in lost]
-    usable = [(cell, accepted[cell]) for cell in expected if cell not in gone]
+    gone = [cell for cell in judged if cell not in accepted or cell in lost]
+    usable = [(cell, accepted[cell]) for cell in judged if cell not in gone]
     errored = [cell for cell, facts in usable if facts.outcome == ENGINE_ERROR]
     # v4-d25: outside v4_main (where the precedence has failed it) a cell whose own accounting
     # failed is not usable evidence. A reported arm's liquidation or unrestorable limit is a full
@@ -497,6 +532,7 @@ def decide(
             f"{_label(check)} cannot be computed" + (f": {check.note}" if check.note else "")
         )
     reasons += [f"{_label(check)} does not hold" for check in failed]
+    reasons += _reported_only(reported, accepted, lost)
 
     outcome: Literal["pass", "fail", "incomplete"]
     if stops:

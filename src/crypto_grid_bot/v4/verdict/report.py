@@ -42,7 +42,7 @@ capital with both sides' numbers (return, drawdown, ratio) and, for conditions 1
 number of skipped hours (``verdict.json`` lists them); the spec's note on the eras; the comparison
 table of every arm by capital by cost; the eras (and the years of ``v4_main``); the variants and
 neighbours beside ``v4_main`` at 1x; the disclosures (every ``disclosures`` entry of the v3
-summaries, so the 1,000 USDT capital adapter is named, and the synthetic world of a rehearsal);
+summaries, so the capital adapter below 10,000 is named, and the synthetic world of a rehearsal);
 the missing, refused and re-run cells and the other dispatches; the analysis artifact's name.
 
 Every value that comes from a file or a run is escaped for Markdown (``escape``): a backslash, a
@@ -121,7 +121,7 @@ SYNTHETIC_DISCLOSURE = (
 )
 DISCLOSURE_WORDS: Mapping[str, str] = {
     V3_CAPITAL_ADAPTER: (
-        "v3_as_built at 1,000 USDT is V3's own selector with only the starting capital changed "
+        "v3_as_built below 10,000 USDT is V3's own selector with only the starting capital changed "
         "(V3.1's capital adapter), not a V3 tuned for that capital."
     ),
 }
@@ -627,6 +627,12 @@ def _verdict_section(view: _View) -> list[str]:
         "",
     ]
     lines += _bullets(view.verdict["reasons"], "- None: nothing is missing and every check holds.")
+    lines += [
+        "",
+        "The 100 USDT cells are reported only (owner decision v4-d30): the checks above are at "
+        "1,000 and 10,000 USDT, and nothing about a 100 USDT cell changes the verdict, apart from "
+        "a re-run, which breaks the one-shot rule.",
+    ]
     return lines
 
 
