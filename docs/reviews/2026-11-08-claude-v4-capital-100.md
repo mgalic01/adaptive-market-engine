@@ -21,6 +21,10 @@ Written by Claude Code (session c5f98f3b), on main `504a320`.
 | `CAPITALS_JUDGED` | Unchanged, `(1000, 10000)`. There are still 8 checks |
 | V4 spec | The amendment block, v4-d05, v4-d30, "Versions in the run" and "Pass rule" |
 
+## The runner image is pinned (owner, 2026-11-08)
+
+`v4-run.yml` and `v4-data.yml` now name `ubuntu-24.04` instead of `ubuntu-latest`. `ubuntu-latest` moved from Ubuntu 24.04 to 26.04 between the runs of 2026-10-24 and 2026-11-08, and could move again during the run or between the two data runs. Runs 40122823348 (data pins), 40040422092 (V3's pack and picks) and 40106774107 (rehearsal) all ran on 24.04, so that is the image the evidence comes from. The `quality` workflow and the diagnostic workflows are unchanged.
+
 ## Why a 100 USDT cell cannot change the verdict
 
 The registered run happens once. `v3_as_built` maps any V3 stop to `engine_error`, and 100 USDT has never run on this engine with real data, so a failure there is plausible. Under the old "every cell counts" rule, that one failure would leave V4 with no verdict from its only run. Keeping these cells outside the precedence leaves the 48 judged cells exactly as strict as v4-d25 made them.

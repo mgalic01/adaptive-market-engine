@@ -228,6 +228,9 @@ permissions:
 
 # One v4-run at a time: cancel-in-progress: false keeps the running one. GitHub keeps one pending
 # run per group and cancels it when a newer one arrives, hence the operating rule in the header.
+# Every job runs on ubuntu-24.04, not ubuntu-latest (owner, 2026-11-08): ubuntu-latest moved to 26.04
+# after the October runs, and this run's environment must not change under it. The data run
+# (v4-data.yml) is pinned to the same image.
 concurrency:
   group: v4-run
   cancel-in-progress: false
@@ -247,7 +250,7 @@ defaults:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # actions: read lets the dispatch check list this workflow's runs and jobs, and the data-run
     # steps read the data run and download its artifact; nothing is written.
@@ -433,7 +436,7 @@ jobs:
     # A registered run only (a rehearsal's plan built the world's pack). No status function, so a
     # failed plan skips it.
     if: ${{ inputs.mode == 'registered' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     # The run manifest's V3 pack pin, which the plan's gate read.
     env:
@@ -492,7 +495,7 @@ jobs:
     # the plan built the pack). GitHub skips the dependents of a skipped job unless a status
     # function says otherwise, hence !cancelled() and the result each mode requires.
     if: ${{ !cancelled() && needs.plan.result == 'success' && ((inputs.mode == 'registered' && needs.v3-pack.result == 'success') || (inputs.mode == 'rehearsal' && needs.v3-pack.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
       PACK_SHA256: ${{ needs.plan.outputs.v3_pack_sha256 }}
@@ -563,7 +566,7 @@ jobs:
 
   cell:
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -691,7 +694,7 @@ jobs:
     # has no v3 cell, and GitHub refuses one). The v3-pack job is skipped in a rehearsal, hence
     # !cancelled() and the result each mode requires, as in v3-picks.
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.v3-picks.result == 'success' && needs.plan.outputs.v3_count != '0' && ((inputs.mode == 'registered' && needs.v3-pack.result == 'success') || (inputs.mode == 'rehearsal' && needs.v3-pack.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -815,7 +818,7 @@ jobs:
     # and GitHub skips the dependents of a skipped job, transitively, unless a status function
     # says otherwise, hence !cancelled() and the results it requires.
     if: ${{ !cancelled() && inputs.mode == 'rehearsal' && needs.plan.result == 'success' && needs.v3-picks.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Six replays one after another, two of them V3's 3.5-year replays.
     timeout-minutes: 180
     env:
@@ -887,7 +890,7 @@ jobs:
     # cell. Without !cancelled(), the jobs a mode skips (v3-picks and v3-cell in a timing run,
     # scenarios outside a rehearsal) would skip it too.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The dispatch check's deadline is 55 minutes from the job's start (VERDICT_JOB_BUDGET), so
     # the verdict always has more than two hours after it: a timing run's verdict time, scaled by
     # about two (it plans no condition-2 and no v3 measures), must fit in what is left.
@@ -1104,7 +1107,7 @@ jobs:
     # As the verdict: after every cell job that ended, never after a cancelled run or a failed
     # plan.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     # The cells the plan asked for: the 66 that are not v3, so a planned cell with no diagnosis is
     # listed as missing and no other is.
@@ -1218,7 +1221,7 @@ jobs:
     # Always, whatever the other jobs did, a cancelled run included, so a run that stopped half
     # way still leaves a record of how far it got.
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

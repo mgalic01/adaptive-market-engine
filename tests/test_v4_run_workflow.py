@@ -660,7 +660,7 @@ def test_dispatch_only_inputs_and_permissions():
     assert widened == {name: {"contents": "read", "actions": "read"} for name in CHECKING_JOBS}
     assert "secrets." not in code()
     for name, job in jobs().items():
-        assert job["runs-on"] == "ubuntu-latest", name
+        assert job["runs-on"] == "ubuntu-24.04", name
 
     # One v4-run at a time, and a running one is never cancelled for a newer one.
     assert document["concurrency"] == {"group": "v4-run", "cancel-in-progress": False}
