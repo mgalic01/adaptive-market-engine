@@ -48,7 +48,8 @@ are skipped for all arms alike.
   computed. Otherwise **pass** if all 8 checks hold (4 conditions x 2 capitals), else **fail**.
   Changed by owner decision v4-d25 (2026-10-24): every cell of the run counts (``expected``, the
   expected file's cells at 1,000 and 10,000 USDT: the 48 of a registered run and a rehearsal, the
-  44 of a timing run, whose verdict is not a result), not only the 8 the conditions read. A
+  44 of a timing run at those capitals, whose verdict is not a result), not only the 8 the
+  conditions read. A
   ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary, a reported result,
   and does not by itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves
   condition 1 incomputable, V7).

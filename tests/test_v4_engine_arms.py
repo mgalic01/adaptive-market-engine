@@ -172,7 +172,7 @@ def test_arm_tables_are_read_only_and_their_records_frozen() -> None:
     assert isinstance(ARMS["v4_main"], ArmSpec)
 
 
-def test_cells_are_two_capitals_by_two_cost_levels() -> None:
+def test_cells_are_three_capitals_by_two_cost_levels() -> None:
     cells = all_cells()
     expected = [
         f"{arm}-{capital}-{multiple}x"

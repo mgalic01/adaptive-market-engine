@@ -789,7 +789,7 @@ def facts_from_record(record: Mapping[str, object]) -> CellFacts:
 
 
 def expected_cells(mode: str) -> tuple[str, ...]:
-    """The cells of a mode, in ``all_cells()`` order: all 72, or for ``timing`` the 44 of the
+    """The cells of a mode, in ``all_cells()`` order: all 72, or for ``timing`` the 66 of the
     arms that are not v3."""
     return tuple(
         cell.cell_id for cell in all_cells() if mode != "timing" or ARMS[cell.arm].family != "v3"

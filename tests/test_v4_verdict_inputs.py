@@ -1514,7 +1514,7 @@ def test_read_expected_refuses_a_missing_file_and_a_huge_one(tmp_path, monkeypat
 
 @pytest.mark.parametrize("mode", MODES)
 def test_every_cell_of_the_standard_sets_is_accepted(mode, tmp_path):
-    """The fixtures that tasks 4 and 7 build on write what ``read_cell`` accepts: 72 cells (44
+    """The fixtures that tasks 4 and 7 build on write what ``read_cell`` accepts: 72 cells (66
     for timing), each with its own facts, and the standard paths have the shape the fixtures
     claim."""
     expected = full_set(tmp_path, hours=50, mode=mode)
