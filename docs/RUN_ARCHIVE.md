@@ -6,6 +6,25 @@ before you look for any registered run's result files.** They are not in this
 repository. V3.0's and V3.1's run files no longer exist: the owner deleted them on
 2026-10-24 (see the V3.1 section below).
 
+## The move to Kali Linux (2026-11-08)
+
+The owner's PC was reinstalled and now runs Kali Linux. Older sections keep the Windows paths they
+were written with. Read them as follows:
+
+- **`E:\`** is the WD 750 GB hard disk, label BACKUPS, mounted at `/mnt/backups/`. Its files are
+  intact as far as listed; their `SHA256SUMS.txt` files have not been re-run since the move.
+- **`F:\` no longer exists.** The owner formatted that disk, the Kingston 960 GB SSD, so every
+  copy listed below on `F:` is gone. **The copies on the BACKUPS disk are now the only ones**,
+  including the V4 data run's.
+- **The new backup disk** is the same Kingston SSD, mounted at `/mnt/runs-backup/` once it is set up.
+  Record each copy made there in its run's section or in a review file.
+- **The old `C:` drive is gone.** A Windows image backup dated 2026-11-05 is on the BACKUPS disk in
+  `WindowsImageBackup/`; its contents have not been checked.
+- **The code is on GitHub.** The clone is `~/Projects/adaptive-market-engine`.
+
+Heavy work stays on GitHub's machines (owner, 2026-10-19, repeated 2026-11-08): a run on the PC is
+for emergencies only.
+
 ## Rules for every agent
 
 - **The files live only on the owner's PC.** An agent in the cloud (Codex cloud, Bob on
@@ -135,13 +154,13 @@ The registered run comes in step 5, on the owner's go
 ([the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md)). Give each run its
 own section here once it is archived, as above.
 
-**The registered run also gets a verified backup on F:** (owner, 2026-10-24): a copy in
-`F:\v4-run-<run id>-backup\` (Kingston 960 GB SSD, a separate physical disk), checked with
-`sha256sum -c SHA256SUMS.txt` there and with the same file list as E:'s. The rehearsal and the
-timing run are synthetic and have no F: copy.
+**The registered run also gets a verified backup** (owner, 2026-10-24; disk confirmed 2026-11-08):
+a copy in `/mnt/runs-backup/v4-run-<run id>-backup/` (Kingston 960 GB SSD, a separate physical
+disk), checked with `sha256sum -c SHA256SUMS.txt` there and with the same file list as the working
+copy's. The rehearsal and the timing run are synthetic and have no backup copy.
 
-**Where.** Each run goes to `E:\v4-run-<run id>\` (WD 750 GB hard disk, label BACKUPS), one
-folder per artifact. The layout is that of the V4 cells runs' archives (for example
+**Where.** Each run goes to `/mnt/backups/v4-run-<run id>/` (WD 750 GB hard disk, label BACKUPS),
+one folder per artifact. The layout is that of the V4 cells runs' archives (for example
 `E:\v4-v3-run-40040422092\`, written by its `scripts\fetch_v4_cells.py`):
 - `zips\<artifact>.zip`: each artifact exactly as downloaded. Its SHA-256 must equal the digest
   GitHub recorded at upload (`sha256:...`), or the download stops;

@@ -24,6 +24,43 @@ stamps stay UTC.
   - `config/v4_data.json`;
   - `docs/RUN_ARCHIVE.md`, its "V4 run" section.
 
+## Amended 2026-11-08: the move to Kali Linux, and a new B
+
+Where this section and the text below differ, this section governs.
+
+**What happened.** Step 5 began on 2026-10-24 with B at `c45f284`. Step 1's data run 40122823348
+succeeded there and its printed pins match the table in step 1. Step 2 did not start, so nothing
+was registered. The owner's PC was then reinstalled and now runs Kali Linux.
+
+**Why B moves.** CVE-2026-114613 made `pip-audit` fail on every head. PR #303 fixed it
+(`msgpack` 1.2.3, main `504a320`), and `requirements-dev.lock` is in the code inventory. Under
+step 0, item 2, the rehearsal and the timing run ran again on the fixed main (`docs/RUN_ARCHIVE.md`
+holds both). No file under `src/` or `scripts/` changed.
+
+**The new B** is the merge commit of the PR that adds this section. Run 40122823348 is superseded:
+step 1 runs again from the new B, and the freeze of step 0, item 3 starts there.
+
+**Paths on Kali.** Read every `E:` and `F:` below as follows:
+
+| In this plan | Now | Notes |
+| --- | --- | --- |
+| `E:\` | `/mnt/backups/` | The WD 750 GB disk, label BACKUPS, NTFS. Same disk and same files |
+| `F:\` | `/mnt/runs-backup/` | The Kingston 960 GB SSD, which was formatted (owner, 2026-11-08) and is the new backup disk. It must be set up, and the archives copied, before the go in step 7 |
+| `E:/v4-registration-wt` | `~/Projects/v4-registration-wt` | A worktree on the Linux disk |
+
+**Tools.** `gh` is not installed on Kali. Each `gh` command below means the same call through
+GitHub's REST API, with `GITHUB_TOKEN` from the environment. The download in step 12b uses the
+`fetch_v4_cells.py` in the newest rehearsal's archive, which calls that API instead of `gh`.
+
+**The PC fallback (v4-d28, step 12a) needs Python 3.12.** The project's `.venv` on Kali is Python
+3.14, while CI and the run use 3.12. A fallback verdict uses a 3.12 environment built from
+`requirements-dev.lock`; that environment does not exist yet and is built only if the fallback is
+needed.
+
+**Check copies twice.** A file in a fresh clone was found corrupted on disk on 2026-11-08, cause
+unknown. Run `sha256sum -c SHA256SUMS.txt` on each copy after writing it, as steps 12b and 12c say,
+and do not skip it because a digest passed during the download.
+
 ## In plain words
 
 - **What step 5 does.** It writes down, before the run, exactly what the one historical test of
@@ -165,7 +202,7 @@ their deletion is offered.
 
 **Who:** Claude.
 
-**Where:** branch `claude/v4-registration` from B, in a new worktree `E:/v4-registration-wt`.
+**Where:** branch `claude/v4-registration` from B, in a new worktree `~/Projects/v4-registration-wt`.
 
 **How:**
 - write the event to a scratch file outside the repository;
@@ -442,7 +479,8 @@ experiment re-run. Raising its limit would be a `.github/` change after P, so a 
   1. the merge with a merge commit;
   2. the registered data run;
   3. one registered dispatch;
-  4. the download of every artifact to E: and the verified copy on F:.
+  4. the download of every artifact to `/mnt/backups/` and the verified copy on
+     `/mnt/runs-backup/`.
 
   The deletion of GitHub's copies is not covered: it is asked separately.
 - the questions still open at the end of this plan: the main freeze and the result event's
@@ -565,15 +603,15 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - a failed analysis that was not re-run, or failed again, may be computed there the same way
   (`scripts/v4_diagnose.py`, about 14 minutes and 0.7 GB in the timing run). It decides nothing.
 
-**b. Download every artifact the same day**, about 102 of them, to `E:\v4-run-<id>\`:
-- with the rehearsal's `scripts\fetch_v4_cells.py` (from `E:\v4-run-40106774107\scripts\`);
+**b. Download every artifact the same day**, about 102 of them, to `/mnt/backups/v4-run-<id>/`:
+- with `scripts/fetch_v4_cells.py` from the newest rehearsal's archive under `/mnt/backups/`;
 - the layout of `docs/RUN_ARCHIVE.md`'s "V4 run" section: `zips\`, one folder per artifact,
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
-**c. A verified backup on F:,** in `F:\v4-run-<id>-backup\`:
+**c. A verified backup on the Kingston SSD,** in `/mnt/runs-backup/v4-run-<id>-backup/`:
 - `sha256sum -c SHA256SUMS.txt` passes there;
-- the file list equals E:'s.
+- the file list equals the working copy's.
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -725,7 +763,7 @@ recommended option. They are owner decisions v4-d26 to v4-d29 in the spec:
 
 1. **The main freeze:** from B to the dispatch, about one to two days, nothing else lands on
    main. Other PRs wait, Codex's and Bob's included.
-2. **What the go covers:** the merge, step 9's data run, the one dispatch, the download to E:
-   and the backup on F:, and the Zagreb time of the dispatch.
+2. **What the go covers:** the merge, step 9's data run, the one dispatch, the download to
+   `/mnt/backups/` and the backup on `/mnt/runs-backup/`, and the Zagreb time of the dispatch.
 3. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
    `invalid`.
