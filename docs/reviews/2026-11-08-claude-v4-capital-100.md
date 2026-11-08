@@ -8,7 +8,7 @@ Written by Claude Code (session c5f98f3b), on main `504a320`.
 
 - "the nevers version we do needs to eb teste on 100 , 1000 and 10 000 $"
 - Asked whether that means V4 now or the next version: "Yes, add it to V4".
-- Asked whether 100 counts in the pass rule or is reported only, with reported only recommended: no answer yet. Changing v4-d04 needs the owner's word, so it stands. The owner has been told and can still change this before the registration.
+- Asked whether 100 counts in the pass rule or is reported only (2026-11-09): "no, 100 does not count in the pass rule."
 
 ## What changes
 
