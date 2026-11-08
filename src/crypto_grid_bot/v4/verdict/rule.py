@@ -50,8 +50,8 @@ are skipped for all arms alike.
   expected file's cells at 1,000 and 10,000 USDT: the 48 of a registered run and a rehearsal, the
   44 of a timing run, whose verdict is not a result), not only the 8 the conditions read. A
   ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary, a reported result,
-  and does not by itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves condition 1
-  incomputable, V7).
+  and does not by itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves
+  condition 1 incomputable, V7).
 * **v4-d30, the 100 USDT cells are reported only** (owner, 2026-11-08). The run's 24 cells at 100
   USDT are run and reported, but the precedence reads only the judged capitals: nothing about a
   100 USDT cell, ``v4_main``'s included, fails the verdict or makes it incomplete. Whatever would
