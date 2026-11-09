@@ -786,7 +786,7 @@ def test_an_accounting_failure_outside_v4_main_is_incomplete(cell: str) -> None:
 
 @pytest.mark.parametrize("cell", RUN)
 def test_an_engine_error_or_a_missing_cell_of_the_run_is_incomplete(cell: str) -> None:
-    """v4-d25: every one of the 48 cells counts, the 40 reported ones too."""
+    """v4-d25: at the judged capitals every one of the 48 cells counts, the 40 reported too."""
     errored = decided(with_outcome(cell, ENGINE_ERROR))
     assert errored.outcome == "incomplete", cell
     assert [reason for reason in errored.reasons if cell in reason] == [
@@ -819,7 +819,8 @@ def test_a_missing_reported_cell_is_incomplete() -> None:
 
 
 def test_a_timing_run_counts_its_44_cells() -> None:
-    """A timing run's expected file lists the 44 cells that are not v3: those are the ones that
+    """At the judged capitals, a timing run's expected file lists the 44 cells that are not v3:
+    those are the ones that
     count, and its verdict (not a result) is incomplete through condition 2, which reads v3."""
     accepted = run_cells(TIMING)
     timing = [c for c in all_checks(True) if c.condition != 2]  # the step plans no condition 2
@@ -830,7 +831,8 @@ def test_a_timing_run_counts_its_44_cells() -> None:
     assert all(
         "not in this run" in str(c.note) for c in verdict.checks if c.condition == 2
     )  # the filled-in note
-    # with the 8 checks given, the 44 alone would pass: no v3 cell is missing from a timing run
+    # with the 8 checks given, the 44 at the judged capitals alone would pass: no v3 cell is
+    # missing from a timing run
     assert decided(accepted, expected=TIMING).outcome == "pass"
     # and each of its 44 counts as any run's
     for cell in ("v4_vol25-10000-2x", "hold_btc_trend-1000-1x"):

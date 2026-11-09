@@ -55,7 +55,7 @@ a failing test in CI, holds what ``reason`` holds and nothing the parser, ``Cell
 ``facts_from_record``'s follow the same rule.
 
 **The expected file** (``read_expected``, written by step 4b's plan job) is canonical JSON with
-exactly the keys ``format`` (``v4-verdict-expected-1``), ``mode``, ``cells`` (the 48 ids of
+exactly the keys ``format`` (``v4-verdict-expected-1``), ``mode``, ``cells`` (the 72 ids of
 ``all_cells()`` in order, the 66 of the non-v3 arms for ``timing``), ``window``, ``data`` (the
 four pins of ``run.data_record``, never null), ``v3_pack_sha256`` and ``picks_sha256`` (64 hex
 digits, both null for ``timing`` and only there).

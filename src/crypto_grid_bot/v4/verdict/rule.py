@@ -4,7 +4,7 @@ Implements rulings V4 to V10. The verdict step (``scripts/v4_verdict.py``) loads
 (``inputs.read_cell``) and, for the one or two cells a measure needs, their open marks
 (``inputs.read_marks``), and calls the functions here. Nothing is read or written here.
 
-**The spec's rule.** V4.0 passes only if ``v4_main`` meets all four, at both capitals:
+**The spec's rule.** V4.0 passes only if ``v4_main`` meets all four, at both judged capitals:
 
 1. its compounded return / maximum drawdown is greater than ``hold_universe``'s (normal costs);
 2. its compounded return is greater than ``v3_as_built``'s over their common period (normal costs);
