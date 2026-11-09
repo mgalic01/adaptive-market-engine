@@ -84,6 +84,8 @@ through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never pr
 | Step | Call | Body or fields |
 | --- | --- | --- |
 | 1, 9 (data run) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/dispatches` | `{"ref":"main","inputs":{"stage":"full","config":"config/v4_data.json"}}` |
+| 1, 9, 10 (data run's state) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/runs?per_page=100` | read `id`, `display_title`, `head_sha`, `conclusion` and `updated_at` |
+| 1, 9 (pins in the log) | `GET repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/logs` | it redirects to storage: follow the redirect without the token |
 | 5, 10 (run list) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/runs?per_page=100` | read each run's `display_title`, `status` and `head_sha` |
 | 8 (merge) | `PUT repos/mgalic01/adaptive-market-engine/pulls/<number>/merge` | `{"merge_method":"merge","sha":"<the PR's full head SHA>"}` |
 | 8 (main) | `GET repos/mgalic01/adaptive-market-engine/commits/main` | read `sha` and `parents[].sha` |
@@ -93,8 +95,9 @@ through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never pr
 | 12f (deletion) | `DELETE repos/mgalic01/adaptive-market-engine/actions/artifacts/<id>` | |
 
 **The dispatch is sent once.** A dispatch answers 204 and returns no run id. On any other answer, or
-a network error, read the run list first and send it again only if no new run exists and the owner
-agrees. A second dispatch makes the verdict incomplete.
+a network error, wait at least a minute, because a new run can take a moment to appear. Then read
+the run list, and send it again only if no new run exists and the owner agrees. A second dispatch
+makes the verdict incomplete.
 
 **The downloader is not in the repository.** A new file under `scripts/` would change the code
 inventory, so step 12b uses `/mnt/backups/v4-run-42581586528/scripts/fetch_v4_cells.py`, which calls
@@ -254,8 +257,8 @@ The daily pack's pin is `packs.daily.sha256`, and the hourly index's is
 
 `config_sha256` is also `sha256sum config/v4_data.json` at B, the file's raw bytes.
 
-The run's artifacts are not downloaded: the pins are in the log. They expire after a day, and
-their deletion is offered.
+The run's artifacts are not downloaded: the pins are in the log. They expire after a day, and step
+12f deletes any still on GitHub.
 
 **Stops if:**
 - **the pins differ from step 2's.** Binance may have replaced or removed an archive since
@@ -537,6 +540,12 @@ Each check, and what it must give:
 **CI headroom.** If the CI job times out, it may simply be re-run: that is CI, not an
 experiment re-run. Raising its limit would be a `.github/` change after P, so a rebuild.
 
+**A new security advisory.** `pip-audit` can turn CI red on any head during the freeze, as
+CVE-2026-114613 did. A fix to `requirements-dev.lock` changes the code inventory, so it isn't a fix
+under `docs/reviews/`. It stops the PR and goes to the owner. Unless the owner decides otherwise, the
+fix goes through a normal PR on main, and this plan restarts at step 0 with a new rehearsal, timing
+run and B, keeping the same trial id while nothing of the registration is on main.
+
 ## Step 7. The owner's go
 
 **Who:** the owner, in chat, after step 6's bar is met. Claude asks, stating:
@@ -670,7 +679,11 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - a failed analysis that was not re-run, or failed again, may be computed there the same way
   (`scripts/v4_diagnose.py`, about 14 minutes and 0.7 GB in the timing run). It decides nothing.
 
-**b. Download every artifact the same day**, about 150 of them, to `/mnt/backups/v4-run-<id>/`:
+**b. Download every artifact the same day**, about 150 of them plus any re-run's, to
+`/mnt/backups/v4-run-<id>/`, once every job has ended and any re-run under 12a is decided and has
+ended:
+- the download needs a folder that does not exist yet, so a re-run's artifacts that appear after it
+  go to `/mnt/backups/v4-run-<id>-attempt-2/`, checked the same way;
 - with the `fetch_v4_cells.py` named in the amendment, after checking its SHA-256;
 - the layout of `docs/RUN_ARCHIVE.md`'s "V4 run" section: `zips\`, one folder per artifact,
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
@@ -678,7 +691,8 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 
 **c. Check the copy on the disk.** Run `sync`, unmount the disk and mount it again, so the read
 comes from the disk and not from the PC's memory. Then `sha256sum -c SHA256SUMS.txt` must pass from
-the archive root. There is no second copy (owner, 2026-11-08).
+the archive root. The number of artifacts in `meta/artifacts.json` must equal `total_count` from
+`GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>/artifacts`. There is no second copy (owner, 2026-11-08).
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -705,7 +719,12 @@ the archive root. There is no second copy (owner, 2026-11-08).
 these hold (owner, 2026-11-08, so it is not asked again):
 - every job of the run has ended, and no re-run under step 12a is still possible or waiting;
 - every artifact is downloaded and its zip equals GitHub's digest (12b);
-- `sha256sum -c SHA256SUMS.txt` passes on the disk, after the disk was mounted again (12c).
+- `sha256sum -c SHA256SUMS.txt` passes on the disk, after the disk was mounted again, and the
+  artifact count matches (12c).
+
+The ids to delete are the ones in `meta/artifacts.json`. The data runs' own artifacts are not
+downloaded, because the pack is kept as the registered run's `v4-data`, whose pins the plan job
+checked against the manifest. Their ids come from each data run's artifact listing.
 
 If any of these fails, nothing is deleted and the owner is told. The artifacts also expire on their
 own after a day. Logs are not artifacts and stay.
@@ -765,8 +784,7 @@ the verdict 11.7 min.
   marks (ruling W2), about 2 minutes. The verdict job took 2 min 34 s, against its 180 minutes (55 of
   them the dispatch check's budget);
 - **the analysis:** 819 seconds (13.7 minutes), 767 MB at peak; its job 14 min 37 s, against 120.
-  It unpacks the records on one runner: 8.12 GB here, and about 60 MB more for the six v3 cells
-  (each about 10 MB in the `v4-v3` run), against the runner's 14 GB.
+  It unpacks the 66 non-v3 cells' records on one runner: 8.12 GB here, against the runner's 14 GB.
 
 **From the earlier timing run 40108602725** (main `19e3190`, real size on synthetic data, no v3 cell),
 2026-10-24, 30 minutes end to end:

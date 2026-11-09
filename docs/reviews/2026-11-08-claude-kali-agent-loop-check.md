@@ -49,6 +49,16 @@ Bob flagged six points, all text fixes that leave the pass rule and the verdict 
 
 The automated review's optional note on step 0's F: backup line is fixed too.
 
+## Bob's review of `b917221`, and what changed
+
+Bob confirmed the six fixes and the downloader, and flagged five more points. All five are fixed:
+
+1. The REST table had no call for a data run's state or for reading the pins from a job's log. It has both now, and the "sent once" paragraph says to wait before reading the run list.
+2. Step 12f deleted the data runs' artifacts under conditions that covered only the registered run's, while step 1 still "offered" that deletion. Both now say the data runs' artifacts are not downloaded, because the pack is kept as the registered run's `v4-data`.
+3. Nothing compared the archive with GitHub's listing, or said where the ids to delete come from or when the download starts. Steps 12b, 12c and 12f now do, and a re-run's late artifacts get a second folder.
+4. "About 60 MB more for the six v3 cells" in the analysis was wrong: the analysis downloads only `v4-cell-*`, the 66 non-v3 cells. The sentence is gone.
+5. Step 6 had no path for a new security advisory during the freeze. It now has one: the PR stops and goes to the owner.
+
 ## Owner decisions of 2026-11-09
 
 - **v4-d31:** a V4 pass approves nothing at EUR 100. Moving forward at that size takes a separate owner decision, made on the reported 100 USDT numbers.
