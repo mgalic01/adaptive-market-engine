@@ -173,15 +173,15 @@ one folder per artifact. The layout is that of the V4 cells runs' archives (for 
 
 Then delete the run's artifacts on GitHub, as soon as the run has ended, no re-run is still possible
 or waiting, every zip equals GitHub's digest and `sha256sum -c SHA256SUMS.txt` passes on the disk
-(owner, 2026-11-08). If any of these fails, delete nothing and tell the owner. GitHub keeps each artifact one day (`retention-days: 1` in `v4-run.yml`), so
-download the same day.
+after it was unmounted and mounted again, so the read isn't served from memory (owner, 2026-11-08).
+If any of these fails, delete nothing and tell the owner. GitHub keeps each artifact one day
+(`retention-days: 1` in `v4-run.yml`), so download the same day.
 
 **By mode:**
 - **Rehearsal:** every artifact. It is synthetic and holds no market data.
 - **Timing:** only the `v4-timing-*` artifacts (the cells', the expected step's, the verdict's
   and the analysis' times, and the status). Its other artifacts are synthetic results that only
-  its own verdict and analysis jobs read; they expire after their day, and their deletion is
-  offered too.
+  its own verdict and analysis jobs read. They are not copied, and they expire after their day.
   `fetch_v4_cells.py` downloads every artifact of a run unless it gets a name prefix as its third
   argument, so a timing download passes `v4-timing-`.
 - **Registered:** every artifact. Its `v4-data` holds the registered packs, with market data from
@@ -221,9 +221,10 @@ succeeded, all 72 cells ran, and `check.txt` gave all 11 scenarios "as expected"
 holds no market data and no result of the experiment.
 
 `/mnt/backups/v4-run-42581586528/`: every one of its 152 artifacts, each zip equal to GitHub's digest,
-in the layout above (about 3.0 GB; `SHA256SUMS.txt` lists 712 files and passed after writing). Its
-GitHub copies were deleted on 2026-11-09, once the copy was verified. Its `scripts/` holds the
-REST-API `fetch_v4_cells.py`.
+in the layout above (about 3.0 GB; `SHA256SUMS.txt` lists 712 files). Its GitHub copies were deleted
+on 2026-11-09, once the copy was verified. That first check could have read from memory, so it was
+repeated after the disk was mounted again, and it passed. Its `scripts/` holds the REST-API
+`fetch_v4_cells.py`.
 
 ## V4 timing run 42583987899 (synthetic, real size)
 
@@ -232,9 +233,9 @@ succeeded; the v3 jobs and the scenarios are skipped in this mode. Its times are
 [the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md), "Expected run length".
 
 `/mnt/backups/v4-run-42583987899/`: only its 69 `v4-timing-*` artifacts, as the mode list above says,
-each zip equal to GitHub's digest (`SHA256SUMS.txt` lists 141 files and passed after writing). Those 69
-were deleted from GitHub on 2026-11-09. Its other 133 artifacts are synthetic results, not copied,
-left on GitHub to expire on 2026-11-10.
+each zip equal to GitHub's digest (`SHA256SUMS.txt` lists 141 files, and it passed after the disk was
+mounted again). Those 69 were deleted from GitHub on 2026-11-09. Its other 133 artifacts are synthetic
+results, not copied, left on GitHub to expire on 2026-11-10.
 
 ## V4 rehearsal 42530260483 (synthetic, superseded)
 

@@ -78,10 +78,34 @@ would lose results of a run that cannot be repeated.
 so anyone with read access can download the run's artifacts between upload and the deletion in step
 12f. The owner chose this over encrypting them, so the workflow keeps no stored secret.
 
-**Tools.** `gh` is not installed on Kali. Each `gh` command below means the same call through
-GitHub's REST API, with `GITHUB_TOKEN` from the environment. The download in step 12b uses the
-`fetch_v4_cells.py` in the newest rehearsal's archive (`/mnt/backups/v4-run-42581586528/scripts/`),
-which calls that API instead of `gh`.
+**Tools.** `gh` is not installed on Kali. Each `gh` command below means the call in this table,
+through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never printed:
+
+| Step | Call | Body or fields |
+| --- | --- | --- |
+| 1, 9 (data run) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/dispatches` | `{"ref":"main","inputs":{"stage":"full","config":"config/v4_data.json"}}` |
+| 5, 10 (run list) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/runs?per_page=100` | read each run's `display_title`, `status` and `head_sha` |
+| 8 (merge) | `PUT repos/mgalic01/adaptive-market-engine/pulls/<number>/merge` | `{"merge_method":"merge","sha":"<the PR's full head SHA>"}` |
+| 8 (main) | `GET repos/mgalic01/adaptive-market-engine/commits/main` | read `sha` and `parents[].sha` |
+| 10 (dispatch) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/dispatches` | `{"ref":"main","inputs":{"mode":"registered","registration_sha256":"S","data_run":"<id>"}}` |
+| 11 (watching) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>` and `.../jobs?per_page=100` | status and times only |
+| 12a (one job) | `POST repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/rerun` | never `runs/<id>/rerun` or `runs/<id>/rerun-failed-jobs` |
+| 12f (deletion) | `DELETE repos/mgalic01/adaptive-market-engine/actions/artifacts/<id>` | |
+
+**The dispatch is sent once.** A dispatch answers 204 and returns no run id. On any other answer, or
+a network error, read the run list first and send it again only if no new run exists and the owner
+agrees. A second dispatch makes the verdict incomplete.
+
+**The downloader is not in the repository.** A new file under `scripts/` would change the code
+inventory, so step 12b uses `/mnt/backups/v4-run-42581586528/scripts/fetch_v4_cells.py`, which calls
+the REST API instead of `gh`. Its full text and SHA-256 are in
+[the Kali review note](../../reviews/2026-11-08-claude-kali-agent-loop-check.md), so it can be
+reviewed. Check that SHA-256 before using it.
+
+**Python on the PC.** `python` below means the project's `.venv`, which is Python 3.14, while CI and
+the run use 3.12. Step 5's checks are a first look on the PC. CI's
+`tests/test_v4_registration_committed.py` makes the gate and readiness checks on 3.12 at the PR's
+merge ref, and it governs. If the two disagree, stop and find out why.
 
 **The BACKUPS disk after a reboot.** It is not mounted by itself. Mount it read-write at the planned
 path, by label, before a download: `mount -t ntfs-3g -L BACKUPS /mnt/backups`.
@@ -91,9 +115,10 @@ path, by label, before a download: `mount -t ntfs-3g -L BACKUPS /mnt/backups`.
 `requirements-dev.lock`; that environment does not exist yet and is built only if the fallback is
 needed.
 
-**Check copies twice.** A file in a fresh clone was found corrupted on disk on 2026-11-08, cause
-unknown. Run `sha256sum -c SHA256SUMS.txt` on each copy after writing it, as steps 12b and 12c say,
-and do not skip it because a digest passed during the download.
+**Check copies from the disk.** A file in a fresh clone was found corrupted on disk on 2026-11-08,
+cause unknown. A read right after writing can come from the PC's memory rather than the disk. So
+step 12c unmounts and mounts the disk before `sha256sum -c SHA256SUMS.txt`, and it isn't skipped
+because a digest passed during the download.
 
 ## In plain words
 
@@ -182,8 +207,8 @@ main:  ... B ---------------------------------------------------- M  (merge comm
 4. **This plan is reviewed by the owner and merged before B.**
    - It lives under `docs/superpowers/plans/`, which may not change on main between B and the
      dispatch.
-   - The same PR adds the owner's F: backup decision of 2026-10-24 to `docs/RUN_ARCHIVE.md`'s
-     "V4 run" section. That section does not hold it yet.
+   - The same PR records where the results go in `docs/RUN_ARCHIVE.md`'s "V4 run" section. The F:
+     backup planned here on 2026-10-24 is replaced by the amendment's "One copy".
 5. **Earlier artifacts are handled.** The rehearsal 40106774107 is downloaded
    (`E:\v4-run-40106774107\`, verified). The deletion of its GitHub copies is offered. The rehearsal
    42581586528 and the timing run 42583987899 are archived and verified too, and their copied
@@ -257,7 +282,7 @@ their deletion is offered.
 - `event_type` `registration`, `family` `spec-v4.0`, `parent_trial_id` null;
 - `agent` "Claude Code", `recorded_at` the UTC time of writing;
 - `sources`: GitHub links at B to the spec, to this plan and to the step-4b plan; and the
-  rehearsal (40106774107), timing (40108602725) and pinning data run URLs.
+  rehearsal (42581586528), timing (42583987899) and pinning data run URLs.
 
 The trial id follows V3.1's `v3-1-registered-1` and the rehearsal world's `v4-0-synthetic`.
 The completion is
@@ -271,7 +296,7 @@ The completion is
   - `sha256`, of the git blob at B (LF, as `check_ready` hashes it):
     `git show B:<path> | sha256sum`.
 - **`candidates`:** the 12 arms, one line each with its role (below).
-- **`sizes`:** `[1000, 10000]` (USDT).
+- **`sizes`:** `[100, 1000, 10000]` (USDT). 100 is reported only (v4-d30).
 - **`fees`:**
   - normal costs: spot fee 0.10%, futures fee 0.05% and slippage 0.05% per fill (V3.1's
     profile);
@@ -645,14 +670,15 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - a failed analysis that was not re-run, or failed again, may be computed there the same way
   (`scripts/v4_diagnose.py`, about 14 minutes and 0.7 GB in the timing run). It decides nothing.
 
-**b. Download every artifact the same day**, about 102 of them, to `/mnt/backups/v4-run-<id>/`:
-- with `scripts/fetch_v4_cells.py` from the newest rehearsal's archive under `/mnt/backups/`;
+**b. Download every artifact the same day**, about 150 of them, to `/mnt/backups/v4-run-<id>/`:
+- with the `fetch_v4_cells.py` named in the amendment, after checking its SHA-256;
 - the layout of `docs/RUN_ARCHIVE.md`'s "V4 run" section: `zips\`, one folder per artifact,
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
-**c. Check the copy on the disk.** `sha256sum -c SHA256SUMS.txt` passes from the archive root,
-read back after the download. There is no second copy (owner, 2026-11-08).
+**c. Check the copy on the disk.** Run `sync`, unmount the disk and mount it again, so the read
+comes from the disk and not from the PC's memory. Then `sha256sum -c SHA256SUMS.txt` must pass from
+the archive root. There is no second copy (owner, 2026-11-08).
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -679,7 +705,7 @@ read back after the download. There is no second copy (owner, 2026-11-08).
 these hold (owner, 2026-11-08, so it is not asked again):
 - every job of the run has ended, and no re-run under step 12a is still possible or waiting;
 - every artifact is downloaded and its zip equals GitHub's digest (12b);
-- `sha256sum -c SHA256SUMS.txt` passes on the disk (12c).
+- `sha256sum -c SHA256SUMS.txt` passes on the disk, after the disk was mounted again (12c).
 
 If any of these fails, nothing is deleted and the owner is told. The artifacts also expire on their
 own after a day. Logs are not artifacts and stay.
