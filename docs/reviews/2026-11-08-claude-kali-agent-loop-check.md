@@ -83,6 +83,15 @@ Bob's first answer at this head was `NO ISSUES`, after about a minute, while the
 
 Bob also noted that the older archives' checksums hadn't been re-run since the move. They were re-run on 2026-11-09, and all seven archives with a `SHA256SUMS.txt` passed. The BACKUPS disk's SMART check passed too.
 
+## Bob's review of `6fb003b`, and what changed
+
+Bob found no conflict in v4-d32 and no early deletion, and flagged two points. Both are fixed:
+
+1. A restart after a reboot could write the archive to the system disk, because the mount folder is then empty. Step 12b now requires a mount and space check before every download and restart. The preflight also states the data and v3 sizes behind its 30 GB.
+2. The REST table lacked the PR's state, replies to review threads and the reaction read for Codex. It has them now.
+
+The automated review noted that the downloader's `extractall` doesn't refuse a symlink member. `zipfile` writes such a member as an ordinary file, so nothing changes.
+
 ## Owner decisions of 2026-11-09
 
 - **v4-d31:** a V4 pass approves nothing at EUR 100. Moving forward at that size takes a separate owner decision, made on the reported 100 USDT numbers.

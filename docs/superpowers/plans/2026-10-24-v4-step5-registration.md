@@ -86,7 +86,10 @@ through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never pr
 | 1, 9 (data run) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/dispatches` | `{"ref":"main","inputs":{"stage":"full","config":"config/v4_data.json"}}` |
 | 6, 7 (the PR) | `POST repos/mgalic01/adaptive-market-engine/pulls` | `title`, `head`, `base` `main`, `body` |
 | 6, 7 (comments) | `POST repos/mgalic01/adaptive-market-engine/issues/<number>/comments` | `/claim`, `/release`, `@bob` and `@codex review`, with the session's tag on line 1 |
+| 6, 7, 8 (PR state) | `GET repos/mgalic01/adaptive-market-engine/pulls/<number>` | the full head SHA, for the merge body, and mergeability |
 | 6, 7 (reading) | `GET repos/mgalic01/adaptive-market-engine/issues/<number>/comments`, `.../pulls/<number>/reviews`, `.../pulls/<number>/comments`, `.../commits/<sha>/check-runs` and `.../commits/<sha>/status` | the thread, the reviews, CI and `claim-guard` |
+| 6 (answering a thread) | `POST repos/mgalic01/adaptive-market-engine/pulls/<number>/comments/<id>/replies` | `body`. A thread's resolved state isn't in this API, so read it on the PR's page |
+| 6 (Codex's 👀) | `GET repos/mgalic01/adaptive-market-engine/issues/<number>/reactions` | whether to post `@codex review` |
 | 1, 9, 10 (data run's state) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/runs?per_page=100` | read `id`, `display_title`, `head_sha`, `conclusion` and `updated_at` |
 | 1, 9 (pins in the log) | `GET repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/logs` | it redirects to storage: follow the redirect without the token |
 | 5, 10 (run list) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/runs?per_page=100` | read each run's `display_title`, `status` and `head_sha` |
@@ -644,7 +647,8 @@ Same command as step 1, after the merge (`--ref main`, `-f stage=full`,
 **The archive's preflight.** The artifacts' one-day clock starts at the dispatch, so these must
 hold first too:
 - the BACKUPS disk is mounted read-write at `/mnt/backups/`, and `smartctl -H` on it passes;
-- it has at least 30 GB free (the timing run's cells unpack to about 8 GB, and their zips add 2 GB);
+- it has at least 30 GB free. The timing run's cells unpack to about 8 GB and their zips add 2 GB.
+  The data run's archive took about 0.4 GB and the v3 run's about 0.1 GB;
 - the downloader's SHA-256 equals the review note's;
 - the token works: the run list above answered with it.
 
@@ -716,6 +720,10 @@ The downloader has no resume, and it refuses a folder that already exists. If it
 reason, rename its partial folder to `/mnt/backups/v4-run-<id>-partial-<n>/`, keep it, and run the
 download again to `/mnt/backups/v4-run-<id>/` the same day. If it stopped on a digest, tell the owner
 too. A partial folder's ids are never used for the deletion in 12f.
+
+Before every download and restart, `findmnt /mnt/backups` must show the BACKUPS disk, and the disk
+must have free space for the whole archive. After a reboot the folder is empty and on the system
+disk, so a download there would miss the disk without any error.
 
 **c. Check the copy on the disk.** Run `sync`, unmount the disk and mount it again, so the read
 comes from the disk and not from the PC's memory. Then `sha256sum -c SHA256SUMS.txt` must pass from
