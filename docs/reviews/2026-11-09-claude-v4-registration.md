@@ -23,8 +23,8 @@ pinning data run's log, only pins and counts were read.
   approves nothing at EUR 100 (v4-d31).
 - **What a pass means.** Promising, not proven: only the period from 2025 on was unseen when V4 was
   designed.
-- **What happens next.** The reviewers check this registration, then the owner decides. The owner's
-  go covers the merge, the second data run, one dispatch and the download. Nothing starts before it.
+- **What happens next.** The reviewers checked this registration, and the owner gave the go on 2026-11-09. The owner's
+  go covers the merge, the second data run, one dispatch and the download, from 2026-11-10 in the morning.
 - **Real money.** None. This is a historical simulation with no exchange account and no keys.
 
 ## The owner's go (dated record)
