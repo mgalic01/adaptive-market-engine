@@ -227,7 +227,11 @@ then takes the owner's word. None of these can give a false pass:
   but the cell counts.
 - **The verdict job fails.** There is no verdict until the one allowed re-run. If that fails too, it
   is computed on the owner's PC with the run's own code and recorded as a deviation (v4-d28).
-- **The dispatch check cannot read GitHub within its 55 minutes.** The verdict is incomplete.
+- **The dispatch check cannot read GitHub within its deadline.** The verdict is incomplete. The deadline
+  is 20 minutes from the check's start (`DISPATCH_DEADLINE`), and no later than 55 minutes after the
+  job's start (`VERDICT_JOB_BUDGET`). The check is the first step after the setup, so 20 minutes is what
+  applies: a GitHub outage of that length at that moment uses up the verdict. The workflow's comments
+  and the plan say 55 minutes, and the code governs.
 - **A cancel before the verdict job has finished, or a second v4-run while this one is queued.** GitHub
   drops a queued run, which counts as cancelled. The run writes no verdict, since the verdict job does
   not start after a cancel and a running one is stopped. It still counts as the one execution, so a
@@ -286,9 +290,10 @@ The code does not enforce these, so the people who merge and dispatch must follo
     `v4-cells.yml` has already used the same pinned download action from another run. A bug here stops
     the plan job, which does not count, so it uses up no run. It still ends this trial: the code is
     pinned, so a fix needs new code, and after the merge that needs a new trial id (operating rule 3).
-  - **The cell and v3-cell jobs:** each runs the same gate and data guard as the plan job, in a job of
-    its own. A failure specific to one of these jobs comes after the plan job has passed, so it does use
-    up the run.
+  - **The cell and v3-cell jobs:** the cell job runs the same gate and data guard as the plan job, in a
+    job of its own. The v3-cell job runs the gate and checks the pack's and the picks' pins, with no data
+    guard. A failure specific to one of these jobs comes after the plan job has passed, so it does use up
+    the run.
   - **The v3-pack job and the registered picks step.** They have run only as their `v4-v3.yml`
     equivalents, in run 40040422092. A failure here also comes after the plan job has passed.
   - **The verdict job:** the dispatch check with `--judge-all --out reasons.json`,
