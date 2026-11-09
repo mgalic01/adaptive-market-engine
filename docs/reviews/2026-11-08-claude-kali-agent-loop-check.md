@@ -71,6 +71,18 @@ Bob confirmed the five fixes, and flagged five more points. All five are fixed:
 
 The automated review's note on the rehearsal 40106774107's "offered" deletion is fixed too. GitHub no longer lists any of that run's artifacts.
 
+## Bob's reviews of `5994860`, and what changed
+
+Bob's first answer at this head was `NO ISSUES`, after about a minute, while the two reviews before it took 11 and 13 minutes. So Claude asked for one full pass before relying on it. That pass took 46.5 minutes and flagged five more points. All five are fixed:
+
+1. The spec still said GitHub's copies are deleted only on the owner's confirmation. That text freezes at B, so the owner's decision of 2026-11-08 is now recorded in it as v4-d32.
+2. Nothing checked the disk or the downloader before the dispatch starts the artifacts' one-day clock. Step 10 now has that preflight. The Python 3.12 fallback isn't in it, because the fallback reads downloaded files and has no clock.
+3. The downloader had no restart path, and nothing tied its stated SHA-256 to its text here. Step 12b now says what to do, and the last section below has a command that hashes the text.
+4. "No re-run is possible" couldn't be tested, because GitHub allows re-runs for weeks. It now means: the verdict and analysis jobs both succeeded, or the one re-run has ended, or the owner has said none will be made.
+5. The REST table now covers steps 6 and 7, and the plan says `git push` uses the SSH key.
+
+Bob also noted that the older archives' checksums hadn't been re-run since the move. They were re-run on 2026-11-09, and all seven archives with a `SHA256SUMS.txt` passed. The BACKUPS disk's SMART check passed too.
+
 ## Owner decisions of 2026-11-09
 
 - **v4-d31:** a V4 pass approves nothing at EUR 100. Moving forward at that size takes a separate owner decision, made on the reported 100 USDT numbers.
@@ -78,11 +90,17 @@ The automated review's note on the rehearsal 40106774107's "offered" deletion is
 
 ## What this PR changes
 
-Documents only, before the new B: this note, the step-5 plan's amendment and its counts and times, the run archive's Kali section and the new runs, v4-d31 in the V4 spec, and short corrections in `START_HERE`, `AGENT_HANDOFF` and `LOCAL_WORKER`. Nothing under `src/`, `scripts/`, `tests/`, `.github/` or `config/` changes. The spec is pinned at the new B, so v4-d31 has to land here.
+Documents only, before the new B: this note, the step-5 plan's amendment and its counts and times, the run archive's Kali section and the new runs, v4-d31 in the V4 spec, and short corrections in `START_HERE`, `AGENT_HANDOFF` and `LOCAL_WORKER`. The spec also records v4-d32. Nothing under `src/`, `scripts/`, `tests/`, `.github/` or `config/` changes. The spec is pinned at the new B, so v4-d31 has to land here.
 
 ## The downloader
 
-`/mnt/backups/v4-run-42581586528/scripts/fetch_v4_cells.py`, the REST-API variant of the earlier archives' script. Its SHA-256 is `01d0225588836b0967d81544a6eeac2c7860a99eb9d6607686932435d3d01f4c`. It downloaded both archives above. Its full text:
+`/mnt/backups/v4-run-42581586528/scripts/fetch_v4_cells.py`, the REST-API variant of the earlier archives' script. Its SHA-256 is `01d0225588836b0967d81544a6eeac2c7860a99eb9d6607686932435d3d01f4c`. It downloaded both archives above. To check that the text below is that file, from the repository's root:
+
+~~~bash
+awk '/^```text$/{f=1;next} /^```$/{f=0} f' docs/reviews/2026-11-08-claude-kali-agent-loop-check.md | sha256sum
+~~~
+
+Its full text:
 
 ```text
 """Download the artifacts of a v4-run to a new folder, verify each zip against GitHub's digest,

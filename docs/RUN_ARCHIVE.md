@@ -12,7 +12,8 @@ The owner's PC was reinstalled and now runs Kali Linux. Older sections keep the 
 were written with. Read them as follows:
 
 - **`E:\`** is the WD 750 GB hard disk, label BACKUPS, mounted at `/mnt/backups/`. Its files are
-  intact as far as listed; their `SHA256SUMS.txt` files have not been re-run since the move.
+  intact as far as listed. On 2026-11-09 the `SHA256SUMS.txt` of every V4 archive with one passed,
+  read from the disk after the move, and the disk's SMART check passed.
 - **`F:\` no longer exists.** The owner formatted that disk, the Kingston 960 GB SSD, so every
   copy listed below on `F:` is gone. **The copies on the BACKUPS disk are now the only ones**,
   including the V4 data run's.
@@ -171,8 +172,9 @@ one folder per artifact. The layout is that of the V4 cells runs' archives (for 
 - `SHA256SUMS.txt`: the SHA-256 of every file (`sha256sum -c SHA256SUMS.txt` from the archive
   root).
 
-Then delete the run's artifacts on GitHub, as soon as the run has ended, no re-run is still possible
-or waiting, every zip equals GitHub's digest and `sha256sum -c SHA256SUMS.txt` passes on the disk
+Then delete the run's artifacts on GitHub, as soon as the run has ended, no re-run is waiting (the
+verdict and analysis jobs both succeeded, or the one re-run has ended, or the owner has said none
+will be made), every zip equals GitHub's digest and `sha256sum -c SHA256SUMS.txt` passes on the disk
 after it was unmounted and mounted again, so the read isn't served from memory (owner, 2026-11-08).
 If any of these fails, delete nothing and tell the owner. GitHub keeps each artifact one day
 (`retention-days: 1` in `v4-run.yml`), so download the same day.

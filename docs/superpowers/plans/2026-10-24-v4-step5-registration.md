@@ -84,6 +84,9 @@ through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never pr
 | Step | Call | Body or fields |
 | --- | --- | --- |
 | 1, 9 (data run) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/dispatches` | `{"ref":"main","inputs":{"stage":"full","config":"config/v4_data.json"}}` |
+| 6, 7 (the PR) | `POST repos/mgalic01/adaptive-market-engine/pulls` | `title`, `head`, `base` `main`, `body` |
+| 6, 7 (comments) | `POST repos/mgalic01/adaptive-market-engine/issues/<number>/comments` | `/claim`, `/release`, `@bob` and `@codex review`, with the session's tag on line 1 |
+| 6, 7 (reading) | `GET repos/mgalic01/adaptive-market-engine/issues/<number>/comments`, `.../pulls/<number>/reviews`, `.../pulls/<number>/comments`, `.../commits/<sha>/check-runs` and `.../commits/<sha>/status` | the thread, the reviews, CI and `claim-guard` |
 | 1, 9, 10 (data run's state) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/runs?per_page=100` | read `id`, `display_title`, `head_sha`, `conclusion` and `updated_at` |
 | 1, 9 (pins in the log) | `GET repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/logs` | it redirects to storage: follow the redirect without the token |
 | 5, 10 (run list) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/runs?per_page=100` | read each run's `display_title`, `status` and `head_sha` |
@@ -94,6 +97,8 @@ through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never pr
 | 12c, 12f (artifacts) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>/artifacts?per_page=100` | read `total_count`, and page through it for the ids |
 | 12a (one job) | `POST repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/rerun` | never `runs/<id>/rerun` or `runs/<id>/rerun-failed-jobs` |
 | 12f (deletion) | `DELETE repos/mgalic01/adaptive-market-engine/actions/artifacts/<id>` | |
+
+`git push` uses the PC's SSH key and the `git@github.com` remote, not the token.
 
 **The dispatch is sent once.** A dispatch answers 204 and returns no run id. On any other answer, or
 a network error, wait at least a minute, because a new run can take a moment to appear. Then read
@@ -116,8 +121,9 @@ path, by label, before a download: `mount -t ntfs-3g -L BACKUPS /mnt/backups`.
 
 **The PC fallback (v4-d28, step 12a) needs Python 3.12.** The project's `.venv` on Kali is Python
 3.14, while CI and the run use 3.12. A fallback verdict uses a 3.12 environment built from
-`requirements-dev.lock`; that environment does not exist yet and is built only if the fallback is
-needed.
+`requirements-dev.lock`. Kali's packages have no 3.12, so it is installed separately. That
+environment does not exist yet and is built only if the fallback is needed. It has no clock, because
+the fallback reads the downloaded artifacts, which do not expire.
 
 **Check copies from the disk.** A file in a fresh clone was found corrupted on disk on 2026-11-08,
 cause unknown. A read right after writing can come from the PC's memory rather than the disk. So
@@ -635,6 +641,13 @@ Same command as step 1, after the merge (`--ref main`, `-f stage=full`,
 - `gh run list ... --workflow v4-run.yml` shows no v4-run queued or in progress, and none titled
   `v4-run registered S`.
 
+**The archive's preflight.** The artifacts' one-day clock starts at the dispatch, so these must
+hold first too:
+- the BACKUPS disk is mounted read-write at `/mnt/backups/`, and `smartctl -H` on it passes;
+- it has at least 30 GB free (the timing run's cells unpack to about 8 GB, and their zips add 2 GB);
+- the downloader's SHA-256 equals the review note's;
+- the token works: the run list above answered with it.
+
 **Then, once:**
 
 ```
@@ -699,6 +712,11 @@ and the downloader stops if any has:
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
+The downloader has no resume, and it refuses a folder that already exists. If it stops for any
+reason, rename its partial folder to `/mnt/backups/v4-run-<id>-partial-<n>/`, keep it, and run the
+download again to `/mnt/backups/v4-run-<id>/` the same day. If it stopped on a digest, tell the owner
+too. A partial folder's ids are never used for the deletion in 12f.
+
 **c. Check the copy on the disk.** Run `sync`, unmount the disk and mount it again, so the read
 comes from the disk and not from the PC's memory. Then `sha256sum -c SHA256SUMS.txt` must pass from
 the root of each folder. The number of artifacts in the first folder's `meta/artifacts.json` must
@@ -728,7 +746,8 @@ holds the one artifact it names. There is no second copy (owner, 2026-11-08).
 
 **f. Delete the GitHub copies** of the run's artifacts, and of the two data runs', as soon as all of
 these hold (owner, 2026-11-08, so it is not asked again):
-- every job of the run has ended, and no re-run under step 12a is still possible or waiting;
+- every job of the run has ended, and no re-run under step 12a is waiting: the verdict and analysis
+  jobs both succeeded, or the one re-run has ended, or the owner has said none will be made;
 - every artifact is downloaded and its zip equals GitHub's digest (12b);
 - `sha256sum -c SHA256SUMS.txt` passes on the disk, after the disk was mounted again, and the
   artifact count matches (12c).
