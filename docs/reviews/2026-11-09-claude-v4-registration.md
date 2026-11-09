@@ -51,9 +51,10 @@ in chat, at about 13:45 UTC (14:45 in Zagreb):
   one dispatch. The 48 at 1,000 and 10,000 USDT are judged, and the 24 at 100 USDT are reported only
   (v4-d30). The run also makes one V3 pack build and one V3 picks job.
 - **The arms.** `v4_main` is the only judged arm. `hold_universe` and `v3_as_built` are the comparisons
-  of conditions 1 and 2. The others are reported and decide nothing: `v4_long_only`, `v4_vol25`,
-  `v4_vol60`, `v4_faster`, `v4_slower`, `v4_btc200_shorts`, `v4_confirm3`, `hold_btc` and
-  `hold_btc_trend`.
+  of conditions 1 and 2. The others are reported, and their results decide nothing: `v4_long_only`,
+  `v4_vol25`, `v4_vol60`, `v4_faster`, `v4_slower`, `v4_btc200_shorts`, `v4_confirm3`, `hold_btc` and
+  `hold_btc_trend`. One of their cells at 1,000 or 10,000 USDT that is missing or refused, or ends in
+  `engine_error` or `accounting_failure`, still makes the verdict incomplete (v4-d25).
 - **The commits.** Three on main at B, integrated with a merge commit:
 
 | Commit | SHA | Changes |
@@ -121,6 +122,10 @@ first registration, and `seeds` is empty.
 `budget` says "a single verdict-only re-run", as the plan's step 2 does. v4-d28, the plan's step 12a
 and `RERUN_JOBS` also allow that one re-run attempt to be the analysis job, if it alone failed. That
 is the same one attempt, the analysis decides nothing, and those rules govern.
+
+`selection` says the other 11 arms decide nothing. That is about their results. `stopping` and v4-d25
+add that a missing, refused, `engine_error` or `accounting_failure` cell of theirs at 1,000 or 10,000
+USDT makes the verdict incomplete, and `stopping` and v4-d25 govern.
 
 ## Every pin
 
@@ -207,20 +212,26 @@ morning leaves room for the same-day download.
 
 ## Outcomes that use up the run without a verdict
 
-The run counts as the one execution as soon as its plan job passes, or if it is cancelled. None of
-these can give a false pass:
+The run counts as the one execution as soon as its plan job passes, or if it is cancelled. A plan job
+that fails, with every later job skipped, does not count, so it uses up nothing, and a new dispatch
+then takes the owner's word. None of these can give a false pass:
 - **The v3-pack or picks job fails.** The six v3 cells are skipped. The four judged ones count as
   missing, so the verdict is incomplete, or fail if a `v4_main` cell stopped.
-- **A cell job fails, for any reason.** That means time, memory, a lost runner, or a failed checkout,
-  install or artifact upload. The cell is missing: incomplete at 1,000 or 10,000 USDT, reported only
-  at 100 USDT. The other cells still run. It may not be re-run, so one GitHub outage in any of the 48
-  judged cell jobs, or in the pack or picks job, uses up the run with an incomplete verdict.
+- **A cell job fails.** That means time, memory, a lost runner, or a failed checkout, install, gate,
+  data check, replay or artifact upload. The cell is missing: incomplete at 1,000 or 10,000 USDT,
+  reported only at 100 USDT. The other cells still run. It may not be re-run, so one GitHub outage in
+  any of the 48 judged cell jobs, or in the pack or picks job, uses up the run with an incomplete
+  verdict. The one exception is a failed timing step alone: the uploads still run, so the job is red
+  but the cell counts.
 - **The verdict job fails.** There is no verdict until the one allowed re-run. If that fails too, it
   is computed on the owner's PC with the run's own code and recorded as a deviation (v4-d28).
 - **The dispatch check cannot read GitHub within its 55 minutes.** The verdict is incomplete.
-- **A cancel, or a second v4-run while this one is queued.** GitHub drops a queued run, which counts
-  as cancelled. A cancelled run writes no verdict at all, since the verdict job does not run after a
-  cancel, and it still counts as the one execution, so a later dispatch's verdict is incomplete.
+- **A cancel before the verdict job has finished, or a second v4-run while this one is queued.** GitHub
+  drops a queued run, which counts as cancelled. The run writes no verdict, since the verdict job does
+  not start after a cancel and a running one is stopped. It still counts as the one execution, so a
+  later dispatch is refused in its plan job and writes no verdict either. Only a new trial is left.
+- **A cancel after the verdict job has finished.** The verdict stands as written. Its dispatch check
+  ran earlier, so it does not record the cancel, and the post-run record must state it by hand.
 - **Another re-run, or a third attempt.** The verdict is incomplete.
 - **The artifacts expire before the download.** They last one day, so the evidence would be lost to
   the owner's PC even with a verdict on GitHub.
@@ -266,11 +277,22 @@ The code does not enforce these, so the people who merge and dispatch must follo
 - **The image can move.** The jobs pin the label `ubuntu-24.04`, and GitHub updates the image behind
   it. The verdict record states the image and Python patch of the registered run.
 - **Paths the run has never taken on GitHub.** The rehearsal gates a synthetic world, and the timing
-  run has no v3 cell, so these run for the first time in the registered run: the gate on the
-  repository itself, the dispatch check's refusing mode, the data run's check, and the verdict job
-  with the manifest. No defect was found by reading them. A code bug in the verdict job would show
-  only after the cells have run, and it would not be an infrastructure failure under step 12a, so
-  the owner would decide what follows.
+  run has no v3 cell, so these run for the first time in the registered run. No defect was found by
+  reading them:
+  - **The plan job:** the gate on the repository itself, the dispatch check's refusing mode, the data
+    run's check, the data guard with the manifest, and the download of the data from another run. A
+    bug here stops the plan job, which does not count, so it costs no run. `v4-cells.yml` has already
+    used the same pinned download action from another run.
+  - **The verdict job:** the dispatch check with `--judge-all --out reasons.json`, and `v4_verdict.py`
+    with `--dispatch-reasons` and the manifest's pins. The rehearsal's and the timing run's verdicts
+    pass neither option. The tests cover both on small inputs (`tests/test_v4_registration.py`,
+    `tests/test_v4_verdict_cli.py`), and the rehearsal's plan job read GitHub's real records in the
+    check's report-only mode. This is the exposed part: a bug here shows only after the cells have run.
+    It gives an incomplete verdict or none, not a pass. The one re-run would repeat it, v4-d28's
+    fallback on the owner's PC uses the same code, and it is not an infrastructure failure under step
+    12a, so the owner would decide what follows.
+  - **The analysis job:** `v4_diagnose.py` with `--manifest`, covered by `tests/test_v4_diagnose.py`. A
+    failure here leaves the verdict unaffected.
 - **V3's picks are not pinned in advance.** They come from the run's own job, and nothing compares them
   with run 40040422092.
 - **The checks on the PC use Python 3.14,** while CI and the run use 3.12. The full test suite does not
