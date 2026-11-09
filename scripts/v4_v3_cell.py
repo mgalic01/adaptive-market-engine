@@ -11,7 +11,7 @@ trains V3's selector once on the pack P, read through its pin S (``run_v3_picks`
 the picks there as canonical JSON. Standard output: the count of picks and the file's SHA-256,
 the pin every cell then requires.
 
-``run --pack P --pack-sha256 S --picks F --picks-sha256 T --capital {1000,10000} --costs {1,2}
+``run --pack P --pack-sha256 S --picks F --picks-sha256 T --capital {100,1000,10000} --costs {1,2}
 --out O``:
 
 1. refuses the cell's folder ``O/<cell id>/`` (such as ``v3_as_built-10000-1x``) if it already

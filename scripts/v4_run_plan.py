@@ -6,20 +6,20 @@ and never as text in a script. Nothing here reads a cell's outcome or a verdict,
 output carries counts and pins only (owner rule: public logs).
 
 ``matrix --mode M --github-output F`` (the ``plan`` job). The cells of a mode are
-``inputs.expected_cells(M)``: the 48 cells of ``arms.all_cells()`` in order, or for ``timing`` the
-44 of the arms that are not v3. The matrices are derived from that one list, so a cell that is run
+``inputs.expected_cells(M)``: the 72 cells of ``arms.all_cells()`` in order, or for ``timing`` the
+66 of the arms that are not v3. The matrices are derived from that one list, so a cell that is run
 is a cell that is expected, and the reverse. It appends five lines to ``F`` (GitHub's step
 outputs), as ``scripts/v4_cells_plan.py`` does, and only when the mode is valid:
 
 - ``cells=<one line of JSON>``: ``{"include": [{"cell": ID, "arm": A, "capital": C, "costs": K},
-  ...]}``, the 44 cells that are not v3, in ``all_cells()`` order, for the ``cell`` job's matrix
+  ...]}``, the 66 cells that are not v3, in ``all_cells()`` order, for the ``cell`` job's matrix
   (``fromJSON``);
-- ``v3_cells=<one line of JSON>``: the same shape for the 4 ``v3_as_built`` cells, and
+- ``v3_cells=<one line of JSON>``: the same shape for the 6 ``v3_as_built`` cells, and
   ``{"include": []}`` for ``timing``, which has none (the ``v3-cell`` job is skipped on
   ``v3_count``, since GitHub refuses an empty matrix);
-- ``cell_ids=<comma-separated ids>``: the 44 cells of ``cells``, which is the diagnosis'
+- ``cell_ids=<comma-separated ids>``: the 66 cells of ``cells``, which is the diagnosis'
   ``--planned`` (the analysis job reads ``v4-cell-*`` artifacts, and the v3 cells upload none);
-- ``cells_count=44`` and ``v3_count=4`` (0 for ``timing``).
+- ``cells_count=66`` and ``v3_count=6`` (0 for ``timing``).
 
 A mode that is not one of ``inputs.MODES`` (``rehearsal``, ``timing``, ``registered``) is refused,
 writing nothing.
@@ -132,8 +132,8 @@ def _entry(cell: CellSpec) -> dict[str, object]:
 
 
 def matrix(mode: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    """The cells of ``mode`` as matrix entries: the cells that are not v3 (44), and the v3 cells
-    (4; none for ``timing``), each in ``all_cells()`` order. A mode that is not one of ``MODES``
+    """The cells of ``mode`` as matrix entries: the cells that are not v3 (66), and the v3 cells
+    (6; none for ``timing``), each in ``all_cells()`` order. A mode that is not one of ``MODES``
     is a ``PlanError`` (a ``ValueError``)."""
     ids = expected_cells(_check_mode(mode))
     by_id = {cell.cell_id: cell for cell in all_cells()}

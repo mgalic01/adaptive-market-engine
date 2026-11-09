@@ -174,17 +174,19 @@ def expected_argv(
 
 
 @pytest.mark.parametrize("mode", ["registered", "rehearsal"])
-def test_matrix_has_44_cells_and_4_v3_cells_in_run_order(mode):
+def test_matrix_has_66_cells_and_6_v3_cells_in_run_order(mode):
     cells, v3_cells = v4_run_plan.matrix(mode)
     assert [cell["cell"] for cell in cells] == list(NON_V3)
-    assert len(cells) == 44
+    assert len(cells) == 66
     assert [cell["cell"] for cell in v3_cells] == [
+        "v3_as_built-100-1x",
+        "v3_as_built-100-2x",
         "v3_as_built-1000-1x",
         "v3_as_built-1000-2x",
         "v3_as_built-10000-1x",
         "v3_as_built-10000-2x",
     ]
-    # Together they are the run's 48 cells, in all_cells() order, and the expected file's cells.
+    # Together they are the run's 72 cells, in all_cells() order, and the expected file's cells.
     both = [*cells, *v3_cells]
     assert [cell["cell"] for cell in both] == [cell.cell_id for cell in all_cells()]
     assert [cell["cell"] for cell in both] == list(expected_cells(mode))
@@ -222,10 +224,10 @@ def test_matrix_command_appends_the_matrices_ids_and_counts(tmp_path):
         f"cells={json.dumps({'include': cells}, **one_line)}\n"
         f"v3_cells={json.dumps({'include': v3_cells}, **one_line)}\n"
         f"cell_ids={','.join(NON_V3)}\n"
-        "cells_count=44\n"
-        "v3_count=4\n"
+        "cells_count=66\n"
+        "v3_count=6\n"
     )
-    assert stdout == "v4_run_plan matrix: mode registered, 44 cells, 4 v3 cells\n"
+    assert stdout == "v4_run_plan matrix: mode registered, 66 cells, 6 v3 cells\n"
 
 
 def test_matrix_command_for_timing_writes_an_empty_v3_matrix(tmp_path):
@@ -237,10 +239,10 @@ def test_matrix_command_for_timing_writes_an_empty_v3_matrix(tmp_path):
     assert code == 0
     assert list(lines) == ["cells", "v3_cells", "cell_ids", "cells_count", "v3_count"]
     assert json.loads(lines["v3_cells"]) == {"include": []}
-    assert (lines["cells_count"], lines["v3_count"]) == ("44", "0")
-    assert len(json.loads(lines["cells"])["include"]) == 44
+    assert (lines["cells_count"], lines["v3_count"]) == ("66", "0")
+    assert len(json.loads(lines["cells"])["include"]) == 66
     assert lines["cell_ids"].split(",") == list(NON_V3)
-    assert stdout == "v4_run_plan matrix: mode timing, 44 cells, 0 v3 cells\n"
+    assert stdout == "v4_run_plan matrix: mode timing, 66 cells, 0 v3 cells\n"
 
 
 def test_matrix_command_refuses_a_bad_mode_and_writes_nothing(tmp_path):
@@ -284,14 +286,14 @@ def test_expected_from_a_synthetic_world(tmp_path, data_dir, market):
     assert raw == _canonical(expected_record(want))  # byte for byte what read_expected reads
     read = read_expected(out)
     assert read == want
-    assert len(read.cells) == 48 and read.cells == tuple(cell.cell_id for cell in all_cells())
+    assert len(read.cells) == 72 and read.cells == tuple(cell.cell_id for cell in all_cells())
     assert read.window == {
         "start_ms": month_start("2025-01"),
         "end_ms": month_start("2025-04") - 1 * HOUR_MS,
     }
     assert json.loads(raw)["format"] == EXPECTED_FORMAT
     assert stdout == (
-        "v4_run_plan expected: mode rehearsal, 48 cells, 2160 window hours, data end_month "
+        "v4_run_plan expected: mode rehearsal, 72 cells, 2160 window hours, data end_month "
         f"2025-03, expected sha256 {hashlib.sha256(raw).hexdigest()}\n"
     )
     assert re.search(r"[0-9]+\.[0-9]", stdout) is None  # counts and pins, never a price
@@ -305,9 +307,9 @@ def test_expected_registered_takes_the_manifests_v3_pin(tmp_path, data_dir, mark
     assert (code, stderr) == (0, "")
     read = read_expected(out)
     assert (read.mode, read.v3_pack_sha256, read.picks_sha256) == ("registered", V3_PIN, PICKS)
-    assert read.cells == expected_cells("registered") and len(read.cells) == 48
+    assert read.cells == expected_cells("registered") and len(read.cells) == 72
     assert read.data == pins_of(market) and read.window == run.window_record(market)
-    assert stdout.startswith("v4_run_plan expected: mode registered, 48 cells, ")
+    assert stdout.startswith("v4_run_plan expected: mode registered, 72 cells, ")
 
 
 def test_a_registered_expected_file_never_imports_the_rehearsal_script(
@@ -340,7 +342,7 @@ def test_a_registered_expected_file_never_imports_the_rehearsal_script(
 
 
 @pytest.mark.parametrize("empty_pin_given", [False, True])
-def test_expected_timing_has_44_cells_and_no_v3_pins(tmp_path, data_dir, empty_pin_given):
+def test_expected_timing_has_66_cells_and_no_v3_pins(tmp_path, data_dir, empty_pin_given):
     """A timing run has no picks job: its pin is absent, or given empty by a workflow that passes
     the same arguments in every mode."""
     out = tmp_path / "expected.json"
@@ -350,9 +352,9 @@ def test_expected_timing_has_44_cells_and_no_v3_pins(tmp_path, data_dir, empty_p
     code, stdout, stderr = run_cli(v4_run_plan, argv)
     assert (code, stderr) == (0, "")
     read = read_expected(out)
-    assert read.cells == expected_cells("timing") and len(read.cells) == 44
+    assert read.cells == expected_cells("timing") and len(read.cells) == 66
     assert (read.v3_pack_sha256, read.picks_sha256) == (None, None)
-    assert "44 cells" in stdout
+    assert "66 cells" in stdout
 
 
 def test_write_expected_is_the_commands_function(tmp_path, data_dir, market, real_config):

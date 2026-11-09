@@ -70,7 +70,7 @@ of ``_Ending`` and ``ERAS``, every value exact. Its ``data`` is the two pins, ``
 trade), and ``accounting_residual`` is the absolute value of V3's. A full summary also has
 ``disclosures``, V3's own list from the outcome record (a list of nonempty strings, holding
 ``V3_CAPITAL_ADAPTER`` exactly when the cell's capital is not V3's 10,000), so that the run
-summary, which reads summaries only, can disclose the capital adapter of a 1,000 USDT cell; the
+summary, which reads summaries only, can disclose the capital adapter of a cell below 10,000; the
 short failure summary has none. A complete cell's final equity
 is read from its one terminal event, which must be at ``V3_END_MS``; its periods end there, the
 window's end; a stop's at its hour. Records with another number of terminal events than their
@@ -672,7 +672,7 @@ def _full(cell: CellSpec, records: _V3Records, receipt_sha256: str) -> dict[str,
 
 def _disclosures(value: object, cell: CellSpec) -> list[str]:
     """The outcome record's disclosures, V3's own list: nonempty strings, and the capital
-    adapter's among them exactly when the cell's capital is not V3's, so a 1,000 USDT cell is
+    adapter's among them exactly when the cell's capital is not V3's, so a cell below 10,000 USDT is
     never summarised without its disclosure, nor a 10,000 cell with one."""
     if not isinstance(value, list) or not all(type(item) is str and item for item in value):
         raise ValueError("the outcome record's disclosures must be a list of nonempty strings")

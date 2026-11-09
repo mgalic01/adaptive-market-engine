@@ -657,7 +657,7 @@ IMPLIED: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
 
 def test_scenarios_layout_and_expectations(judged):
     assert judged.stdout == (
-        f"v4_rehearsal scenarios: {len(SCENARIOS)} scenarios of 48 base folders and "
+        f"v4_rehearsal scenarios: {len(SCENARIOS)} scenarios of 72 base folders and "
         f"{len(FORCED)} forced cells\n"
     )
     raw = (judged.scenarios / SCENARIOS_FILE).read_bytes()

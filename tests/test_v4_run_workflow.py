@@ -1,8 +1,8 @@
 """The v4-run workflow: V4.0's registered run, its rehearsal and its timing run.
 
 ``.github/workflows/v4-run.yml`` (plan ``docs/superpowers/plans/2026-10-24-v4-step4b-pipeline.md``,
-Tasks 9 and 10) runs the 48 cells of V4's registration on GitHub's machines, in one of three modes:
-``rehearsal`` (the registered job graph on a synthetic world, Ruling W3), ``timing`` (the 44 cells
+Tasks 9 and 10) runs the 72 cells of V4's registration on GitHub's machines, in one of three modes:
+``rehearsal`` (the registered job graph on a synthetic world, Ruling W3), ``timing`` (the 66 cells
 that are not v3 on the real-size synthetic world, Ruling W2) and ``registered`` (the registered
 experiment, once). These tests pin its job graph: part 1, ``plan``, ``v3-pack``, ``v3-picks``,
 ``cell`` and ``v3-cell`` (Task 9), and part 2, ``scenarios``, ``verdict``, ``analysis`` and
@@ -148,7 +148,7 @@ RUN_ID = "40000000099"  # github.run_id
 COMMIT = "c" * 40
 # The cells each mode plans: the v3-cell job's matrix is empty in timing.
 V3_COUNT = {mode: str(len(v4_run_plan.matrix(mode)[1])) for mode in MODES}
-# needs.plan.outputs.cell_ids: the 44 cells that are not v3, the analysis' --planned.
+# needs.plan.outputs.cell_ids: the 66 cells that are not v3, the analysis' --planned.
 CELL_IDS = ",".join(str(cell["cell"]) for cell in v4_run_plan.matrix("registered")[0])
 # Part 2: the verdict's and the analysis' downloads of the cells' artifacts, one folder per
 # artifact (Ruling V1's folder rule: summaries/v4-summary-<cell>-attempt-<n>/), and their if.
@@ -660,7 +660,7 @@ def test_dispatch_only_inputs_and_permissions():
     assert widened == {name: {"contents": "read", "actions": "read"} for name in CHECKING_JOBS}
     assert "secrets." not in code()
     for name, job in jobs().items():
-        assert job["runs-on"] == "ubuntu-latest", name
+        assert job["runs-on"] == "ubuntu-24.04", name
 
     # One v4-run at a time, and a running one is never cancelled for a newer one.
     assert document["concurrency"] == {"group": "v4-run", "cancel-in-progress": False}
@@ -873,8 +873,8 @@ def test_plan_outputs_come_from_the_matrix_and_the_gate(tmp_path):
         assert v4_run_plan.main(["matrix", "--mode", mode, "--github-output", str(out)]) == 0
         written = outputs_of(out)
         assert {"cells", "v3_cells", "cell_ids", "v3_count"} <= set(written), mode
-        assert written["v3_count"] == V3_COUNT[mode] == ("0" if mode == "timing" else "4")
-        assert len(written["cell_ids"].split(",")) == 44
+        assert written["v3_count"] == V3_COUNT[mode] == ("0" if mode == "timing" else "6")
+        assert len(written["cell_ids"].split(",")) == 66
     # The gate writes the run manifest's V3 pack pin among its outputs.
     gated = SimpleNamespace(
         registration=SimpleNamespace(code_pin="1" * 40),
@@ -1772,7 +1772,7 @@ def test_a_verdict_without_picks_counts_the_v3_cells_missing(tmp_path, small_dat
         tmp_path / "zero.json", fixtures.expected_for(picks_sha256=NO_PICKS)
     )
     v3_cells = [c for c in fixtures.expected_for().cells if c.startswith("v3_as_built-")]
-    assert len(v3_cells) == 4
+    assert len(v3_cells) == 6
 
     def judge(name: str, overrides: Mapping[str, Mapping[str, object]] | None) -> dict[str, Any]:
         summaries = tmp_path / name / "summaries"
@@ -2175,7 +2175,7 @@ def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
             assert steps_that_run("verdict", mode, failing=failing)[upload] == "success", mode
         assert verdict_steps[upload]["with"]["path"].strip().splitlines()[0] == "verdict/"
 
-    # A timing run's verdict, traced: its 44 cells' summaries, no v3 pin, no dispatch check.
+    # A timing run's verdict, traced: its 66 cells' summaries, no v3 pin, no dispatch check.
     events = trace("verdict", "timing", tmp_path)
     assert events == [
         ("download", {"name": "v4-data", "path": "v4data"}),
@@ -2201,7 +2201,7 @@ def test_verdict_and_analysis_are_timed_as_the_cells_are(tmp_path):
 def test_analysis_downloads_cells_not_v3_cells(tmp_path, small_data, capsys):
     job = jobs()["analysis"]
     assert job["env"] == {"PLANNED_CELLS": "${{ needs.plan.outputs.cell_ids }}"}
-    # Ruling W1: the analysis reads every v4-cell-* folder (the 44 cells that are not v3, the
+    # Ruling W1: the analysis reads every v4-cell-* folder (the 66 cells that are not v3, the
     # plan's cell_ids, its --planned); a v3 cell uploads v4-v3-cell-*, which no step of any job
     # downloads.
     cell = "v4_main-1000-1x"
@@ -2216,7 +2216,7 @@ def test_analysis_downloads_cells_not_v3_cells(tmp_path, small_data, capsys):
                 wanted = str(resolve(wanted, context("registered")))
                 assert not fnmatch.fnmatchcase(v3_folder, wanted), (name, wanted)
     planned = CELL_IDS.split(",")
-    assert len(planned) == 44 and not any(c.startswith("v3_as_built-") for c in planned)
+    assert len(planned) == 66 and not any(c.startswith("v3_as_built-") for c in planned)
 
     analysis_steps = steps("analysis")
     guard = index_of("analysis", "scripts/v4_run_guard.py")
@@ -2554,7 +2554,7 @@ def test_header_says_what_the_jobs_do():
         "its progress/ folder is never uploaded",
         # What a timing run uploads, and how its verdict time is to be read (Ruling W2).
         "it uploads v4-data and every cell's v4-cell-* and v4-summary-*",
-        "46 measures that load marks, against about 92 in a registered run",
+        "68 measures that load marks, against about 136 in a registered run",
         # The dispatch ref of each mode, once.
         "A registered run is dispatched from the registration's ref",
         "A timing run, made before the registration exists, is dispatched from a ref at the code",

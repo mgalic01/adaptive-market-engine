@@ -7,7 +7,7 @@ the eras and years of ``summary.py``'s own period rules) but from hand-built mar
 runs. Nothing here touches the network or a real pack.
 
 * ``expected_for(cells=None, mode=..., hours=50, ...)``: the expected document (``Expected``) the
-  summaries match: the 48 cells in ``all_cells()`` order (44, no v3, for ``timing``), one window,
+  summaries match: the 72 cells in ``all_cells()`` order (66, no v3, for ``timing``), one window,
   one set of data pins and the two v3 pins (None for ``timing``). ``write_expected`` writes it
   as the canonical file ``read_expected`` reads.
 * ``write_summary(root, cell_id, outcome=..., marks=..., ...)``: one folder

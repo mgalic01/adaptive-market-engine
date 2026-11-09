@@ -389,7 +389,7 @@ NEW_ARMS = ("v4_btc200_shorts", "v4_confirm3", "hold_btc_trend")
 
 
 def test_cli_runs_the_step_4a_engine_arms_on_the_synthetic_world(world_dir, tmp_path):
-    """Deferred from step 4a's review (4b's rehearsal runs all 48 cells through both CLIs):
+    """Deferred from step 4a's review (4b's rehearsal runs all 72 cells through both CLIs):
     v4_btc200_shorts, v4_confirm3 and hold_btc_trend through the CLI on the module's world. Each
     exits 0 with its one line and no error, writes its cell's four files, and its summary
     verifies against its records and receipt (rebuilt here as well as by the CLI), naming its

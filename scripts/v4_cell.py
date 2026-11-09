@@ -6,7 +6,7 @@ PC). It implements the spec's "Reports" (a cell that runs and verifies writes a 
 even if it stops early; a cell that cannot run or verify writes none) and the "Engineering" bullet
 "each cell verifies its own report" (rebuild and equality, inside the cell job).
 
-``run --data D --arm A --capital {1000,10000} --costs {1,2} --out O``:
+``run --data D --arm A --capital {100,1000,10000} --costs {1,2} --out O``:
 
 1. refuses the cell's folder ``O/<cell id>/`` (``CellSpec.cell_id``, such as ``v4_main-10000-1x``)
    if it already holds any of the cell's four files: a cell's files are never replaced;

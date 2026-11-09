@@ -24,9 +24,10 @@ bundle carries a receipt. The module knows records, not prices or the engine's r
 * **Streaming.** A real cell writes about 70,000 hourly records and the daily, fill and event
   records besides: about 135 MB for a V4 cell and about 45 MB for a hold cell over the real
   window. That is about 3.6 GB for the 32 cells of step 3's eight arms (measured in the final
-  review) and about 4.9 GB for the 44 engine cells of the registered run (32 V4 cells and 12
-  hold cells; the 12 cells of the three arms added in step 4a are estimated from the arms they
-  vary, not measured). The run's 4 ``v3_as_built`` cells are not engine cells: each writes only
+  review) and about 4.9 GB for the 44 engine cells of the registered run at 1,000 and 10,000 USDT
+  (32 V4 cells and 12 hold cells; the 12 cells of the three arms added in step 4a are estimated
+  from the arms they vary, not measured), so about 7.4 GB for the 66 with the 100 USDT cells of
+  v4-d30 (estimated). The run's 6 ``v3_as_built`` cells are not engine cells: each writes only
   an ``hourly`` record of three fields per hour of V3's window (about 30,700), an event and
   the outcome, so each is far smaller (not measured). The writer holds one record and a
   running SHA-256; the reader holds one line.

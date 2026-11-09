@@ -1,7 +1,7 @@
-"""The twelve arms of the V4 run, the 48 cells they make, and the fixed sizing constants.
+"""The twelve arms of the V4 run, the 72 cells they make, and the fixed sizing constants.
 
 Implements the spec's "Versions in the run" (arm table and the neighbours' lookbacks) and
-"Account and execution" (costs). The run has 12 arms x 2 capitals x 2 cost levels = 48 cells.
+"Account and execution" (costs). The run has 12 arms x 3 capitals x 2 cost levels = 72 cells.
 This engine runs the eleven ``v4`` and ``hold`` arms; ``v3_as_built`` is the ``v3`` family, which
 runs through its own CLI and pack (ruling R3 of step 4a).
 
@@ -15,7 +15,8 @@ runs through its own CLI and pack (ruling R3 of step 4a).
   ``hold_btc_trend`` is in BTC while BTC's slow vote is +1.
 
 ``DIAGNOSTIC_ARMS`` are the eight arms of step 3, the ones the v4-cells workflow may run before the
-registered run (v4-d22: the others are first run there).
+registered run (v4-d22: the others are first run there). ``DIAGNOSTIC_CAPITALS`` are likewise the
+capitals it may run: the 100 USDT cells (v4-d30) are first run there too, and are reported only.
 """
 
 from __future__ import annotations
@@ -50,7 +51,8 @@ HOLD_INVESTED = Decimal("0.99")
 # The one coin of hold_btc and hold_btc_trend, and the coin whose slow vote ``short_filter`` reads.
 BTC = "BTCUSDT"
 
-CAPITALS = (1000, 10000)
+CAPITALS = (100, 1000, 10000)
+DIAGNOSTIC_CAPITALS = (1000, 10000)
 COST_MULTIPLES = (1, 2)
 
 
