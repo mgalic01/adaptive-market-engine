@@ -92,6 +92,13 @@ Bob found no conflict in v4-d32 and no early deletion, and flagged two points. B
 
 The automated review noted that the downloader's `extractall` doesn't refuse a symlink member. `zipfile` writes such a member as an ordinary file, so nothing changes.
 
+## Bob's review of `1f8b989`, and what changed
+
+Bob confirmed the symlink reason and flagged two details. Both are fixed:
+
+1. The mount check named no way to see the disk's label and no free-space figure. The preflight now gives the `findmnt` columns and a `df` check of 30 GB, and step 12b repeats both before every download and restart.
+2. The Codex row read only reactions on the PR, and a request comment can hold the 👀. The row now reads the summary comment and both reaction lists, so nobody posts a second request by mistake.
+
 ## Owner decisions of 2026-11-09
 
 - **v4-d31:** a V4 pass approves nothing at EUR 100. Moving forward at that size takes a separate owner decision, made on the reported 100 USDT numbers.
