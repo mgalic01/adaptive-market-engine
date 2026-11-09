@@ -59,6 +59,18 @@ Bob confirmed the six fixes and the downloader, and flagged five more points. Al
 4. "About 60 MB more for the six v3 cells" in the analysis was wrong: the analysis downloads only `v4-cell-*`, the 66 non-v3 cells. The sentence is gone.
 5. Step 6 had no path for a new security advisory during the freeze. It now has one: the PR stops and goes to the owner.
 
+## Bob's review of `9ff1717`, and what changed
+
+Bob confirmed the five fixes, and flagged five more points. All five are fixed:
+
+1. Step 12b contradicted itself on a re-run. It now has one design: download as soon as every job has ended, because artifacts expire, and give each artifact of a re-run its own folder, by name.
+2. The advisory paragraph covered only the time before the merge. After the merge, a red `pip-audit` is reported and not fixed, and it doesn't block the dispatch.
+3. Step 1 didn't mention the runner pin in `v4-data.yml`. It does now, and it says this is the first full data run on the pinned image.
+4. Step 3's "Stops if" now names the same files as the code inventory.
+5. The REST table now says where job ids and artifact listings come from.
+
+The automated review's note on the rehearsal 40106774107's "offered" deletion is fixed too. GitHub no longer lists any of that run's artifacts.
+
 ## Owner decisions of 2026-11-09
 
 - **v4-d31:** a V4 pass approves nothing at EUR 100. Moving forward at that size takes a separate owner decision, made on the reported 100 USDT numbers.

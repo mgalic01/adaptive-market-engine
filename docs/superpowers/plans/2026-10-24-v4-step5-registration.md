@@ -90,7 +90,8 @@ through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never pr
 | 8 (merge) | `PUT repos/mgalic01/adaptive-market-engine/pulls/<number>/merge` | `{"merge_method":"merge","sha":"<the PR's full head SHA>"}` |
 | 8 (main) | `GET repos/mgalic01/adaptive-market-engine/commits/main` | read `sha` and `parents[].sha` |
 | 10 (dispatch) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/dispatches` | `{"ref":"main","inputs":{"mode":"registered","registration_sha256":"S","data_run":"<id>"}}` |
-| 11 (watching) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>` and `.../jobs?per_page=100` | status and times only |
+| 1, 9, 11 (jobs) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>` and `.../jobs?per_page=100` | the job ids for the logs; while watching, status and times only |
+| 12c, 12f (artifacts) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>/artifacts?per_page=100` | read `total_count`, and page through it for the ids |
 | 12a (one job) | `POST repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/rerun` | never `runs/<id>/rerun` or `runs/<id>/rerun-failed-jobs` |
 | 12f (deletion) | `DELETE repos/mgalic01/adaptive-market-engine/actions/artifacts/<id>` | |
 
@@ -213,7 +214,7 @@ main:  ... B ---------------------------------------------------- M  (merge comm
    - The same PR records where the results go in `docs/RUN_ARCHIVE.md`'s "V4 run" section. The F:
      backup planned here on 2026-10-24 is replaced by the amendment's "One copy".
 5. **Earlier artifacts are handled.** The rehearsal 40106774107 is downloaded
-   (`E:\v4-run-40106774107\`, verified). The deletion of its GitHub copies is offered. The rehearsal
+   (`E:\v4-run-40106774107\`, verified), and GitHub no longer lists any of its artifacts. The rehearsal
    42581586528 and the timing run 42583987899 are archived and verified too, and their copied
    artifacts are deleted from GitHub.
 
@@ -230,7 +231,9 @@ from a run of the same code:
 - B's code equals P's: step 3 adds no file under `src/` or `scripts/`;
 - the data code (`scripts/v4_data.py`, `src/crypto_grid_bot/v4/data/`, the config and the
   filter snapshots) is unchanged since step 2's full run on `35d4d3e`. Only the workflow file
-  changed: its config input (`2731a5d`) and a comment (`876f9f5`).
+  changed: its config input (`2731a5d`), a comment (`876f9f5`) and the runner pin to
+  `ubuntu-24.04` (PR #304). So this is the first full data run on the pinned image, and the check
+  below shows whether its pins still hold there.
 
 ```
 gh workflow run v4-data.yml -R mgalic01/adaptive-market-engine --ref main \
@@ -417,8 +420,9 @@ dispatch.
 - `python -m ruff format --check .` and `python -m ruff check .` pass;
 - the new test file, run alone, skips. That is light.
 
-**Stops if:** anything under `src/` or `scripts/` needs a change. That is not step 5: it goes back
-to a normal PR before B, and this plan restarts at step 0.
+**Stops if:** anything under `src/` or `scripts/`, or `pyproject.toml`, `requirements-dev.lock` or
+`requirements.txt`, needs a change. That is not step 5: it goes back to a normal PR before B, and
+this plan restarts at step 0.
 
 ## Step 4. The registration files, the completion and the review (commit C)
 
@@ -545,6 +549,10 @@ CVE-2026-114613 did. A fix to `requirements-dev.lock` changes the code inventory
 under `docs/reviews/`. It stops the PR and goes to the owner. Unless the owner decides otherwise, the
 fix goes through a normal PR on main, and this plan restarts at step 0 with a new rehearsal, timing
 run and B, keeping the same trial id while nothing of the registration is on main.
+
+After the merge, a red `pip-audit` on main is reported to the owner and is not fixed, whatever
+`START_HERE` says about red CI. It does not block the dispatch. A changed lock file would break the
+code pin, so the job gate would refuse the run, and a rebuild then needs a new trial id (step 8).
 
 ## Step 7. The owner's go
 
@@ -679,20 +687,23 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - a failed analysis that was not re-run, or failed again, may be computed there the same way
   (`scripts/v4_diagnose.py`, about 14 minutes and 0.7 GB in the timing run). It decides nothing.
 
-**b. Download every artifact the same day**, about 150 of them plus any re-run's, to
-`/mnt/backups/v4-run-<id>/`, once every job has ended and any re-run under 12a is decided and has
-ended:
-- the download needs a folder that does not exist yet, so a re-run's artifacts that appear after it
-  go to `/mnt/backups/v4-run-<id>-attempt-2/`, checked the same way;
+**b. Download every artifact the same day**, about 150 of them, to `/mnt/backups/v4-run-<id>/`, as
+soon as every job has ended. It doesn't wait for a decision under 12a, because the artifacts expire
+and the downloader stops if any has:
 - with the `fetch_v4_cells.py` named in the amendment, after checking its SHA-256;
+- after a re-run under 12a, once it has ended, download each artifact it made, with the artifact's
+  name as the downloader's prefix, to a folder of its own: for example `v4-verdict-attempt-2` to
+  `/mnt/backups/v4-run-<id>-v4-verdict-attempt-2/`, and the same for `v4-analysis-attempt-2` and
+  `v4-status-attempt-2`;
 - the layout of `docs/RUN_ARCHIVE.md`'s "V4 run" section: `zips\`, one folder per artifact,
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
 **c. Check the copy on the disk.** Run `sync`, unmount the disk and mount it again, so the read
 comes from the disk and not from the PC's memory. Then `sha256sum -c SHA256SUMS.txt` must pass from
-the archive root. The number of artifacts in `meta/artifacts.json` must equal `total_count` from
-`GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>/artifacts`. There is no second copy (owner, 2026-11-08).
+the root of each folder. The number of artifacts in the first folder's `meta/artifacts.json` must
+equal `total_count` from the run's artifact listing, read when it was downloaded. A re-run's folder
+holds the one artifact it names. There is no second copy (owner, 2026-11-08).
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -722,7 +733,7 @@ these hold (owner, 2026-11-08, so it is not asked again):
 - `sha256sum -c SHA256SUMS.txt` passes on the disk, after the disk was mounted again, and the
   artifact count matches (12c).
 
-The ids to delete are the ones in `meta/artifacts.json`. The data runs' own artifacts are not
+The ids to delete are the ones in each folder's `meta/artifacts.json`. The data runs' own artifacts are not
 downloaded, because the pack is kept as the registered run's `v4-data`, whose pins the plan job
 checked against the manifest. Their ids come from each data run's artifact listing.
 
