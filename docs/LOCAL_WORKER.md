@@ -1,5 +1,8 @@
 # Separate local Codex reviewer
 
+**Not set up on Kali (2026-11-08).** The commands below were written for the owner's former Windows
+setup, and this reviewer has not been installed or tested on the owner's Kali PC.
+
 Owner requested event-driven, sceptical PR review on 2026-09-27. This integration
 starts a separate local Codex worker; it does not resume Desktop or replace Cloud.
 Its job is to challenge assumptions, inspect evidence, and discuss findings with

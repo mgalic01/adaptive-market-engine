@@ -24,17 +24,127 @@ stamps stay UTC.
   - `config/v4_data.json`;
   - `docs/RUN_ARCHIVE.md`, its "V4 run" section.
 
+## Amended 2026-11-08: the move to Kali Linux, and a new B
+
+Where this section and the text below differ, this section governs.
+
+**What happened.** Step 5 began on 2026-10-24 with B at `c45f284`. Step 1's data run 40122823348
+succeeded there and its printed pins match the table in step 1. Step 2 did not start, so nothing
+was registered. The owner's PC was then reinstalled and now runs Kali Linux.
+
+**Why B moves.** Two merges changed what the code pin will hold:
+- CVE-2026-114613 made `pip-audit` fail on every head. PR #303 fixed it (`msgpack` 1.2.3, main
+  `504a320`), and `requirements-dev.lock` is in the code inventory.
+- The owner added 100 USDT to the run (v4-d30), and the run's jobs were pinned to `ubuntu-24.04`.
+  PR #304 did both (main `5e3ed10`).
+
+Under step 0, item 2, the rehearsal and the timing run ran again on main `5e3ed10`
+(`docs/RUN_ARCHIVE.md` holds both).
+
+**The new B** is the merge commit of the PR that adds this section. Run 40122823348 is superseded:
+step 1 runs again from the new B, and the freeze of step 0, item 3 starts there.
+
+**72 cells (owner, v4-d30).** The run has 12 versions x 3 capitals x 2 cost levels. The 48 cells at
+1,000 and 10,000 USDT are judged; the 24 at 100 USDT are reported only and cannot change the verdict.
+
+**A pass and EUR 100 (owner, v4-d31, 2026-11-09).** A V4 pass approves nothing at EUR 100. Moving
+forward at that size takes a separate owner decision, made on the reported 100 USDT numbers. This
+changes neither the pass rule nor the verdict.
+
+**A red cell at 100 USDT.** A failed cell job at 100 USDT makes the run look red, although it cannot
+change the verdict. Read the verdict, not the run's colour, and do not re-run the cell: a re-run of
+any cell makes the verdict incomplete.
+
+**Record the machine.** The run's jobs use the label `ubuntu-24.04`, and GitHub updates the image
+behind a label. The rehearsal and the timing run used image `ubuntu24/20261101.360` and Python
+3.12.16. The verdict record states the image version and the Python patch of the registered run, from
+its job logs. CI still runs on `ubuntu-latest`.
+
+**Paths on Kali.** Read every `E:` and `F:` below as follows:
+
+| In this plan | Now | Notes |
+| --- | --- | --- |
+| `E:\` | `/mnt/backups/` | The WD 750 GB disk, label BACKUPS, NTFS. Same disk and same files |
+| `F:\` | none | That disk was formatted (owner, 2026-11-08). There is no second copy (below) |
+| `E:/v4-registration-wt` | `~/Projects/v4-registration-wt` | A worktree on the Linux disk |
+
+**One copy (owner, 2026-11-08).** The run's results are kept on one disk, the WD 750 GB hard disk,
+label BACKUPS. This replaces the F: backup of 2026-10-24: steps 7, 12c and 12f below read
+accordingly. Once the run has ended and its copy is verified, its GitHub copies are deleted, so
+the BACKUPS disk then holds the only copy. The owner chose this knowing that a failure of that disk
+would lose results of a run that cannot be repeated.
+
+**Artifacts are readable while they exist (owner accepted, 2026-11-08).** The repository is public,
+so anyone with read access can download the run's artifacts between upload and the deletion in step
+12f. The owner chose this over encrypting them, so the workflow keeps no stored secret.
+
+**Tools.** `gh` is not installed on Kali. Each `gh` command below means the call in this table,
+through GitHub's REST API, with `GITHUB_TOKEN` from the environment and never printed:
+
+| Step | Call | Body or fields |
+| --- | --- | --- |
+| 1, 9 (data run) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/dispatches` | `{"ref":"main","inputs":{"stage":"full","config":"config/v4_data.json"}}` |
+| 6, 7 (the PR) | `POST repos/mgalic01/adaptive-market-engine/pulls` | `title`, `head`, `base` `main`, `body` |
+| 6, 7 (comments) | `POST repos/mgalic01/adaptive-market-engine/issues/<number>/comments` | `/claim`, `/release`, `@bob` and `@codex review`, with the session's tag on line 1 |
+| 6, 7, 8 (PR state) | `GET repos/mgalic01/adaptive-market-engine/pulls/<number>` | the full head SHA, for the merge body, and mergeability |
+| 6, 7 (reading) | `GET repos/mgalic01/adaptive-market-engine/issues/<number>/comments`, `.../pulls/<number>/reviews`, `.../pulls/<number>/comments`, `.../commits/<sha>/check-runs` and `.../commits/<sha>/status` | the thread, the reviews, CI and `claim-guard` |
+| 6 (answering a thread) | `POST repos/mgalic01/adaptive-market-engine/pulls/<number>/comments/<id>/replies` | `body`. A thread's resolved state isn't in this API, so read it on the PR's page |
+| 6 (Codex's state) | `GET repos/mgalic01/adaptive-market-engine/issues/<number>/comments`, `.../issues/<number>/reactions` and `.../issues/comments/<id>/reactions` | Codex's summary comment names the head it reviewed and its status. 👀 can be on the PR or on a request comment. Post `@codex review` only if none of these shows that head being reviewed |
+| 1, 9, 10 (data run's state) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-data.yml/runs?per_page=100` | read `id`, `display_title`, `head_sha`, `conclusion` and `updated_at` |
+| 1, 9 (pins in the log) | `GET repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/logs` | it redirects to storage: follow the redirect without the token |
+| 5, 10 (run list) | `GET repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/runs?per_page=100` | read each run's `display_title`, `status` and `head_sha` |
+| 8 (merge) | `PUT repos/mgalic01/adaptive-market-engine/pulls/<number>/merge` | `{"merge_method":"merge","sha":"<the PR's full head SHA>"}` |
+| 8 (main) | `GET repos/mgalic01/adaptive-market-engine/commits/main` | read `sha` and `parents[].sha` |
+| 10 (dispatch) | `POST repos/mgalic01/adaptive-market-engine/actions/workflows/v4-run.yml/dispatches` | `{"ref":"main","inputs":{"mode":"registered","registration_sha256":"S","data_run":"<id>"}}` |
+| 1, 9, 11 (jobs) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>` and `.../jobs?per_page=100` | the job ids for the logs; while watching, status and times only |
+| 12c, 12f (artifacts) | `GET repos/mgalic01/adaptive-market-engine/actions/runs/<id>/artifacts?per_page=100` | read `total_count`, and page through it for the ids |
+| 12a (one job) | `POST repos/mgalic01/adaptive-market-engine/actions/jobs/<job id>/rerun` | never `runs/<id>/rerun` or `runs/<id>/rerun-failed-jobs` |
+| 12f (deletion) | `DELETE repos/mgalic01/adaptive-market-engine/actions/artifacts/<id>` | |
+
+`git push` uses the PC's SSH key and the `git@github.com` remote, not the token.
+
+**The dispatch is sent once.** A dispatch answers 204 and returns no run id. On any other answer, or
+a network error, wait at least a minute, because a new run can take a moment to appear. Then read
+the run list, and send it again only if no new run exists and the owner agrees. A second dispatch
+makes the verdict incomplete.
+
+**The downloader is not in the repository.** A new file under `scripts/` would change the code
+inventory, so step 12b uses `/mnt/backups/v4-run-42581586528/scripts/fetch_v4_cells.py`, which calls
+the REST API instead of `gh`. Its full text and SHA-256 are in
+[the Kali review note](../../reviews/2026-11-08-claude-kali-agent-loop-check.md), so it can be
+reviewed. Check that SHA-256 before using it.
+
+**Python on the PC.** `python` below means the project's `.venv`, which is Python 3.14, while CI and
+the run use 3.12. Step 5's checks are a first look on the PC. CI's
+`tests/test_v4_registration_committed.py` makes the gate and readiness checks on 3.12 at the PR's
+merge ref, and it governs. If the two disagree, stop and find out why.
+
+**The BACKUPS disk after a reboot.** It is not mounted by itself. Mount it read-write at the planned
+path, by label, before a download: `mount -t ntfs-3g -L BACKUPS /mnt/backups`.
+
+**The PC fallback (v4-d28, step 12a) needs Python 3.12.** The project's `.venv` on Kali is Python
+3.14, while CI and the run use 3.12. A fallback verdict uses a 3.12 environment built from
+`requirements-dev.lock`. Kali's packages have no 3.12, so it is installed separately. That
+environment does not exist yet and is built only if the fallback is needed. It has no clock, because
+the fallback reads the downloaded artifacts, which do not expire.
+
+**Check copies from the disk.** A file in a fresh clone was found corrupted on disk on 2026-11-08,
+cause unknown. A read right after writing can come from the PC's memory rather than the disk. So
+step 12c unmounts and mounts the disk before `sha256sum -c SHA256SUMS.txt`, and it isn't skipped
+because a digest passed during the download.
+
 ## In plain words
 
 - **What step 5 does.** It writes down, before the run, exactly what the one historical test of
   V4.0 is:
   - the program version and the data, by fingerprint;
-  - the 48 cells: 12 versions x 2 capitals x 2 cost levels;
+  - the 72 cells: 12 versions x 3 capitals x 2 cost levels, of which the 48 at 1,000 and 10,000
+    are judged;
   - the pass rule.
 - **The run.** It starts the test once on GitHub, never cancels it and never repeats it. One
   exception: the final verdict step alone may be run again once, if GitHub's machines (not the
   code) broke it.
-- **Afterwards.** The results come to your PC (E:, with a checked copy on F:). Only you decide
+- **Afterwards.** The results come to your PC (the BACKUPS disk, checked, the only copy). Only you decide
   what is said about them in public.
 - **Who does what.** Claude prepares every file and check. The reviewers check them. You give
   the go. GitHub runs the test.
@@ -92,6 +202,10 @@ main:  ... B ---------------------------------------------------- M  (merge comm
    **Met on 2026-10-24.** The run succeeded in 30 minutes (15:47:48 to 16:17:55 UTC), and its
    47 `v4-timing-*` artifacts matched GitHub's digests. The numbers are under "Expected run
    length" below: every one is far inside its limit, so no fix is needed.
+
+   **Met again on 2026-11-09**, for the code the pin will hold: timing run 42583987899 on main
+   `5e3ed10`, archived at `/mnt/backups/v4-run-42583987899/`, with its 69 `v4-timing-*` artifacts
+   matching GitHub's digests. Its numbers are in the same section, and every one is inside its limit.
 2. **Any fix is merged and re-tested.** A fix it needs is merged under the full review bar. Then
    the rehearsal and the timing run are run again on the fixed main: a timing run must time the
    code the code pin will hold (header of `v4-run.yml`).
@@ -106,10 +220,12 @@ main:  ... B ---------------------------------------------------- M  (merge comm
 4. **This plan is reviewed by the owner and merged before B.**
    - It lives under `docs/superpowers/plans/`, which may not change on main between B and the
      dispatch.
-   - The same PR adds the owner's F: backup decision of 2026-10-24 to `docs/RUN_ARCHIVE.md`'s
-     "V4 run" section. That section does not hold it yet.
+   - The same PR records where the results go in `docs/RUN_ARCHIVE.md`'s "V4 run" section. The F:
+     backup planned here on 2026-10-24 is replaced by the amendment's "One copy".
 5. **Earlier artifacts are handled.** The rehearsal 40106774107 is downloaded
-   (`E:\v4-run-40106774107\`, verified). The deletion of its GitHub copies is offered.
+   (`E:\v4-run-40106774107\`, verified), and GitHub no longer lists any of its artifacts. The rehearsal
+   42581586528 and the timing run 42583987899 are archived and verified too, and their copied
+   artifacts are deleted from GitHub.
 
 **Stops if:** any limit is missed. Then the fix comes first, as a normal PR, and step 5 waits.
 
@@ -124,7 +240,9 @@ from a run of the same code:
 - B's code equals P's: step 3 adds no file under `src/` or `scripts/`;
 - the data code (`scripts/v4_data.py`, `src/crypto_grid_bot/v4/data/`, the config and the
   filter snapshots) is unchanged since step 2's full run on `35d4d3e`. Only the workflow file
-  changed: its config input (`2731a5d`) and a comment (`876f9f5`).
+  changed: its config input (`2731a5d`), a comment (`876f9f5`) and the runner pin to
+  `ubuntu-24.04` (PR #304). So this is the first full data run on the pinned image, and the check
+  below shows whether its pins still hold there.
 
 ```
 gh workflow run v4-data.yml -R mgalic01/adaptive-market-engine --ref main \
@@ -151,8 +269,8 @@ The daily pack's pin is `packs.daily.sha256`, and the hourly index's is
 
 `config_sha256` is also `sha256sum config/v4_data.json` at B, the file's raw bytes.
 
-The run's artifacts are not downloaded: the pins are in the log. They expire after a day, and
-their deletion is offered.
+The run's artifacts are not downloaded: the pins are in the log. They expire after a day, and step
+12f deletes any still on GitHub.
 
 **Stops if:**
 - **the pins differ from step 2's.** Binance may have replaced or removed an archive since
@@ -165,7 +283,7 @@ their deletion is offered.
 
 **Who:** Claude.
 
-**Where:** branch `claude/v4-registration` from B, in a new worktree `E:/v4-registration-wt`.
+**Where:** branch `claude/v4-registration` from B, in a new worktree `~/Projects/v4-registration-wt`.
 
 **How:**
 - write the event to a scratch file outside the repository;
@@ -179,7 +297,7 @@ their deletion is offered.
 - `event_type` `registration`, `family` `spec-v4.0`, `parent_trial_id` null;
 - `agent` "Claude Code", `recorded_at` the UTC time of writing;
 - `sources`: GitHub links at B to the spec, to this plan and to the step-4b plan; and the
-  rehearsal (40106774107), timing (40108602725) and pinning data run URLs.
+  rehearsal (42581586528), timing (42583987899) and pinning data run URLs.
 
 The trial id follows V3.1's `v3-1-registered-1` and the rehearsal world's `v4-0-synthetic`.
 The completion is
@@ -193,7 +311,7 @@ The completion is
   - `sha256`, of the git blob at B (LF, as `check_ready` hashes it):
     `git show B:<path> | sha256sum`.
 - **`candidates`:** the 12 arms, one line each with its role (below).
-- **`sizes`:** `[1000, 10000]` (USDT).
+- **`sizes`:** `[100, 1000, 10000]` (USDT). 100 is reported only (v4-d30).
 - **`fees`:**
   - normal costs: spot fee 0.10%, futures fee 0.05% and slippage 0.05% per fill (V3.1's
     profile);
@@ -214,15 +332,17 @@ The completion is
     run used data to 2024-12; the rehearsal and the timing run used synthetic data.
 - **`seeds`:** `[]`. No V4 code draws a random number.
 - **`budget`:**
-  - exactly 48 cells (12 arms x 2 capitals x 2 cost levels), each run once in one registered
-    dispatch of `v4-run.yml`, plus one V3 pack build and one V3 picks job;
+  - exactly 72 cells (12 arms x 3 capitals x 2 cost levels), each run once in one registered
+    dispatch of `v4-run.yml`, plus one V3 pack build and one V3 picks job. The 48 at 1,000 and
+    10,000 USDT are judged, and the 24 at 100 USDT are reported only (v4-d30);
   - no parameter search, and no extra arm, capital, cost or window;
   - only transport retries are allowed: checksummed archive fetches and GitHub API reads;
   - a single verdict-only re-run is allowed after an infrastructure failure.
 - **`stopping`:**
   - every cell runs once, from one dispatch, never cancelled, and every outcome is kept;
-  - a missing, refused or `engine_error` cell, or `accounting_failure` outside `v4_main`, makes
-    the verdict incomplete (v4-d25). So does a re-run or a second dispatch;
+  - at 1,000 or 10,000 USDT, a missing, refused or `engine_error` cell, or `accounting_failure`
+    outside `v4_main`, makes the verdict incomplete (v4-d25, v4-d30). So does a re-run or a second
+    dispatch, at any capital;
   - no early stop and no tuning on results: a fail or an incomplete verdict needs a new bounded
     hypothesis.
 - **`selection`:** none. `scripts/v4_verdict.py` judges `v4_main` alone, from the cells'
@@ -244,11 +364,11 @@ The completion is
 > 4. its equity at the window's end is greater than at 2025-01-01 00:00 UTC (normal costs).
 >
 > Returns and drawdowns are measured on the common hourly boundaries. The precedence:
-> - **fail** if any `v4_main` cell is `liquidated`, `limit_unrestorable` or
->   `accounting_failure`;
-> - otherwise **incomplete** if any of the 48 cells is missing, refused or `engine_error`
->   (or `accounting_failure` outside `v4_main`), if a re-run or a second dispatch is found, or
->   if a condition cannot be computed;
+> - **fail** if any `v4_main` cell at 1,000 or 10,000 USDT is `liquidated`,
+>   `limit_unrestorable` or `accounting_failure`;
+> - otherwise **incomplete** if any of the 48 cells at 1,000 and 10,000 USDT is missing, refused
+>   or `engine_error` (or `accounting_failure` outside `v4_main`), if a re-run or a second dispatch
+>   is found, or if a condition cannot be computed;
 > - otherwise **pass** only if all 8 checks hold.
 
 **The candidates:**
@@ -309,8 +429,9 @@ dispatch.
 - `python -m ruff format --check .` and `python -m ruff check .` pass;
 - the new test file, run alone, skips. That is light.
 
-**Stops if:** anything under `src/` or `scripts/` needs a change. That is not step 5: it goes back
-to a normal PR before B, and this plan restarts at step 0.
+**Stops if:** anything under `src/` or `scripts/`, or `pyproject.toml`, `requirements-dev.lock` or
+`requirements.txt`, needs a change. That is not step 5: it goes back to a normal PR before B, and
+this plan restarts at step 0.
 
 ## Step 4. The registration files, the completion and the review (commit C)
 
@@ -329,7 +450,7 @@ to a normal PR before B, and this plan restarts at step 0.
   - `schema` `v4-registration-1`, and `code_pin` P;
   - `run_manifest_sha256`, the manifest file's SHA-256;
   - `spec`, its `path` and `sha256` as the event's;
-  - `cells`, the 48 ids of `arms.all_cells()`, in order;
+  - `cells`, the 72 ids of `arms.all_cells()`, in order;
   - `trial_id` `v4-0-registered-1`.
 
 No V4 command writes the real files: `scripts/v4_registration.py` only reads them, and builds
@@ -432,6 +553,16 @@ Each check, and what it must give:
 **CI headroom.** If the CI job times out, it may simply be re-run: that is CI, not an
 experiment re-run. Raising its limit would be a `.github/` change after P, so a rebuild.
 
+**A new security advisory.** `pip-audit` can turn CI red on any head during the freeze, as
+CVE-2026-114613 did. A fix to `requirements-dev.lock` changes the code inventory, so it isn't a fix
+under `docs/reviews/`. It stops the PR and goes to the owner. Unless the owner decides otherwise, the
+fix goes through a normal PR on main, and this plan restarts at step 0 with a new rehearsal, timing
+run and B, keeping the same trial id while nothing of the registration is on main.
+
+After the merge, a red `pip-audit` on main is reported to the owner and is not fixed, whatever
+`START_HERE` says about red CI. It does not block the dispatch. A changed lock file would break the
+code pin, so the job gate would refuse the run, and a rebuild then needs a new trial id (step 8).
+
 ## Step 7. The owner's go
 
 **Who:** the owner, in chat, after step 6's bar is met. Claude asks, stating:
@@ -442,9 +573,9 @@ experiment re-run. Raising its limit would be a `.github/` change after P, so a 
   1. the merge with a merge commit;
   2. the registered data run;
   3. one registered dispatch;
-  4. the download of every artifact to E: and the verified copy on F:.
+  4. the download of every artifact to `/mnt/backups/`, and its check.
 
-  The deletion of GitHub's copies is not covered: it is asked separately.
+  The deletion of GitHub's copies is not asked again: step 12f says when it happens.
 - the questions still open at the end of this plan: the main freeze and the result event's
   status.
 
@@ -513,6 +644,15 @@ Same command as step 1, after the merge (`--ref main`, `-f stage=full`,
 - `gh run list ... --workflow v4-run.yml` shows no v4-run queued or in progress, and none titled
   `v4-run registered S`.
 
+**The archive's preflight.** The artifacts' one-day clock starts at the dispatch, so these must
+hold first too:
+- `findmnt -o TARGET,SOURCE,FSTYPE,LABEL,OPTIONS /mnt/backups` shows LABEL `BACKUPS` and `rw`, and
+  `smartctl -H` on that disk passes;
+- `df -h /mnt/backups` shows at least 30 GB free. The timing run's cells unpack to about 8 GB and their zips add 2 GB.
+  The data run's archive took about 0.4 GB and the v3 run's about 0.1 GB;
+- the downloader's SHA-256 equals the review note's;
+- the token works: the run list above answered with it.
+
 **Then, once:**
 
 ```
@@ -565,15 +705,32 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
 - a failed analysis that was not re-run, or failed again, may be computed there the same way
   (`scripts/v4_diagnose.py`, about 14 minutes and 0.7 GB in the timing run). It decides nothing.
 
-**b. Download every artifact the same day**, about 102 of them, to `E:\v4-run-<id>\`:
-- with the rehearsal's `scripts\fetch_v4_cells.py` (from `E:\v4-run-40106774107\scripts\`);
+**b. Download every artifact the same day**, about 150 of them, to `/mnt/backups/v4-run-<id>/`, as
+soon as every job has ended. It doesn't wait for a decision under 12a, because the artifacts expire
+and the downloader stops if any has:
+- with the `fetch_v4_cells.py` named in the amendment, after checking its SHA-256;
+- after a re-run under 12a, once it has ended, download each artifact it made, with the artifact's
+  name as the downloader's prefix, to a folder of its own: for example `v4-verdict-attempt-2` to
+  `/mnt/backups/v4-run-<id>-v4-verdict-attempt-2/`, and the same for `v4-analysis-attempt-2` and
+  `v4-status-attempt-2`;
 - the layout of `docs/RUN_ARCHIVE.md`'s "V4 run" section: `zips\`, one folder per artifact,
   `meta\artifacts.json`, `scripts\` and `SHA256SUMS.txt`;
 - each zip's SHA-256 must equal GitHub's upload digest, or the download stops.
 
-**c. A verified backup on F:,** in `F:\v4-run-<id>-backup\`:
-- `sha256sum -c SHA256SUMS.txt` passes there;
-- the file list equals E:'s.
+The downloader has no resume, and it refuses a folder that already exists. If it stops for any
+reason, rename its partial folder to `/mnt/backups/v4-run-<id>-partial-<n>/`, keep it, and run the
+download again to `/mnt/backups/v4-run-<id>/` the same day. If it stopped on a digest, tell the owner
+too. A partial folder's ids are never used for the deletion in 12f.
+
+Before every download and restart, the preflight's `findmnt` and `df` checks of step 10 must pass,
+with at least 30 GB free after any kept partial folder. After a reboot the folder is empty and on the system
+disk, so a download there would miss the disk without any error.
+
+**c. Check the copy on the disk.** Run `sync`, unmount the disk and mount it again, so the read
+comes from the disk and not from the PC's memory. Then `sha256sum -c SHA256SUMS.txt` must pass from
+the root of each folder. The number of artifacts in the first folder's `meta/artifacts.json` must
+equal `total_count` from the run's artifact listing, read when it was downloaded. A re-run's folder
+holds the one artifact it names. There is no second copy (owner, 2026-11-08).
 
 **d. Read the verdict on the owner's PC only.**
 - Open `verdict.md`, `verdict.json` and `diagnosis.md` with `python -I` scripts kept outside the
@@ -592,26 +749,38 @@ lost, a full disk, a GitHub outage; not a code bug), by owner decision v4-d28:
     the manifest's SHA-256, the data run's id and `verdict.json`'s SHA-256;
   - `report`, the verdict record;
   - `metrics` and `reason`;
-- **a "V4 registered run <id>" section** in `docs/RUN_ARCHIVE.md`, with both copies and their
+- **a "V4 registered run <id>" section** in `docs/RUN_ARCHIVE.md`, with its copy and its
   status;
 - **the verdict record**, `docs/reviews/<date>-claude-v4-verdict.md`.
 
-**f. Offer the deletion** of the run's GitHub artifacts, and of the two data runs', once both
-local copies are verified. Delete only on the owner's confirmation. They also expire on their
-own after a day.
+**f. Delete the GitHub copies** of the run's artifacts, and of the two data runs', as soon as all of
+these hold (owner, 2026-11-08, so it is not asked again):
+- every job of the run has ended, and no re-run under step 12a is waiting: the verdict and analysis
+  jobs both succeeded, or the one re-run has ended, or the owner has said none will be made;
+- every artifact is downloaded and its zip equals GitHub's digest (12b);
+- `sha256sum -c SHA256SUMS.txt` passes on the disk, after the disk was mounted again, and the
+  artifact count matches (12c).
+
+The ids to delete are the ones in each folder's `meta/artifacts.json`. The data runs' own artifacts are not
+downloaded, because the pack is kept as the registered run's `v4-data`, whose pins the plan job
+checked against the manifest. Their ids come from each data run's artifact listing.
+
+If any of these fails, nothing is deleted and the owner is told. The artifacts also expire on their
+own after a day. Logs are not artifacts and stay.
 
 ## Outcomes that use up the run without a verdict
 
 The run counts as the registration's one execution as soon as its plan job passes, or if it is
 cancelled. Then these outcomes end it without a pass, or with an incomplete verdict. None can give
 a false pass.
-- **The v3-pack job fails.** It fetches V3's archives from Binance. The picks and the four v3
-  cells are skipped, and every v3 cell counts as missing: incomplete, or fail if a `v4_main`
+- **The v3-pack job fails.** It fetches V3's archives from Binance. The picks and the six v3
+  cells are skipped, and each of the four judged v3 cells counts as missing: incomplete, or fail if a `v4_main`
   cell stopped. The verdict is still written.
 - **The picks job fails, or runs past its 300 minutes.** It took 210.7 minutes in run
   40040422092, 70% of its limit. Same result as above.
-- **A cell runs past its job's 60 minutes, or out of memory.** That cell is missing:
-  incomplete. The other cells still run, since the matrix does not fail fast.
+- **A cell runs past its job's 60 minutes, or out of memory.** That cell is missing: incomplete
+  at 1,000 or 10,000 USDT, reported only at 100 USDT. The other cells still run, since the matrix
+  does not fail fast.
 - **The verdict job fails** (memory, disk, a crash, its 180 minutes). There is no verdict until
   the one re-run (step 12a). If that fails too, the verdict is computed on the owner's PC with
   the run's own code and recorded as a deviation (owner decision v4-d28, made before any result,
@@ -636,7 +805,27 @@ a false pass.
   the four v3 cells 8.4 to 14.6 min;
 - **data runs**: 1 h 13 min for the full one (39403004530), about 1 h for the pre-2025 ones.
 
-**From the timing run 40108602725** (main `19e3190`, real size on synthetic data, no v3 cell),
+**From the rehearsal 42581586528** (main `5e3ed10`, synthetic, four coins, 72 cells), 2026-11-09:
+about 21 minutes end to end. The plan job took 49 s, the scenarios 6.9 min, the analysis 4.5 min and
+the verdict 11.7 min.
+
+**From the timing run 42583987899** (main `5e3ed10`, real size on synthetic data, no v3 cell),
+2026-11-09, about 32 minutes end to end. These are the numbers for the code the pin will hold:
+- **plan job:** 2 min 41 s;
+- **the 66 cells:** each 53 to 345 seconds (median 220 s; the longest `v4_vol25-100-1x`), and each
+  cell job 76 to 440 seconds, against its 60 minutes. All 66 ran in 14.5 minutes, at most 20 at a
+  time;
+- **cell memory:** 485 to 651 MB at peak;
+- **cell output:** `records.jsonl` 35 to 189 MB each, 8.12 GB in all before compression (2.91 GB of
+  it at 100 USDT); the `v4-cell-*` artifacts 1.8 GB zipped in all, the `v4-summary-*` 61 MB;
+- **the expected step:** 73 seconds, 459 MB at peak;
+- **the verdict step:** 57 seconds, 93 MB at peak. Doubled for the v3 cells and the registered mode's
+  marks (ruling W2), about 2 minutes. The verdict job took 2 min 34 s, against its 180 minutes (55 of
+  them the dispatch check's budget);
+- **the analysis:** 819 seconds (13.7 minutes), 767 MB at peak; its job 14 min 37 s, against 120.
+  It unpacks the 66 non-v3 cells' records on one runner: 8.12 GB here, against the runner's 14 GB.
+
+**From the earlier timing run 40108602725** (main `19e3190`, real size on synthetic data, no v3 cell),
 2026-10-24, 30 minutes end to end:
 - **plan job:** 3 min 45 s;
 - **the 44 cells:** each 51 to 315 seconds (median 223 s; the longest `v4_slower-10000-2x`), and
@@ -654,7 +843,7 @@ a false pass.
 **Estimate:**
 - the run itself takes about 4 to 4.5 hours, set by V3's picks: plan, pack, about 3.5 hours of
   picks, the v3 cells, then the verdict;
-- the 44 other cells run beside it, at most 20 at a time, and should finish in about 15 minutes;
+- the 66 other cells run beside it, at most 20 at a time, and should finish in about 15 minutes;
 - while 20 cells run, GitHub's limit of 20 concurrent jobs may hold the v3-pack job back by up to
   one cell's time;
 - the registered data run (about 75 minutes) comes before, and the download after.
@@ -725,7 +914,7 @@ recommended option. They are owner decisions v4-d26 to v4-d29 in the spec:
 
 1. **The main freeze:** from B to the dispatch, about one to two days, nothing else lands on
    main. Other PRs wait, Codex's and Bob's included.
-2. **What the go covers:** the merge, step 9's data run, the one dispatch, the download to E:
-   and the backup on F:, and the Zagreb time of the dispatch.
+2. **What the go covers:** the merge, step 9's data run, the one dispatch, the download to
+   `/mnt/backups/`, and the Zagreb time of the dispatch.
 3. **The result event's status:** pass `success`, fail `failed`, incomplete or no verdict
    `invalid`.
