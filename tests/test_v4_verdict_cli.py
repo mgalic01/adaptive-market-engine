@@ -1,7 +1,7 @@
 """V4 step 4b, task 4: the resumable verdict step (``scripts/v4_verdict.py``) and the run summary
 page (``v4.verdict.report``).
 
-Every test runs the real CLI over hand-built summaries (``v4_verdict_fixtures.full_set``: 48
+Every test runs the real CLI over hand-built summaries (``v4_verdict_fixtures.full_set``: 72
 cells of 50 hours, valid by task 2's checks, no replay), so the tests stay fast and read only
 synthetic data. The base set passes: ``v4_main`` rises without a drawdown and beats both
 comparison arms on every measure. Each test changes one thing: a stopped or refused cell, a
@@ -1585,3 +1585,23 @@ def test_an_unexpected_error_in_a_measure_at_a_judged_capital_still_stops_the_st
     monkeypatch.setattr(v4_verdict, "measure_against_hold", fails_at_1000)
     made = world(tmp_path)
     assert made.run() == 1
+
+
+def test_a_summary_at_100_changed_after_its_acceptance_still_stops_the_step(
+    tmp_path, monkeypatch, capsys
+):
+    """Bob's finding on PR #304: the catch for a failed measure at 100 USDT must not hide a changed
+    input, which is an integrity failure at any capital."""
+    made = world(tmp_path)
+    real = v4_verdict._run_step
+    target = "v4_main-100-1x"
+
+    def changing(root, step, window):
+        if step.section == "pairs" and step.first.cell_id == target:
+            edit_summary(Path(root) / step.first.folder, compounded_return="0.5")
+        return real(root, step, window)
+
+    monkeypatch.setattr(v4_verdict, "_run_step", changing)
+    assert made.run() == 1
+    assert made.written() == []
+    assert "changed" in capsys.readouterr().err

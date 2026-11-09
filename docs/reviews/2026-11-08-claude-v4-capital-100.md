@@ -36,6 +36,7 @@ At `66783a1` and `a58740c`, Bob's review found the design sound in `rule.decide`
 - **Fixed:** an unexpected error in a measure at 100 USDT would have stopped the verdict step, and so cost the run its only verdict. `v4_verdict._measured` now records it as that pair's reason, by error type only. The same error at a judged capital still stops the step, and both cases have tests.
 - **Fixed:** a stale count in the `v4-run.yml` header, and the `decide` and `v4_verdict` docstrings, which still read as if every cell counted.
 - **Fixed, a wording choice:** the page now says "A pass says nothing about 100 USDT."
+- **Fixed, at `608066c`'s review:** that catch was too broad. It also hid `_Changed`, the refusal of a summary that changed after it was accepted. A refusal now stops the step at any capital, with a test. The spec's "Reports" and precedence text and the v4-d25 entry now say "at a judged capital".
 - **Left to the timing run:** the analysis job's disk and the verdict job's time. No rehearsal scenario forces a stop at 100 USDT; the CLI tests above cover that path.
 - **Goes in the Kali docs PR:** `ubuntu-24.04` is a label, not an image version, and `setup-python` takes the current 3.12 patch, so the registered run's record names both.
 
@@ -45,6 +46,6 @@ No V4 result at 100 USDT exists. The diagnostic run covered 1,000 and 10,000 USD
 
 ## Checked and not checked
 
-- Run locally at this change: the `tests/test_v4_*` files that touch capitals, each in seconds, and `ruff`. The full suite and `mypy` run in CI, not on the owner's PC.
+- Run locally: every `tests/test_v4_*` file at the first version of this change, then the files each fix touched, each in seconds, and `ruff`. The full suite and `mypy` run in CI, not on the owner's PC.
 - Not yet checked: the engine at 100 USDT at real size. The rehearsal and timing run cover it on synthetic data after the merge, and the timing run measures the larger analysis job (about 7.4 GB for the 66 cells, estimated). Real market data first meets 100 USDT in the registered run.
 - The step-5 plan's counts and the run archive change in the Kali docs PR, which lands before B.

@@ -44,7 +44,8 @@ reason, is continued by running it again with the same arguments.
    their range (``expected.window``; v3's period) that are not common boundaries of their two
    arms, as the spec says hours missing from any source are "skipped for all arms alike and
    listed"; a pair records only how many (``skipped_hours``). An unexpected error in a pair at
-   100 USDT is recorded as that pair's reason and does not stop the step (v4-d30);
+   100 USDT is recorded as that pair's reason and does not stop the step (v4-d30), but a changed
+   input still does;
 6. ``rule.decide`` gives the verdict from the accepted cells only (refused and absent cells are
    ``missing``, never ``accepted``) and the expected file's cells, every one at a judged capital
    counting (owner decisions v4-d25 and v4-d30); ``report.verdict_document`` and
@@ -629,9 +630,13 @@ def _entries(
 def _measured(root: Path, step: _Step, window: tuple[int, int]) -> dict[str, object]:
     """One measure. A pair at a capital the rule does not judge (v4-d30) cannot stop the step: an
     unexpected error there is recorded as that pair's reason, by its type only (owner rule: public
-    logs), so the run keeps its one verdict. Everywhere else an unexpected error stops the step."""
+    logs), so the run keeps its one verdict. Everywhere else an unexpected error stops the step,
+    and so does a refusal (``_Stop``) at any capital: an input that changed after it was accepted
+    is an integrity failure, not a failed measure."""
     try:
         return _run_step(root, step, window)
+    except _Stop:
+        raise
     except Exception as exc:
         capital = step.first.capital
         if step.section != "pairs" or capital in CAPITALS_JUDGED:

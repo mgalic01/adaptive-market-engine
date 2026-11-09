@@ -40,18 +40,18 @@ are skipped for all arms alike.
   ``final_after_close > equity_2025`` for ``v4_main-<c>-1x``; a null ``equity_2025`` cannot be
   computed, so the verdict is incomplete.
 * **V10, precedence** (``decide``), in this order. First **fail** if an accepted ``v4_main``
-  summary, at either capital and either cost, is ``liquidated``, ``limit_unrestorable`` or
-  ``accounting_failure``. Otherwise **incomplete** if a cell of the run is missing, refused or
-  ``engine_error``, or, in an arm other than ``v4_main``, ``accounting_failure`` (a cell whose own
-  accounting failed is not usable evidence); if a re-run of a cell, another dispatch of the same
+  summary, at either judged capital and either cost, is ``liquidated``, ``limit_unrestorable`` or
+  ``accounting_failure``. Otherwise **incomplete** if a cell at a judged capital is missing, refused
+  or ``engine_error``, or, in an arm other than ``v4_main``, ``accounting_failure`` (a cell whose
+  own accounting failed is not usable evidence); if a re-run of a cell, another dispatch of the same
   registration or a re-run of one of this run's jobs was found; or if a condition cannot be
   computed. Otherwise **pass** if all 8 checks hold (4 conditions x 2 capitals), else **fail**.
   Changed by owner decision v4-d25 (2026-10-24): every cell of the run counts (``expected``, the
-  expected file's cells at 1,000 and 10,000 USDT: the 48 of a registered run and a rehearsal, the
-  44 of a timing run at those capitals, whose verdict is not a result), not only the 8 the
-  conditions read. A ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary,
-  a reported result, and does not by itself make the verdict incomplete (a ``hold_universe`` that
-  stopped still leaves condition 1 incomputable, V7).
+  expected file's cells at 1,000 and 10,000 USDT: the 48 of a registered run and a rehearsal, the 44
+  of a timing run at those capitals, whose verdict is not a result), not only the 8 the conditions
+  read. A ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary, a reported
+  result, and does not by itself make the verdict incomplete (a ``hold_universe`` that stopped still
+  leaves condition 1 incomputable, V7).
 * **v4-d30, the 100 USDT cells are reported only** (owner, 2026-11-08). The run's 24 cells at 100
   USDT are run and reported, but the precedence reads only the judged capitals: nothing about a
   100 USDT cell, ``v4_main``'s included, fails the verdict or makes it incomplete. Whatever would
