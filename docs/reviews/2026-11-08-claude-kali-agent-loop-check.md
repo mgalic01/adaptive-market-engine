@@ -30,6 +30,17 @@ Written by Claude Code (session c5f98f3b). The state below was found on `main` a
 
 The first clone's pack file failed `git verify-pack` (`inflate returned -3`), and its content no longer matched the checksum in its own trailer. The bytes read back the same each time, so the damage was stored on disk. The kernel logged no I/O error and the system disk's SMART check passed. A new clone verified clean, the pack was replaced from it, `git fsck --full` then passed, and every working file matched. The cause is unknown; the RAM is untested. The registered run does not depend on this PC, but the copies of its results do, so the plan now says to check each copy after writing it.
 
+## The runs repeated on the final code, 2026-11-09
+
+PR #304 (100 USDT, v4-d30, and the runner pin) merged at `5e3ed10`. On that commit, rehearsal 42581586528 and timing run 42583987899 both succeeded on the pinned `ubuntu-24.04` machines, and every timing number is inside its limit. Both are archived on the BACKUPS disk: each zip equals GitHub's digest and `sha256sum -c SHA256SUMS.txt` passed after writing. The 221 copied artifacts were then deleted from GitHub, under the owner's decision of 2026-11-08. The timing run's other 133 artifacts are synthetic, were not copied, and expire by themselves on 2026-11-10.
+
+A first artifact count of the rehearsal, 390 MB, read only GitHub's first page of 100. The real total is 578 MB. The status board was corrected, and the numbers in this PR come from the full listing.
+
+## Owner decisions of 2026-11-09
+
+- **v4-d31:** a V4 pass approves nothing at EUR 100. Moving forward at that size takes a separate owner decision, made on the reported 100 USDT numbers.
+- Codex Desktop and the local reviewer are not set up on Kali for now. The cloud reviewers carry the work.
+
 ## What this PR changes
 
-Documents only, before the new B: this note, the step-5 plan's amendment, the run archive's Kali section and the two repeated runs, and short corrections in `START_HERE`, `AGENT_HANDOFF` and `LOCAL_WORKER`. Nothing under `src/`, `scripts/`, `tests/`, `.github/` or `config/` changes, and neither does the V4 spec.
+Documents only, before the new B: this note, the step-5 plan's amendment and its counts and times, the run archive's Kali section and the new runs, v4-d31 in the V4 spec, and short corrections in `START_HERE`, `AGENT_HANDOFF` and `LOCAL_WORKER`. Nothing under `src/`, `scripts/`, `tests/`, `.github/` or `config/` changes. The spec is pinned at the new B, so v4-d31 has to land here.

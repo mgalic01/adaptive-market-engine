@@ -32,13 +32,33 @@ Where this section and the text below differ, this section governs.
 succeeded there and its printed pins match the table in step 1. Step 2 did not start, so nothing
 was registered. The owner's PC was then reinstalled and now runs Kali Linux.
 
-**Why B moves.** CVE-2026-114613 made `pip-audit` fail on every head. PR #303 fixed it
-(`msgpack` 1.2.3, main `504a320`), and `requirements-dev.lock` is in the code inventory. Under
-step 0, item 2, the rehearsal and the timing run ran again on the fixed main (`docs/RUN_ARCHIVE.md`
-holds both). No file under `src/` or `scripts/` changed.
+**Why B moves.** Two merges changed what the code pin will hold:
+- CVE-2026-114613 made `pip-audit` fail on every head. PR #303 fixed it (`msgpack` 1.2.3, main
+  `504a320`), and `requirements-dev.lock` is in the code inventory.
+- The owner added 100 USDT to the run (v4-d30), and the run's jobs were pinned to `ubuntu-24.04`.
+  PR #304 did both (main `5e3ed10`).
+
+Under step 0, item 2, the rehearsal and the timing run ran again on main `5e3ed10`
+(`docs/RUN_ARCHIVE.md` holds both).
 
 **The new B** is the merge commit of the PR that adds this section. Run 40122823348 is superseded:
 step 1 runs again from the new B, and the freeze of step 0, item 3 starts there.
+
+**72 cells (owner, v4-d30).** The run has 12 versions x 3 capitals x 2 cost levels. The 48 cells at
+1,000 and 10,000 USDT are judged; the 24 at 100 USDT are reported only and cannot change the verdict.
+
+**A pass and EUR 100 (owner, v4-d31, 2026-11-09).** A V4 pass approves nothing at EUR 100. Moving
+forward at that size takes a separate owner decision, made on the reported 100 USDT numbers. This
+changes neither the pass rule nor the verdict.
+
+**A red cell at 100 USDT.** A failed cell job at 100 USDT makes the run look red, although it cannot
+change the verdict. Read the verdict, not the run's colour, and do not re-run the cell: a re-run of
+any cell makes the verdict incomplete.
+
+**Record the machine.** The run's jobs use the label `ubuntu-24.04`, and GitHub updates the image
+behind a label. The rehearsal and the timing run used image `ubuntu24/20261101.360` and Python
+3.12.16. The verdict record states the image version and the Python patch of the registered run, from
+its job logs. CI still runs on `ubuntu-latest`.
 
 **Paths on Kali.** Read every `E:` and `F:` below as follows:
 
@@ -60,7 +80,11 @@ so anyone with read access can download the run's artifacts between upload and t
 
 **Tools.** `gh` is not installed on Kali. Each `gh` command below means the same call through
 GitHub's REST API, with `GITHUB_TOKEN` from the environment. The download in step 12b uses the
-`fetch_v4_cells.py` in the newest rehearsal's archive, which calls that API instead of `gh`.
+`fetch_v4_cells.py` in the newest rehearsal's archive (`/mnt/backups/v4-run-42581586528/scripts/`),
+which calls that API instead of `gh`.
+
+**The BACKUPS disk after a reboot.** It is not mounted by itself. Mount it read-write at the planned
+path, by label, before a download: `mount -t ntfs-3g -L BACKUPS /mnt/backups`.
 
 **The PC fallback (v4-d28, step 12a) needs Python 3.12.** The project's `.venv` on Kali is Python
 3.14, while CI and the run use 3.12. A fallback verdict uses a 3.12 environment built from
@@ -76,7 +100,8 @@ and do not skip it because a digest passed during the download.
 - **What step 5 does.** It writes down, before the run, exactly what the one historical test of
   V4.0 is:
   - the program version and the data, by fingerprint;
-  - the 48 cells: 12 versions x 2 capitals x 2 cost levels;
+  - the 72 cells: 12 versions x 3 capitals x 2 cost levels, of which the 48 at 1,000 and 10,000
+    are judged;
   - the pass rule.
 - **The run.** It starts the test once on GitHub, never cancels it and never repeats it. One
   exception: the final verdict step alone may be run again once, if GitHub's machines (not the
@@ -139,6 +164,10 @@ main:  ... B ---------------------------------------------------- M  (merge comm
    **Met on 2026-10-24.** The run succeeded in 30 minutes (15:47:48 to 16:17:55 UTC), and its
    47 `v4-timing-*` artifacts matched GitHub's digests. The numbers are under "Expected run
    length" below: every one is far inside its limit, so no fix is needed.
+
+   **Met again on 2026-11-09**, for the code the pin will hold: timing run 42583987899 on main
+   `5e3ed10`, archived at `/mnt/backups/v4-run-42583987899/`, with its 69 `v4-timing-*` artifacts
+   matching GitHub's digests. Its numbers are in the same section, and every one is inside its limit.
 2. **Any fix is merged and re-tested.** A fix it needs is merged under the full review bar. Then
    the rehearsal and the timing run are run again on the fixed main: a timing run must time the
    code the code pin will hold (header of `v4-run.yml`).
@@ -156,7 +185,9 @@ main:  ... B ---------------------------------------------------- M  (merge comm
    - The same PR adds the owner's F: backup decision of 2026-10-24 to `docs/RUN_ARCHIVE.md`'s
      "V4 run" section. That section does not hold it yet.
 5. **Earlier artifacts are handled.** The rehearsal 40106774107 is downloaded
-   (`E:\v4-run-40106774107\`, verified). The deletion of its GitHub copies is offered.
+   (`E:\v4-run-40106774107\`, verified). The deletion of its GitHub copies is offered. The rehearsal
+   42581586528 and the timing run 42583987899 are archived and verified too, and their copied
+   artifacts are deleted from GitHub.
 
 **Stops if:** any limit is missed. Then the fix comes first, as a normal PR, and step 5 waits.
 
@@ -261,15 +292,17 @@ The completion is
     run used data to 2024-12; the rehearsal and the timing run used synthetic data.
 - **`seeds`:** `[]`. No V4 code draws a random number.
 - **`budget`:**
-  - exactly 48 cells (12 arms x 2 capitals x 2 cost levels), each run once in one registered
-    dispatch of `v4-run.yml`, plus one V3 pack build and one V3 picks job;
+  - exactly 72 cells (12 arms x 3 capitals x 2 cost levels), each run once in one registered
+    dispatch of `v4-run.yml`, plus one V3 pack build and one V3 picks job. The 48 at 1,000 and
+    10,000 USDT are judged, and the 24 at 100 USDT are reported only (v4-d30);
   - no parameter search, and no extra arm, capital, cost or window;
   - only transport retries are allowed: checksummed archive fetches and GitHub API reads;
   - a single verdict-only re-run is allowed after an infrastructure failure.
 - **`stopping`:**
   - every cell runs once, from one dispatch, never cancelled, and every outcome is kept;
-  - a missing, refused or `engine_error` cell, or `accounting_failure` outside `v4_main`, makes
-    the verdict incomplete (v4-d25). So does a re-run or a second dispatch;
+  - at 1,000 or 10,000 USDT, a missing, refused or `engine_error` cell, or `accounting_failure`
+    outside `v4_main`, makes the verdict incomplete (v4-d25, v4-d30). So does a re-run or a second
+    dispatch, at any capital;
   - no early stop and no tuning on results: a fail or an incomplete verdict needs a new bounded
     hypothesis.
 - **`selection`:** none. `scripts/v4_verdict.py` judges `v4_main` alone, from the cells'
@@ -291,11 +324,11 @@ The completion is
 > 4. its equity at the window's end is greater than at 2025-01-01 00:00 UTC (normal costs).
 >
 > Returns and drawdowns are measured on the common hourly boundaries. The precedence:
-> - **fail** if any `v4_main` cell is `liquidated`, `limit_unrestorable` or
->   `accounting_failure`;
-> - otherwise **incomplete** if any of the 48 cells is missing, refused or `engine_error`
->   (or `accounting_failure` outside `v4_main`), if a re-run or a second dispatch is found, or
->   if a condition cannot be computed;
+> - **fail** if any `v4_main` cell at 1,000 or 10,000 USDT is `liquidated`,
+>   `limit_unrestorable` or `accounting_failure`;
+> - otherwise **incomplete** if any of the 48 cells at 1,000 and 10,000 USDT is missing, refused
+>   or `engine_error` (or `accounting_failure` outside `v4_main`), if a re-run or a second dispatch
+>   is found, or if a condition cannot be computed;
 > - otherwise **pass** only if all 8 checks hold.
 
 **The candidates:**
@@ -376,7 +409,7 @@ to a normal PR before B, and this plan restarts at step 0.
   - `schema` `v4-registration-1`, and `code_pin` P;
   - `run_manifest_sha256`, the manifest file's SHA-256;
   - `spec`, its `path` and `sha256` as the event's;
-  - `cells`, the 48 ids of `arms.all_cells()`, in order;
+  - `cells`, the 72 ids of `arms.all_cells()`, in order;
   - `trial_id` `v4-0-registered-1`.
 
 No V4 command writes the real files: `scripts/v4_registration.py` only reads them, and builds
@@ -656,13 +689,14 @@ own after a day. Logs are not artifacts and stay.
 The run counts as the registration's one execution as soon as its plan job passes, or if it is
 cancelled. Then these outcomes end it without a pass, or with an incomplete verdict. None can give
 a false pass.
-- **The v3-pack job fails.** It fetches V3's archives from Binance. The picks and the four v3
-  cells are skipped, and every v3 cell counts as missing: incomplete, or fail if a `v4_main`
+- **The v3-pack job fails.** It fetches V3's archives from Binance. The picks and the six v3
+  cells are skipped, and each of the four judged v3 cells counts as missing: incomplete, or fail if a `v4_main`
   cell stopped. The verdict is still written.
 - **The picks job fails, or runs past its 300 minutes.** It took 210.7 minutes in run
   40040422092, 70% of its limit. Same result as above.
-- **A cell runs past its job's 60 minutes, or out of memory.** That cell is missing:
-  incomplete. The other cells still run, since the matrix does not fail fast.
+- **A cell runs past its job's 60 minutes, or out of memory.** That cell is missing: incomplete
+  at 1,000 or 10,000 USDT, reported only at 100 USDT. The other cells still run, since the matrix
+  does not fail fast.
 - **The verdict job fails** (memory, disk, a crash, its 180 minutes). There is no verdict until
   the one re-run (step 12a). If that fails too, the verdict is computed on the owner's PC with
   the run's own code and recorded as a deviation (owner decision v4-d28, made before any result,
@@ -687,7 +721,28 @@ a false pass.
   the four v3 cells 8.4 to 14.6 min;
 - **data runs**: 1 h 13 min for the full one (39403004530), about 1 h for the pre-2025 ones.
 
-**From the timing run 40108602725** (main `19e3190`, real size on synthetic data, no v3 cell),
+**From the rehearsal 42581586528** (main `5e3ed10`, synthetic, four coins, 72 cells), 2026-11-09:
+about 21 minutes end to end. The plan job took 49 s, the scenarios 6.9 min, the analysis 4.5 min and
+the verdict 11.7 min.
+
+**From the timing run 42583987899** (main `5e3ed10`, real size on synthetic data, no v3 cell),
+2026-11-09, about 32 minutes end to end. These are the numbers for the code the pin will hold:
+- **plan job:** 2 min 41 s;
+- **the 66 cells:** each 53 to 345 seconds (median 220 s; the longest `v4_vol25-100-1x`), and each
+  cell job 76 to 440 seconds, against its 60 minutes. All 66 ran in 14.5 minutes, at most 20 at a
+  time;
+- **cell memory:** 485 to 651 MB at peak;
+- **cell output:** `records.jsonl` 35 to 189 MB each, 8.12 GB in all before compression (2.91 GB of
+  it at 100 USDT); the `v4-cell-*` artifacts 1.8 GB zipped in all, the `v4-summary-*` 61 MB;
+- **the expected step:** 73 seconds, 459 MB at peak;
+- **the verdict step:** 57 seconds, 93 MB at peak. Doubled for the v3 cells and the registered mode's
+  marks (ruling W2), about 2 minutes. The verdict job took 2 min 34 s, against its 180 minutes (55 of
+  them the dispatch check's budget);
+- **the analysis:** 819 seconds (13.7 minutes), 767 MB at peak; its job 14 min 37 s, against 120.
+  It unpacks the records on one runner: 8.12 GB here, and about 60 MB more for the six v3 cells
+  (each about 10 MB in the `v4-v3` run), against the runner's 14 GB.
+
+**From the earlier timing run 40108602725** (main `19e3190`, real size on synthetic data, no v3 cell),
 2026-10-24, 30 minutes end to end:
 - **plan job:** 3 min 45 s;
 - **the 44 cells:** each 51 to 315 seconds (median 223 s; the longest `v4_slower-10000-2x`), and
@@ -705,7 +760,7 @@ a false pass.
 **Estimate:**
 - the run itself takes about 4 to 4.5 hours, set by V3's picks: plan, pack, about 3.5 hours of
   picks, the v3 cells, then the verdict;
-- the 44 other cells run beside it, at most 20 at a time, and should finish in about 15 minutes;
+- the 66 other cells run beside it, at most 20 at a time, and should finish in about 15 minutes;
 - while 20 cells run, GitHub's limit of 20 concurrent jobs may hold the v3-pack job back by up to
   one cell's time;
 - the registered data run (about 75 minutes) comes before, and the download after.

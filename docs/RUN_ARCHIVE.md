@@ -154,7 +154,8 @@ packs, in each pack's `manifest`, so in these two copies. No committed file hold
 
 ## V4 run (`v4-run.yml`): where its artifacts go
 
-Two `v4-run`s have run, both on main `19e3190` after step 4b's merge (their sections are below).
+Five `v4-run`s have run: two on main `19e3190` after step 4b's merge, a rehearsal on `504a320`
+(superseded and not archived) and two on main `5e3ed10` (the archived ones have sections below).
 The registered run comes in step 5, on the owner's go
 ([the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md)). Give each run its
 own section here once it is archived, as above.
@@ -181,7 +182,8 @@ download the same day.
   and the analysis' times, and the status). Its other artifacts are synthetic results that only
   its own verdict and analysis jobs read; they expire after their day, and their deletion is
   offered too.
-  `fetch_v4_cells.py` downloads every artifact of a run, so a timing download needs a name filter.
+  `fetch_v4_cells.py` downloads every artifact of a run unless it gets a name prefix as its third
+  argument, so a timing download passes `v4-timing-`.
 - **Registered:** every artifact. Its `v4-data` holds the registered packs, with market data from
   2025-01 onward, so the reserved-window note of the V4 data run above applies to it. Its cells
   and verdict are the run's results, which never leave the owner's PC (v4-d10).
@@ -195,15 +197,15 @@ workflow's header lists them too.
 | `v4-v3-pack` | registered, rehearsal | `v3-input.pack.json.gz` |
 | `v4-rehearsal-world` | rehearsal | `world.tar` (the world's git repository, under `repo/`) and `rehearsal.json` |
 | `v4-v3-picks-attempt-<n>` | registered, rehearsal | `v3_picks.json` |
-| `v4-cell-<cell>-attempt-<n>` | all (44 cells) | `records.jsonl`, `receipt.json`, `summary.json`, `report.html`, `timing.json` |
-| `v4-v3-cell-<cell>-attempt-<n>` | registered, rehearsal (4 cells) | the same five files, for a `v3_as_built` cell |
-| `v4-summary-<cell>-attempt-<n>` | all (48 cells; 44 in timing) | `summary.json`, `receipt.json` |
+| `v4-cell-<cell>-attempt-<n>` | all (66 cells; 44 before v4-d30) | `records.jsonl`, `receipt.json`, `summary.json`, `report.html`, `timing.json` |
+| `v4-v3-cell-<cell>-attempt-<n>` | registered, rehearsal (6 cells; 4 before v4-d30) | the same five files, for a `v3_as_built` cell |
+| `v4-summary-<cell>-attempt-<n>` | all (72 cells; 66 in timing; 48 and 44 before v4-d30) | `summary.json`, `receipt.json` |
 | `v4-forced-attempt-<n>` | rehearsal | `<kind>\<cell>\summary.json` and `receipt.json`, for the six forced cells |
 | `v4-verdict-attempt-<n>` | registered | `verdict.json`, `verdict.md`, `verdict-timing.json`, `expected-timing.json` |
 | `v4-rehearsal-verdict-attempt-<n>` | rehearsal | `verdict\` (the same four files), `scenario-verdicts\<scenario>\` (`verdict.json`, `verdict.md`) and `check.txt` |
 | `v4-analysis-attempt-<n>`, `v4-rehearsal-analysis-attempt-<n>` | registered, rehearsal | `diagnosis.json`, `diagnosis.md`, `diagnose-timing.json` |
 | `v4-status-attempt-<n>`, `v4-rehearsal-status-attempt-<n>` | registered, rehearsal | `status.json` |
-| `v4-timing-cell-<cell>-attempt-<n>` | timing (44 cells) | `timing.json` |
+| `v4-timing-cell-<cell>-attempt-<n>` | timing (66 cells; 44 before v4-d30) | `timing.json` |
 | `v4-timing-verdict-attempt-<n>` | timing | `verdict-timing.json` and `expected-timing.json` (each once written) |
 | `v4-timing-analysis-attempt-<n>`, `v4-timing-status-attempt-<n>` | timing | `diagnose-timing.json`, `status.json` |
 
@@ -211,6 +213,33 @@ workflow's header lists them too.
 the root. In `v4-rehearsal-verdict-attempt-<n>` it is under `verdict\`, because that artifact
 uploads three paths and GitHub keeps their common folder. A script that reads both must expect
 both.
+
+## V4 rehearsal 42581586528 (synthetic)
+
+`mode=rehearsal` on main `5e3ed10`, 2026-11-09, 07:47:56 to 08:08:38 UTC. Every job it runs
+succeeded, all 72 cells ran, and `check.txt` gave all 11 scenarios "as expected". It is synthetic: it
+holds no market data and no result of the experiment.
+
+`/mnt/backups/v4-run-42581586528/`: every one of its 152 artifacts, each zip equal to GitHub's digest,
+in the layout above (about 3.0 GB; `SHA256SUMS.txt` lists 712 files and passed after writing). Its
+GitHub copies were deleted on 2026-11-09, once the copy was verified. Its `scripts/` holds the
+REST-API `fetch_v4_cells.py`.
+
+## V4 timing run 42583987899 (synthetic, real size)
+
+`mode=timing` on main `5e3ed10`, 2026-11-09, 08:10:08 to 08:42:32 UTC. Every job it runs
+succeeded; the v3 jobs and the scenarios are skipped in this mode. Its times are in
+[the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md), "Expected run length".
+
+`/mnt/backups/v4-run-42583987899/`: only its 69 `v4-timing-*` artifacts, as the mode list above says,
+each zip equal to GitHub's digest (`SHA256SUMS.txt` lists 141 files and passed after writing). Those 69
+were deleted from GitHub on 2026-11-09. Its other 133 artifacts are synthetic results, not copied,
+left on GitHub to expire on 2026-11-10.
+
+## V4 rehearsal 42530260483 (synthetic, superseded)
+
+`mode=rehearsal` on main `504a320`, 2026-11-08. It succeeded, but PR #304 then changed the code, so
+42581586528 replaces it. It was not archived and its artifacts expire by themselves.
 
 ## V4 rehearsal 40106774107 (synthetic)
 
