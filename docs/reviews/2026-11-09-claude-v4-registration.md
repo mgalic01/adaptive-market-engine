@@ -23,14 +23,37 @@ pinning data run's log, only pins and counts were read.
   approves nothing at EUR 100 (v4-d31).
 - **What a pass means.** Promising, not proven: only the period from 2025 on was unseen when V4 was
   designed.
-- **What happens next.** The reviewers checked this registration, and the owner gave the go on 2026-11-09. The owner's
-  go covers the merge, the second data run, one dispatch and the download, from 2026-11-10 in the morning.
+- **What happens next.** The reviewers checked this registration, and the owner gave the go on
+  2026-11-09. It covers the merge, the second data run, one dispatch and the download, from the
+  morning of 2026-11-10.
 - **Real money.** None. This is a historical simulation with no exchange account and no keys.
 
 ## The owner's go (dated record)
 
-Not given yet. Step 7 of the plan records it here, in a docs-only commit, with the time and the
-owner's exact words.
+Given on 2026-11-09 at about 19:37 UTC (20:37 in Zagreb), in a dialog in chat. Claude asked
+after Bob's `NO ISSUES`, claude[bot]'s `APPROVE` and Codex's clean review at `cf1e107`, while CI
+was still running there. Claude stated S, P and the data pins, the expected run length, what the go
+covers, and the outcomes that use up the run. The owner chose these four answers, each the
+recommended option. The labels are copied exactly:
+1. **"Go (Recommended)"**, for the official V4.0 run of registration `2309be5a`. It covers the merge
+   of this PR with a merge commit, step 9's registered data run, one registered dispatch, and the
+   download of every artifact to `/mnt/backups/` and its check (steps 8 to 12). Claude merges only
+   if everything is green at the final head.
+2. **"Tomorrow morning (Recommended)"**: the merge at about 08:00 in Zagreb on 2026-11-10, and the
+   dispatch at about 09:30, after step 9's data run. Tonight stays free for the owner's MemTest86+.
+3. **"Allow it (Recommended)"**: if the verdict job writes an incomplete verdict only because its
+   dispatch check could not read GitHub, that counts as an infrastructure failure under step 12a.
+   The verdict job may then take the run's one re-run attempt, on the owner's word at the time and
+   once only. This widens step 12a, which as written covers only a job that failed. It was decided
+   before any result exists. `budget` in the event already allows the one re-run after an
+   infrastructure failure, and the code accepts it.
+4. **"Accept both (Recommended)"**: main stays frozen from B until the dispatch, so other PRs wait.
+   The result event's `status` is `success` for a pass, `failed` for a fail, and `invalid` for an
+   incomplete verdict or none.
+
+Conditions: everything green at the final head, and operating rule 8 before the merge. If the merge
+cannot happen on 2026-11-10, or step 9's data run does not match, or a check is red, the dispatch
+waits for the owner's word.
 
 ## Owner decisions of 2026-11-09
 
