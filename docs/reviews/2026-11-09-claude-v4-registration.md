@@ -71,7 +71,36 @@ The data run's counts, which the files do not pin but the plan's step 1 checks: 
 
 ## The checks, run on this branch
 
-The docs-only commit after this one records them, since the gate reads the commit that adds this file.
+All at C, `be2794195d5f81d3264d60950973fb31d9fddc6a`, on a clean worktree, on the PC (Python 3.14), on 2026-11-09 from about 13:30 UTC. Only
+this section and the one under "Limits of this review" changed after them, in a docs-only commit:
+
+1. **The register.** `trial_register.py validate`, and the same with `--base-ref` B: `trial register:
+   valid`.
+2. **The trial.** `trial_register.py check-ready --trial-id v4-0-registered-1 --revision` C: exit 0.
+3. **The job gate.** `v4_registration.py gate --mode registered` with S: accepted, naming the head, P,
+   S, the manifest, the trial and 72 cells. Exit 0.
+4. **The integration, rehearsed.** In a scratch clone, C was merged into B with `git merge --no-ff`.
+   The same gate accepted that merge commit, and all 10 tests of
+   `tests/test_v4_registration_committed.py` passed there, not skipped.
+5. **The changes.** `git diff --name-only` P C lists the two JSON files, this review and the register.
+6. **The pins.** `sha256sum` gives S and the manifest's pin above, the manifest's data pins equal the
+   pinning data run's log field by field, and `config/v4_rehearsal.json` is absent at B, P and C and
+   in the worktree.
+7. **No earlier dispatch.** GitHub lists 5 `v4-run` runs, none titled `v4-run registered S`, none
+   active.
+8. **The docs and the format.** `check_reports.py` gives 0 problems, and `ruff format --check .` and
+   `ruff check .` are clean.
+
+**The test fails when it should.** On the scratch merge:
+- a later commit changing code under `src/`: the test still passes, since it reads C and not HEAD, and
+  the gate refuses that head;
+- a later commit changing the trial id in `config/v4_registration.json`: 4 of the tests fail;
+- a shallow clone (`--depth 2`): the test fails with a message naming the cause.
+
+At P itself, the test skips. `git diff --quiet` B P over `src`, `scripts`, `pyproject.toml`,
+`requirements-dev.lock` and `requirements.txt` finds no change.
+
+**Not run on the PC:** the full test suite, `mypy`, `bandit` and `pip-audit`. CI runs them on the PR.
 
 ## Evidence
 
@@ -141,8 +170,10 @@ The code does not enforce these, so the people who merge and dispatch must follo
   pins. If Binance changes an archive in between, the plan job refuses, and a new registration needs
   a new trial id, since the completion would then be on main.
 - **Real 2025+ data is new to the cells.** The rehearsal and the timing run used synthetic data, so
-  the cells' times and memory on the real window are estimates. The six v3 cells, `v4_btc200_shorts`,
-  `v4_confirm3` and the 100 USDT cells have not run on real data before this run.
+  the cells' times and memory on the real window are estimates. `v4_btc200_shorts`, `v4_confirm3`,
+  `hold_btc_trend` and every 100 USDT cell, V3's included, have not run on real data before this run.
+  The other arms ran on real data only to 2024-12, in the diagnostic run, and V3's four judged cells
+  ran on V3's own window in run 40040422092.
 - **The image can move.** The jobs pin the label `ubuntu-24.04`, and GitHub updates the image behind
   it. The verdict record states the image and Python patch of the registered run.
 - **The checks on the PC use Python 3.14,** while CI and the run use 3.12. The full test suite does not
