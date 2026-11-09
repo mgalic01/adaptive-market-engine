@@ -585,8 +585,8 @@ def _headline(view: _View) -> str:
         )
     if outcome == "pass":
         return (
-            f"{MAIN_ARM} met all {len(checks)} checks, the four conditions at both judged capitals, so "
-            "under the registered rule V4.0 passes. That means promising, not proven."
+            f"{MAIN_ARM} met all {len(checks)} checks, the four conditions at both judged "
+            "capitals, so under the registered rule V4.0 passes. That means promising, not proven."
         )
     failing = "V4.0" if synthetic is None else f"the {synthetic}'s verdict"
     if outcome == "fail" and stopped:
