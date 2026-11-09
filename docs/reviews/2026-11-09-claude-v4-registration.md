@@ -53,8 +53,9 @@ in chat, at about 13:45 UTC (14:45 in Zagreb):
 - **The arms.** `v4_main` is the only judged arm. `hold_universe` and `v3_as_built` are the comparisons
   of conditions 1 and 2. The others are reported, and their results decide nothing: `v4_long_only`,
   `v4_vol25`, `v4_vol60`, `v4_faster`, `v4_slower`, `v4_btc200_shorts`, `v4_confirm3`, `hold_btc` and
-  `hold_btc_trend`. One of their cells at 1,000 or 10,000 USDT that is missing or refused, or ends in
-  `engine_error` or `accounting_failure`, still makes the verdict incomplete (v4-d25).
+  `hold_btc_trend`. A cell of theirs or of the two comparisons at 1,000 or 10,000 USDT that is missing
+  or refused, or ends in `engine_error` or `accounting_failure`, still makes the verdict incomplete
+  (v4-d25).
 - **The commits.** Three on main at B, integrated with a merge commit:
 
 | Commit | SHA | Changes |
@@ -123,9 +124,10 @@ first registration, and `seeds` is empty.
 and `RERUN_JOBS` also allow that one re-run attempt to be the analysis job, if it alone failed. That
 is the same one attempt, the analysis decides nothing, and those rules govern.
 
-`selection` says the other 11 arms decide nothing. That is about their results. `stopping` and v4-d25
-add that a missing, refused, `engine_error` or `accounting_failure` cell of theirs at 1,000 or 10,000
-USDT makes the verdict incomplete, and `stopping` and v4-d25 govern.
+`selection` says the other 11 arms decide nothing. That means no arm but `v4_main` is judged:
+`hold_universe` and `v3_as_built` still supply the comparisons of conditions 1 and 2. `stopping` and
+v4-d25 add that a missing, refused, `engine_error` or `accounting_failure` cell of any of the 11 at
+1,000 or 10,000 USDT makes the verdict incomplete, and `stopping` and v4-d25 govern.
 
 ## Every pin
 
@@ -278,22 +280,34 @@ The code does not enforce these, so the people who merge and dispatch must follo
   it. The verdict record states the image and Python patch of the registered run.
 - **Paths the run has never taken on GitHub.** The rehearsal gates a synthetic world, and the timing
   run has no v3 cell, so these run for the first time in the registered run. No defect was found by
-  reading them:
+  reading them, and nothing has run them for real:
   - **The plan job:** the gate on the repository itself, the dispatch check's refusing mode, the data
-    run's check, the data guard with the manifest, and the download of the data from another run. A
-    bug here stops the plan job, which does not count, so it costs no run. `v4-cells.yml` has already
-    used the same pinned download action from another run.
+    run's check, the data guard with the manifest, and the download of the data from another run.
+    `v4-cells.yml` has already used the same pinned download action from another run. A bug here stops
+    the plan job, which does not count, so it uses up no run. It still ends this trial: the code is
+    pinned, so a fix needs new code, and after the merge that needs a new trial id (operating rule 3).
+  - **The cell and v3-cell jobs:** each runs the same gate and data guard as the plan job, in a job of
+    its own. A failure specific to one of these jobs comes after the plan job has passed, so it does use
+    up the run.
+  - **The v3-pack job and the registered picks step.** They have run only as their `v4-v3.yml`
+    equivalents, in run 40040422092. A failure here also comes after the plan job has passed.
   - **The verdict job:** the dispatch check with `--judge-all --out reasons.json`,
     `v4_run_plan.py expected --mode registered`, and `v4_verdict.py --dispatch-reasons`. The rehearsal's
     and the timing run's verdict jobs take none of these. The tests cover them on small inputs
     (`tests/test_v4_registration.py`, `tests/test_v4_run_plan.py`, `tests/test_v4_verdict_cli.py`), and
     the rehearsal's plan job read GitHub's real records in the check's report-only mode. This is the
-    exposed part: a bug here shows only after the cells have run.
-    It gives an incomplete verdict or none, not a pass. The one re-run would repeat it, v4-d28's
-    fallback on the owner's PC uses the same code, and it is not an infrastructure failure under step
-    12a, so the owner would decide what follows.
-  - **The analysis job:** `v4_diagnose.py` with `--manifest`, covered by `tests/test_v4_diagnose.py`. A
+    most exposed part, since a bug here shows only after the cells have run. A crash or a refusal gives
+    an incomplete verdict or none, not a pass. The one re-run would repeat it, v4-d28's fallback on the
+    owner's PC uses the same code, and it is not an infrastructure failure under step 12a, so the owner
+    would decide what follows.
+  - **The analysis job:** `v4_diagnose.py` with `--manifest`. `tests/test_v4_diagnose.py` covers it with
+    an explicit `--repo`, while the workflow leaves that option at its default, the current folder. A
     failure here leaves the verdict unaffected.
+- **A silent logic bug is not ruled out.** "Cannot give a false pass" holds for the outcomes listed
+  above: each of them fails or stops a step. A bug that finds nothing would not fail closed: a dispatch
+  judgement that misses a re-run, a dropped reason, or a wrong expected file. Only the tests, the
+  reviews by reading, and the plan job's earlier refusal and the verdict's own check of cell attempts
+  stand against that.
 - **V3's picks are not pinned in advance.** They come from the run's own job, and nothing compares them
   with run 40040422092.
 - **The checks on the PC use Python 3.14,** while CI and the run use 3.12. The full test suite does not
