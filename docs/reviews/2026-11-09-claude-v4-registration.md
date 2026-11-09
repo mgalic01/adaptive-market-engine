@@ -283,11 +283,12 @@ The code does not enforce these, so the people who merge and dispatch must follo
     run's check, the data guard with the manifest, and the download of the data from another run. A
     bug here stops the plan job, which does not count, so it costs no run. `v4-cells.yml` has already
     used the same pinned download action from another run.
-  - **The verdict job:** the dispatch check with `--judge-all --out reasons.json`, and `v4_verdict.py`
-    with `--dispatch-reasons` and the manifest's pins. The rehearsal's and the timing run's verdicts
-    pass neither option. The tests cover both on small inputs (`tests/test_v4_registration.py`,
-    `tests/test_v4_verdict_cli.py`), and the rehearsal's plan job read GitHub's real records in the
-    check's report-only mode. This is the exposed part: a bug here shows only after the cells have run.
+  - **The verdict job:** the dispatch check with `--judge-all --out reasons.json`,
+    `v4_run_plan.py expected --mode registered`, and `v4_verdict.py --dispatch-reasons`. The rehearsal's
+    and the timing run's verdict jobs take none of these. The tests cover them on small inputs
+    (`tests/test_v4_registration.py`, `tests/test_v4_run_plan.py`, `tests/test_v4_verdict_cli.py`), and
+    the rehearsal's plan job read GitHub's real records in the check's report-only mode. This is the
+    exposed part: a bug here shows only after the cells have run.
     It gives an incomplete verdict or none, not a pass. The one re-run would repeat it, v4-d28's
     fallback on the owner's PC uses the same code, and it is not an infrastructure failure under step
     12a, so the owner would decide what follows.
