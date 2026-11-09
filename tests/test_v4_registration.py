@@ -214,7 +214,7 @@ def test_read_registration_and_manifest_exact_keys():
         cells=tuple(cell.cell_id for cell in all_cells()),
         trial_id="v4-0-registered-1",
     )
-    assert len(read.cells) == 48
+    assert len(read.cells) == 72
     for key in document:
         missing = {name: value for name, value in document.items() if name != key}
         with pytest.raises(ValueError, match="keys"):

@@ -1,4 +1,4 @@
-"""V4 engine task 1: the 12 arms, the 48 cells, the cost profile and the exact number helpers."""
+"""V4 engine task 1: the 12 arms, the 72 cells, the cost profile and the exact number helpers."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _tuple(lookbacks: Lookbacks | None) -> tuple[int, ...]:
 
 def test_arms_are_the_twelve_of_the_run_in_order() -> None:
     assert list(ARMS) == list(ARM_NAMES)
-    assert len(ARMS) == 12 and len(all_cells()) == 48
+    assert len(ARMS) == 12 and len(all_cells()) == 72
     assert all(spec.name == name for name, spec in ARMS.items())
     assert [spec.family for spec in ARMS.values()] == ["v4"] * 8 + ["hold"] * 3 + ["v3"]
 
@@ -172,19 +172,19 @@ def test_arm_tables_are_read_only_and_their_records_frozen() -> None:
     assert isinstance(ARMS["v4_main"], ArmSpec)
 
 
-def test_cells_are_two_capitals_by_two_cost_levels() -> None:
+def test_cells_are_three_capitals_by_two_cost_levels() -> None:
     cells = all_cells()
     expected = [
         f"{arm}-{capital}-{multiple}x"
         for arm in ARM_NAMES
-        for capital in (1000, 10000)
+        for capital in (100, 1000, 10000)
         for multiple in (1, 2)
     ]
-    assert len(expected) == 48
+    assert len(expected) == 72
     assert [cell.cell_id for cell in cells] == expected
-    assert len(set(expected)) == 48
-    assert cells[0].cell_id == "v4_main-1000-1x"
-    assert cells[3].cell_id == "v4_main-10000-2x"
+    assert len(set(expected)) == 72
+    assert cells[0].cell_id == "v4_main-100-1x"
+    assert cells[5].cell_id == "v4_main-10000-2x"
     assert cells[-1].cell_id == "v3_as_built-10000-2x"
     assert CellSpec("v4_main", 10000, 1).cell_id == "v4_main-10000-1x"
     assert CellSpec("hold_universe", 1000, 2) in cells

@@ -62,10 +62,14 @@ SECRET = D("8675309.4271")  # an equity that must never show in a note or a reas
 # Condition 1's window (a required keyword): the hours 0 to 3, those of most tests' marks. The
 # tests of its skipped hours give their own.
 WINDOW = (0, 3 * HOUR_MS)
-# The cells of a run (owner decision v4-d25: every one counts): the 48 of a registered run and a
-# rehearsal, and the 44 of a timing run (no v3 cell).
-RUN = expected_cells("registered")
-TIMING = expected_cells("timing")
+# The cells of a run: the 72 of a registered run and a rehearsal, and the 66 of a timing run (no v3
+# cell). Every cell at a judged capital counts (v4-d25); the 24 at 100 USDT are reported only
+# (v4-d30), so ALL holds them and RUN, what the precedence reads, does not.
+ALL = expected_cells("registered")
+ALL_TIMING = expected_cells("timing")
+AT_100 = tuple(cell for cell in ALL if "-100-" in cell)
+RUN = tuple(cell for cell in ALL if cell not in AT_100)
+TIMING = tuple(cell for cell in ALL_TIMING if cell not in AT_100)
 # The 8 cells the four conditions read.
 PASS_RULE_CELLS = (
     "v4_main-1000-1x",
@@ -143,8 +147,8 @@ def all_checks(value: bool | None = True) -> list[Check]:
     return [holds(n, capital, value) for capital in CAPITALS_JUDGED for n in (1, 2, 3, 4)]
 
 
-def run_cells(cells: tuple[str, ...] = RUN, **outcomes: str) -> dict[str, CellFacts]:
-    """The run's cells (``cells``: all 48 by default), complete, each ``arm_capital_cost``
+def run_cells(cells: tuple[str, ...] = ALL, **outcomes: str) -> dict[str, CellFacts]:
+    """The run's cells (``cells``: all 72 by default), complete, each ``arm_capital_cost``
     outcome overridable by its cell id with ``-`` written ``_`` (``v4_main_1000_2x=LIQUIDATED``)."""
     found = {}
     for cell_id in cells:
@@ -155,7 +159,7 @@ def run_cells(cells: tuple[str, ...] = RUN, **outcomes: str) -> dict[str, CellFa
 
 
 def with_outcome(cell: str, outcome: str) -> dict[str, CellFacts]:
-    """The run's 48 cells, complete but ``cell``, which ends in ``outcome``."""
+    """The run's 72 cells, complete but ``cell``, which ends in ``outcome``."""
     return run_cells(**{cell.replace("-", "_"): outcome})
 
 
@@ -163,7 +167,7 @@ def decided(
     accepted: dict[str, CellFacts] | None = None,
     checks: list[Check] | None = None,
     *,
-    expected: tuple[str, ...] = RUN,
+    expected: tuple[str, ...] = ALL,
     missing: tuple[str, ...] = (),
     reruns: tuple[str, ...] = (),
     dispatches: tuple[str, ...] = (),
@@ -690,7 +694,7 @@ def test_a_stop_in_any_v4_main_cell_fails_whatever_is_missing() -> None:
     verdict = decide(
         accepted,
         all_checks(None)[:6],
-        expected=RUN,
+        expected=ALL,
         missing=["hold_universe-10000-1x"],
         reruns=["v3_as_built-1000-1x"],
         dispatches=["another"],
@@ -719,7 +723,7 @@ def test_the_fail_precedence_wins_over_every_incomplete_cause() -> None:
     verdict = decide(
         accepted,
         all_checks(None)[:3],
-        expected=RUN,
+        expected=ALL,
         missing=["v4_long_only-1000-1x", "v4_confirm3-10000-1x"],
         reruns=["v4_main-1000-1x"],
         dispatches=["another"],
@@ -738,7 +742,7 @@ def test_the_fail_precedence_wins_over_every_incomplete_cause() -> None:
     unstopped = decide(
         accepted,
         all_checks(None)[:3],
-        expected=RUN,
+        expected=ALL,
         missing=["v4_long_only-1000-1x", "v4_confirm3-10000-1x"],
         reruns=["v4_main-1000-1x"],
         dispatches=["another"],
@@ -782,7 +786,7 @@ def test_an_accounting_failure_outside_v4_main_is_incomplete(cell: str) -> None:
 
 @pytest.mark.parametrize("cell", RUN)
 def test_an_engine_error_or_a_missing_cell_of_the_run_is_incomplete(cell: str) -> None:
-    """v4-d25: every one of the 48 cells counts, the 40 reported ones too."""
+    """v4-d25: at the judged capitals every one of the 48 cells counts, the 40 reported too."""
     errored = decided(with_outcome(cell, ENGINE_ERROR))
     assert errored.outcome == "incomplete", cell
     assert [reason for reason in errored.reasons if cell in reason] == [
@@ -815,8 +819,9 @@ def test_a_missing_reported_cell_is_incomplete() -> None:
 
 
 def test_a_timing_run_counts_its_44_cells() -> None:
-    """A timing run's expected file lists the 44 cells that are not v3: those are the ones that
-    count, and its verdict (not a result) is incomplete through condition 2, which reads v3."""
+    """At the judged capitals, a timing run's expected file lists the 44 cells that are not v3:
+    those are the ones that count, and its verdict (not a result) is incomplete through condition
+    2, which reads v3."""
     accepted = run_cells(TIMING)
     timing = [c for c in all_checks(True) if c.condition != 2]  # the step plans no condition 2
     verdict = decided(accepted, timing, expected=TIMING)
@@ -826,7 +831,8 @@ def test_a_timing_run_counts_its_44_cells() -> None:
     assert all(
         "not in this run" in str(c.note) for c in verdict.checks if c.condition == 2
     )  # the filled-in note
-    # with the 8 checks given, the 44 alone would pass: no v3 cell is missing from a timing run
+    # with the 8 checks given, the 44 at the judged capitals alone would pass: no v3 cell is
+    # missing from a timing run
     assert decided(accepted, expected=TIMING).outcome == "pass"
     # and each of its 44 counts as any run's
     for cell in ("v4_vol25-10000-2x", "hold_btc_trend-1000-1x"):
@@ -962,7 +968,7 @@ def test_notes_and_reasons_are_words_never_a_figure() -> None:
     verdict = decide(
         accepted,
         [Check(1, 1000, False, None, None, None), Check(2, 1000, None, None, None, words[0])],
-        expected=RUN,
+        expected=ALL,
         missing=["v3_as_built-1000-1x"],
         reruns=["v4_main-1000-1x"],
         dispatches=["run 4242424242 of the same registration"],
@@ -981,3 +987,52 @@ def test_a_verdict_carries_its_checks_unchanged() -> None:
     verdict = decided(checks=checks)
     assert verdict.checks[0].main is measure
     assert verdict.outcome == "pass"
+
+
+# ---- v4-d30: the 100 USDT cells are reported only --------------------------------------------
+
+
+def test_the_run_has_24_cells_at_100_and_they_are_not_judged() -> None:
+    assert len(ALL) == 72 and len(AT_100) == 24 and len(ALL_TIMING) == 66
+    assert CAPITALS_JUDGED == (1000, 10000)
+    assert all("-100-" not in cell for cell in PASS_RULE_CELLS)
+
+
+@pytest.mark.parametrize("outcome", sorted(STOP_FAILS))
+@pytest.mark.parametrize("cell", [cell for cell in AT_100 if cell.startswith("v4_main-")])
+def test_a_stop_of_v4_main_at_100_does_not_fail_the_verdict(cell: str, outcome: str) -> None:
+    verdict = decided(with_outcome(cell, outcome))
+    assert verdict.outcome == "pass"
+    assert f"reported only: {cell} is {outcome}" in verdict.reasons
+
+
+@pytest.mark.parametrize("cell", AT_100)
+def test_an_engine_error_at_100_does_not_change_the_verdict(cell: str) -> None:
+    verdict = decided(with_outcome(cell, ENGINE_ERROR))
+    assert verdict.outcome == "pass"
+    assert f"reported only: {cell} is {ENGINE_ERROR}" in verdict.reasons
+
+
+@pytest.mark.parametrize("cell", AT_100)
+def test_a_missing_cell_at_100_does_not_change_the_verdict(cell: str) -> None:
+    accepted = run_cells()
+    del accepted[cell]
+    verdict = decided(accepted, missing=(cell,))
+    assert verdict.outcome == "pass"
+    assert f"reported only: {cell} is missing or refused" in verdict.reasons
+
+
+def test_a_failing_check_still_fails_with_every_cell_at_100_gone() -> None:
+    accepted = {cell: value for cell, value in run_cells().items() if cell not in AT_100}
+    verdict = decided(accepted, [*all_checks()[:-1], holds(4, 10000, False)], missing=AT_100)
+    assert verdict.outcome == "fail"
+
+
+def test_a_cell_at_a_judged_capital_still_counts_beside_the_100_cells() -> None:
+    assert decided(with_outcome("v4_main-1000-1x", LIQUIDATED)).outcome == "fail"
+    assert decided(with_outcome("hold_btc-10000-2x", ENGINE_ERROR)).outcome == "incomplete"
+
+
+def test_a_rerun_of_a_cell_at_100_is_still_incomplete() -> None:
+    """A re-run breaks the run's one-shot rule, whichever cell it touched."""
+    assert decided(reruns=("v4_main-100-1x",)).outcome == "incomplete"

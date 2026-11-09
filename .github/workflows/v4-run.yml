@@ -4,7 +4,7 @@ name: v4-run
 run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 
 # V4.0's run on GitHub's machines, so that no heavy work runs on the owner's PC (owner rule
-# 2026-10-19): the 48 cells of the registration (scripts/v4_registration.py, Ruling G1), each one
+# 2026-10-19): the 72 cells of the registration (scripts/v4_registration.py, Ruling G1), each one
 # job. It never trades, holds no stored credentials, can only read the repository and commits
 # nothing: its results are artifacts. Four steps get the job's own token, with read access to
 # this repository's workflow runs and artifacts and nothing more: in the plan job the dispatch
@@ -24,13 +24,13 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   run's. It fetches no market data, and its outputs carry rehearsal names, so a synthetic pass
 #   can never pass for the registered run's. It needs no input: registration_sha256 and
 #   data_run stay empty.
-# - timing: the 44 cells that are not v3 on the real-size synthetic world (Ruling W2): no
+# - timing: the 66 cells that are not v3 on the real-size synthetic world (Ruling W2): no
 #   registration exists yet, so nothing is gated or checked for a second dispatch. Besides its
 #   v4-timing-* artifacts it uploads v4-data and every cell's v4-cell-* and v4-summary-*, as a
 #   registered run does, which its verdict and analysis read; only the v4-timing-* artifacts are
 #   downloaded after it, and the others, synthetic results, simply expire. The v3 cells' times
-#   come from the v4-v3 run 40040422092. Its verdict plans no condition-2 and no v3 measures (46
-#   measures that load marks, against about 92 in a registered run), so scale its verdict time by
+#   come from the v4-v3 run 40040422092. Its verdict plans no condition-2 and no v3 measures (68
+#   measures that load marks, against about 136 in a registered run), so scale its verdict time by
 #   about two: that, plus the dispatch check's 55-minute deadline, must fit the verdict job's
 #   timeout.
 # - registered: the registered experiment, once (spec, "Registration and the run"). The plan job
@@ -60,8 +60,8 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # artifact is kept one day.
 #
 # THE MATRICES: scripts/v4_run_plan.py matrix lists the cells of the mode, the verdict's expected
-# cells (so a cell that runs is a cell that is expected): the cell job takes the 44 that are not
-# v3 (fail-fast off, at most 20 at a time), and the v3-cell job the 4 v3_as_built cells. A timing
+# cells (so a cell that runs is a cell that is expected): the cell job takes the 66 that are not
+# v3 (fail-fast off, at most 20 at a time), and the v3-cell job the 6 v3_as_built cells. A timing
 # run has no v3 cell, and the v3-cell job is skipped then, since GitHub refuses an empty matrix.
 # GitHub runs at most 256 jobs from one matrix.
 #
@@ -189,7 +189,7 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   unless all eleven are as expected). The verdict is uploaded once it is written, whatever
 #   failed after it.
 # - analysis (every mode), as the verdict: downloads v4-data, guards it, downloads every
-#   v4-cell-* (the 44 cells that are not v3; a v3 cell's folder is v4-v3-cell-*, which no job
+#   v4-cell-* (the 66 cells that are not v3; a v3 cell's folder is v4-v3-cell-*, which no job
 #   downloads), then runs scripts/v4_diagnose.py under GNU time (--manifest in a registered run,
 #   --synthetic otherwise; --planned is the plan's cell_ids), whose wall time, peak memory and
 #   exit status go to diagnosis/diagnose-timing.json. A diagnosis that refused a cell writes the
@@ -204,7 +204,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "rehearsal (the registered job graph on a synthetic world), timing (the 44 cells on the real-size synthetic world) or registered (the registered experiment, once)"
+        description: "rehearsal (the registered job graph on a synthetic world), timing (the 66 cells on the real-size synthetic world) or registered (the registered experiment, once)"
         required: true
         default: rehearsal
         type: choice
@@ -228,6 +228,9 @@ permissions:
 
 # One v4-run at a time: cancel-in-progress: false keeps the running one. GitHub keeps one pending
 # run per group and cancels it when a newer one arrives, hence the operating rule in the header.
+# Every job runs on ubuntu-24.04, not ubuntu-latest (owner, 2026-11-08): ubuntu-latest moved to 26.04
+# after the October runs, and this run's environment must not change under it. The data run
+# (v4-data.yml) is pinned to the same image.
 concurrency:
   group: v4-run
   cancel-in-progress: false
@@ -247,7 +250,7 @@ defaults:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # actions: read lets the dispatch check list this workflow's runs and jobs, and the data-run
     # steps read the data run and download its artifact; nothing is written.
@@ -280,7 +283,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
-      # The mode's cells (no data is read): the 44 that are not v3 and the v3 cells (none in a
+      # The mode's cells (no data is read): the 66 that are not v3 and the v3 cells (none in a
       # timing run), their ids and counts. A mode that is not one of the three is refused.
       - id: matrix
         name: List the cells of the mode
@@ -433,7 +436,7 @@ jobs:
     # A registered run only (a rehearsal's plan built the world's pack). No status function, so a
     # failed plan skips it.
     if: ${{ inputs.mode == 'registered' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     # The run manifest's V3 pack pin, which the plan's gate read.
     env:
@@ -492,7 +495,7 @@ jobs:
     # the plan built the pack). GitHub skips the dependents of a skipped job unless a status
     # function says otherwise, hence !cancelled() and the result each mode requires.
     if: ${{ !cancelled() && needs.plan.result == 'success' && ((inputs.mode == 'registered' && needs.v3-pack.result == 'success') || (inputs.mode == 'rehearsal' && needs.v3-pack.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
       PACK_SHA256: ${{ needs.plan.outputs.v3_pack_sha256 }}
@@ -563,7 +566,7 @@ jobs:
 
   cell:
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -691,7 +694,7 @@ jobs:
     # has no v3 cell, and GitHub refuses one). The v3-pack job is skipped in a rehearsal, hence
     # !cancelled() and the result each mode requires, as in v3-picks.
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.v3-picks.result == 'success' && needs.plan.outputs.v3_count != '0' && ((inputs.mode == 'registered' && needs.v3-pack.result == 'success') || (inputs.mode == 'rehearsal' && needs.v3-pack.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -815,7 +818,7 @@ jobs:
     # and GitHub skips the dependents of a skipped job, transitively, unless a status function
     # says otherwise, hence !cancelled() and the results it requires.
     if: ${{ !cancelled() && inputs.mode == 'rehearsal' && needs.plan.result == 'success' && needs.v3-picks.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Six replays one after another, two of them V3's 3.5-year replays.
     timeout-minutes: 180
     env:
@@ -887,7 +890,7 @@ jobs:
     # cell. Without !cancelled(), the jobs a mode skips (v3-picks and v3-cell in a timing run,
     # scenarios outside a rehearsal) would skip it too.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The dispatch check's deadline is 55 minutes from the job's start (VERDICT_JOB_BUDGET), so
     # the verdict always has more than two hours after it: a timing run's verdict time, scaled by
     # about two (it plans no condition-2 and no v3 measures), must fit in what is left.
@@ -1104,9 +1107,9 @@ jobs:
     # As the verdict: after every cell job that ended, never after a cancelled run or a failed
     # plan.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
-    # The cells the plan asked for: the 44 that are not v3, so a planned cell with no diagnosis is
+    # The cells the plan asked for: the 66 that are not v3, so a planned cell with no diagnosis is
     # listed as missing and no other is.
     env:
       PLANNED_CELLS: ${{ needs.plan.outputs.cell_ids }}
@@ -1142,7 +1145,7 @@ jobs:
           fi
 
       # One folder per artifact, cells/v4-cell-<cell id>-attempt-<n>/, with the cell's records
-      # (Ruling W1): the 44 cells that are not v3. A v3 cell's folder is v4-v3-cell-*, which this
+      # (Ruling W1): the 66 cells that are not v3. A v3 cell's folder is v4-v3-cell-*, which this
       # pattern does not match; in a timing run, the timing cells' own folders.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1218,7 +1221,7 @@ jobs:
     # Always, whatever the other jobs did, a cancelled run included, so a run that stopped half
     # way still leaves a record of how far it got.
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

@@ -1471,7 +1471,7 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
     ]
     assert "if" not in jobs["discover"]  # stage discover runs it alone
     for name, job in jobs.items():
-        assert job["runs-on"] == "ubuntu-latest" and job["timeout-minutes"] == 300, name
+        assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 300, name
         if name != "discover":
             assert job["if"].replace(" ", "") == "${{inputs.stage=='full'}}", name
             assert "discover" in job["needs"], name

@@ -9,8 +9,9 @@ this script through environment variables, never as text in a script:
   run whose ``v4-data`` artifact the jobs download;
 * every arm must be one of ``DIAGNOSTIC_ARMS``, the eight arms of step 3 (``v4_btc200_shorts``,
   ``v4_confirm3``, ``hold_btc_trend`` and ``v3_as_built`` are arms of the run but are first run in
-  the registered run, v4-d22, so they are refused here), every capital one of ``CAPITALS`` (1000
-  and 10000) and every cost multiple one of ``COST_MULTIPLES`` (1 and 2). Each is plain digits or
+  the registered run, v4-d22, so they are refused here), every capital one of
+  ``DIAGNOSTIC_CAPITALS`` (1000 and 10000: the 100 USDT cells are first run in the registered run
+  too, v4-d30) and every cost multiple one of ``COST_MULTIPLES`` (1 and 2). Each is plain digits or
   a name, exactly as the cell CLI takes it; spaces around a comma are ignored, and an empty item
   or a repeat is refused (two jobs would upload the same artifact).
 
@@ -41,12 +42,13 @@ from crypto_grid_bot.v4.engine.arms import (
     CAPITALS,
     COST_MULTIPLES,
     DIAGNOSTIC_ARMS,
+    DIAGNOSTIC_CAPITALS,
     CellSpec,
 )
 
 # The text of each value the cell CLI takes, exactly: never ``int(text)``, which also accepts
 # "+1000", " 1000", "1_000" and full-width digits.
-CAPITAL_CHOICES = {str(capital): capital for capital in CAPITALS}
+CAPITAL_CHOICES = {str(capital): capital for capital in DIAGNOSTIC_CAPITALS}
 COST_CHOICES = {str(multiple): multiple for multiple in COST_MULTIPLES}
 
 _RUN_ID = re.compile(r"[1-9][0-9]{0,19}")

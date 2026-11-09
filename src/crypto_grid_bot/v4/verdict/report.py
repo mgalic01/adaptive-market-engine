@@ -42,7 +42,7 @@ capital with both sides' numbers (return, drawdown, ratio) and, for conditions 1
 number of skipped hours (``verdict.json`` lists them); the spec's note on the eras; the comparison
 table of every arm by capital by cost; the eras (and the years of ``v4_main``); the variants and
 neighbours beside ``v4_main`` at 1x; the disclosures (every ``disclosures`` entry of the v3
-summaries, so the 1,000 USDT capital adapter is named, and the synthetic world of a rehearsal);
+summaries, so the capital adapter below 10,000 is named, and the synthetic world of a rehearsal);
 the missing, refused and re-run cells and the other dispatches; the analysis artifact's name.
 
 Every value that comes from a file or a run is escaped for Markdown (``escape``): a backslash, a
@@ -121,7 +121,7 @@ SYNTHETIC_DISCLOSURE = (
 )
 DISCLOSURE_WORDS: Mapping[str, str] = {
     V3_CAPITAL_ADAPTER: (
-        "v3_as_built at 1,000 USDT is V3's own selector with only the starting capital changed "
+        "v3_as_built below 10,000 USDT is V3's own selector with only the starting capital changed "
         "(V3.1's capital adapter), not a V3 tuned for that capital."
     ),
 }
@@ -525,7 +525,9 @@ def _pair_columns(view: _View, arm: str, cell_id: str) -> tuple[str, str]:
         if pair is None:
             columns.append(NA)
         elif "incomputable" in pair:
-            columns.append("cannot be computed")
+            # A measure at 100 USDT that crashed says so (v4-d30), by its error type only.
+            reason = str(pair["incomputable"])
+            columns.append(reason if reason.startswith("reported only:") else "cannot be computed")
         else:
             main, other = pair["main"], pair["other"]
             if field == "ratio":
@@ -574,8 +576,12 @@ def _headline(view: _View) -> str:
     checks = view.verdict["checks"]
     failed = sum(1 for check in checks if check["holds"] is False)
     outcome = view.verdict["outcome"]
+    # The precedence's stops: a stop at 100 USDT is reported only (v4-d30), never the cause.
     stopped = any(
-        cell["arm"] == MAIN_ARM and cell["outcome"] in STOP_FAILS for cell in view.cells.values()
+        cell["arm"] == MAIN_ARM
+        and cell["capital"] in CAPITALS_JUDGED
+        and cell["outcome"] in STOP_FAILS
+        for cell in view.cells.values()
     )
     synthetic = SYNTHETIC_RUNS.get(view.mode)
     if outcome == "pass" and synthetic is not None:
@@ -585,8 +591,8 @@ def _headline(view: _View) -> str:
         )
     if outcome == "pass":
         return (
-            f"{MAIN_ARM} met all {len(checks)} checks, the four conditions at both capitals, so "
-            "under the registered rule V4.0 passes. That means promising, not proven."
+            f"{MAIN_ARM} met all {len(checks)} checks, the four conditions at both judged "
+            "capitals, so under the registered rule V4.0 passes. That means promising, not proven."
         )
     failing = "V4.0" if synthetic is None else f"the {synthetic}'s verdict"
     if outcome == "fail" and stopped:
@@ -627,6 +633,12 @@ def _verdict_section(view: _View) -> list[str]:
         "",
     ]
     lines += _bullets(view.verdict["reasons"], "- None: nothing is missing and every check holds.")
+    lines += [
+        "",
+        "The 100 USDT cells are reported only (owner decision v4-d30): the checks above are at "
+        "1,000 and 10,000 USDT, and nothing about a 100 USDT cell changes the verdict, apart from "
+        "a re-run, which breaks the one-shot rule. A pass says nothing about 100 USDT.",
+    ]
     return lines
 
 

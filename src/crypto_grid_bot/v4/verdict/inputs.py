@@ -1,6 +1,6 @@
 """The verdict's inputs: one cell's ``summary.json``, accepted or refused, and the expected file.
 
-Implements rulings V1 to V3 of step 4b. The verdict step judges the run's 48 cells from their
+Implements rulings V1 to V3 of step 4b. The verdict step judges the run's 72 cells from their
 ``summary.json`` files and receipts only, never their records, so what it reads must be exactly
 what a cell job wrote. ``read_cell(folder, expected)`` returns the cell's ``CellFacts`` or raises
 ``CellRefused(step, reason)``. A refused cell counts as missing and its outcome is never read, not
@@ -55,8 +55,8 @@ a failing test in CI, holds what ``reason`` holds and nothing the parser, ``Cell
 ``facts_from_record``'s follow the same rule.
 
 **The expected file** (``read_expected``, written by step 4b's plan job) is canonical JSON with
-exactly the keys ``format`` (``v4-verdict-expected-1``), ``mode``, ``cells`` (the 48 ids of
-``all_cells()`` in order, the 44 of the non-v3 arms for ``timing``), ``window``, ``data`` (the
+exactly the keys ``format`` (``v4-verdict-expected-1``), ``mode``, ``cells`` (the 72 ids of
+``all_cells()`` in order, the 66 of the non-v3 arms for ``timing``), ``window``, ``data`` (the
 four pins of ``run.data_record``, never null), ``v3_pack_sha256`` and ``picks_sha256`` (64 hex
 digits, both null for ``timing`` and only there).
 """
@@ -789,7 +789,7 @@ def facts_from_record(record: Mapping[str, object]) -> CellFacts:
 
 
 def expected_cells(mode: str) -> tuple[str, ...]:
-    """The cells of a mode, in ``all_cells()`` order: all 48, or for ``timing`` the 44 of the
+    """The cells of a mode, in ``all_cells()`` order: all 72, or for ``timing`` the 66 of the
     arms that are not v3."""
     return tuple(
         cell.cell_id for cell in all_cells() if mode != "timing" or ARMS[cell.arm].family != "v3"

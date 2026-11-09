@@ -91,7 +91,7 @@ defaults:
 
 jobs:
   discover:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -123,7 +123,7 @@ jobs:
   fetch-daily:
     needs: discover
     if: ${{ inputs.stage == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
       fail-fast: false
@@ -173,7 +173,7 @@ jobs:
   select-candidates:
     needs: [discover, fetch-daily]
     if: ${{ inputs.stage == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -219,7 +219,7 @@ jobs:
   fetch-hourly:
     needs: [discover, select-candidates]
     if: ${{ inputs.stage == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
       fail-fast: false
@@ -276,7 +276,7 @@ jobs:
   select-final:
     needs: [discover, fetch-daily, fetch-hourly]
     if: ${{ inputs.stage == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -329,7 +329,7 @@ jobs:
   pack:
     needs: [discover, fetch-daily, fetch-hourly, select-final]
     if: ${{ inputs.stage == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

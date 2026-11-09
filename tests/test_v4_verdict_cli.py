@@ -1,7 +1,7 @@
 """V4 step 4b, task 4: the resumable verdict step (``scripts/v4_verdict.py``) and the run summary
 page (``v4.verdict.report``).
 
-Every test runs the real CLI over hand-built summaries (``v4_verdict_fixtures.full_set``: 48
+Every test runs the real CLI over hand-built summaries (``v4_verdict_fixtures.full_set``: 72
 cells of 50 hours, valid by task 2's checks, no replay), so the tests stay fast and read only
 synthetic data. The base set passes: ``v4_main`` rises without a drawdown and beats both
 comparison arms on every measure. Each test changes one thing: a stopped or refused cell, a
@@ -101,7 +101,7 @@ HEADINGS = (
     "## The analysis artifact",
 )
 NON_V3 = [name for name, spec in ARMS.items() if spec.family != "v3"]
-CELLS = 48
+CELLS = 72
 CHECKS = 8
 PAIRS = len(NON_V3) * len(CAPITALS) * len(COST_MULTIPLES) * 2
 STEPS = CELLS + CHECKS + PAIRS
@@ -852,8 +852,8 @@ def test_the_counts_line_names_what_was_read_and_what_was_resumed(shared, monkey
     capsys.readouterr()
     assert made.run() == 0
     out = capsys.readouterr().out
-    assert "48 accepted, 0 refused, 0 missing" in out
-    assert "(38 read, 10 resumed)" in out
+    assert "72 accepted, 0 refused, 0 missing" in out
+    assert "(62 read, 10 resumed)" in out
     assert f"{CHECKS} checks, {PAIRS} pairs ({CHECKS + PAIRS} computed, 0 resumed)" in out
 
 
@@ -988,10 +988,10 @@ def test_the_timing_set_has_no_v3_cell_and_is_incomplete(tmp_path):
     made = world(tmp_path, mode="timing")
     assert made.run() == 0
     document = made.document()
-    assert len(document["cells"]) == 44
+    assert len(document["cells"]) == 66
     assert document["verdict"]["outcome"] == "incomplete"
-    assert document["missing"] == []  # the expected file lists the 44 only
-    # its 44 cells count (v4-d25); the v3 cells are not its, so only condition 2 is incomplete
+    assert document["missing"] == []  # the expected file lists the 66 only
+    # its 66 cells count (v4-d25); the v3 cells are not its, so only condition 2 is incomplete
     assert not any("missing or refused" in reason for reason in document["verdict"]["reasons"])
     assert [c["condition"] for c in document["verdict"]["checks"] if c["holds"] is None] == [2, 2]
     assert made.page().startswith(SYNTHETIC)
@@ -1141,7 +1141,12 @@ def test_v3_adapter_disclosed(base):
     carried = {
         cell["cell_id"]: cell["disclosures"] for cell in document["cells"] if cell["disclosures"]
     }
-    assert set(carried) == {"v3_as_built-1000-1x", "v3_as_built-1000-2x"}
+    assert set(carried) == {
+        "v3_as_built-100-1x",
+        "v3_as_built-100-2x",
+        "v3_as_built-1000-1x",
+        "v3_as_built-1000-2x",
+    }
 
 
 def test_a_registered_page_discloses_the_adapter_and_not_a_synthetic_world(tmp_path):
@@ -1515,3 +1520,90 @@ def test_the_document_is_exact_json_and_a_verdict_without_cells_is_incomplete():
     assert _canonical(document)
     assert document["verdict"]["outcome"] == "incomplete"
     assert render_verdict_page(document)
+
+
+# ---- v4-d30: nothing at 100 USDT changes the verdict or stops the step --------------------------
+
+
+def test_a_stopped_v4_main_at_100_is_not_named_as_the_cause_of_a_failure(tmp_path):
+    """Bob's finding on PR #304: the page's headline blamed a stop at 100 USDT for a failure that
+    came from a check at a judged capital."""
+    overrides = {
+        **stopped("v4_main-100-1x"),
+        "v4_main-1000-2x": {"final_after_close": "1", "final_equity": "1"},
+    }
+    made = world(tmp_path, overrides=overrides)
+    assert made.run() == 0
+    verdict = made.document()["verdict"]
+    assert verdict["outcome"] == "fail"
+    assert "reported only: v4_main-100-1x is liquidated" in verdict["reasons"]
+    headline = made.page().split("## The verdict\n")[1]
+    assert "was stopped in at least one cell" not in headline
+    assert "checks do not hold" in headline
+
+
+def test_a_page_says_the_100_cells_are_reported_only_and_a_pass_does_not_cover_them(tmp_path):
+    made = world(tmp_path)
+    assert made.run() == 0
+    section = made.page().split("## The verdict\n")[1]
+    assert "The 100 USDT cells are reported only" in section
+    assert "A pass says nothing about 100 USDT" in section
+
+
+def test_an_unexpected_error_in_a_measure_at_100_still_gives_a_verdict(
+    tmp_path, monkeypatch, capsys
+):
+    """v4-d30: a measure at 100 USDT that crashes must not cost the run its only verdict."""
+    real = v4_verdict.measure_against_hold
+
+    def fails_at_100(first, *rest):
+        if first.capital == 100:
+            raise ValueError("private detail")
+        return real(first, *rest)
+
+    monkeypatch.setattr(v4_verdict, "measure_against_hold", fails_at_100)
+    made = world(tmp_path)
+    assert made.run() == 0
+    document = made.document()
+    assert document["verdict"]["outcome"] == "pass"
+    assert document["pairs"]["v4_main-100-1x"]["hold"] == {
+        "incomputable": "reported only: a measure at 100 USDT failed (ValueError)"
+    }
+    assert "private detail" not in capsys.readouterr().out + made.page()
+    # The page tells a measure that crashed from one that simply cannot be computed.
+    assert "reported only: a measure at 100 USDT failed (ValueError)" in made.page()
+
+
+def test_an_unexpected_error_in_a_measure_at_a_judged_capital_still_stops_the_step(
+    tmp_path, monkeypatch
+):
+    real = v4_verdict.measure_against_hold
+
+    def fails_at_1000(first, *rest):
+        if first.capital == 1000:
+            raise ValueError("private detail")
+        return real(first, *rest)
+
+    monkeypatch.setattr(v4_verdict, "measure_against_hold", fails_at_1000)
+    made = world(tmp_path)
+    assert made.run() == 1
+
+
+def test_a_summary_at_100_changed_after_its_acceptance_still_stops_the_step(
+    tmp_path, monkeypatch, capsys
+):
+    """Bob's finding on PR #304: the catch for a failed measure at 100 USDT must not hide a changed
+    input, which is an integrity failure at any capital."""
+    made = world(tmp_path)
+    real = v4_verdict._run_step
+    target = "v4_main-100-1x"
+
+    def changing(root, step, window):
+        if step.section == "pairs" and step.first.cell_id == target:
+            edit_summary(Path(root) / step.first.folder, compounded_return="0.5")
+        return real(root, step, window)
+
+    monkeypatch.setattr(v4_verdict, "_run_step", changing)
+    assert made.run() == 1
+    assert made.written() == []
+    assert "changed" in capsys.readouterr().err
