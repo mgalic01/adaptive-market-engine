@@ -29,8 +29,8 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   v4-timing-* artifacts it uploads v4-data and every cell's v4-cell-* and v4-summary-*, as a
 #   registered run does, which its verdict and analysis read; only the v4-timing-* artifacts are
 #   downloaded after it, and the others, synthetic results, simply expire. The v3 cells' times
-#   come from the v4-v3 run 40040422092. Its verdict plans no condition-2 and no v3 measures (46
-#   measures that load marks, against about 92 in a registered run), so scale its verdict time by
+#   come from the v4-v3 run 40040422092. Its verdict plans no condition-2 and no v3 measures (68
+#   measures that load marks, against about 136 in a registered run), so scale its verdict time by
 #   about two: that, plus the dispatch check's 55-minute deadline, must fit the verdict job's
 #   timeout.
 # - registered: the registered experiment, once (spec, "Registration and the run"). The plan job

@@ -2554,7 +2554,7 @@ def test_header_says_what_the_jobs_do():
         "its progress/ folder is never uploaded",
         # What a timing run uploads, and how its verdict time is to be read (Ruling W2).
         "it uploads v4-data and every cell's v4-cell-* and v4-summary-*",
-        "46 measures that load marks, against about 92 in a registered run",
+        "68 measures that load marks, against about 136 in a registered run",
         # The dispatch ref of each mode, once.
         "A registered run is dispatched from the registration's ref",
         "A timing run, made before the registration exists, is dispatched from a ref at the code",

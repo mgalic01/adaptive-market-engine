@@ -525,7 +525,9 @@ def _pair_columns(view: _View, arm: str, cell_id: str) -> tuple[str, str]:
         if pair is None:
             columns.append(NA)
         elif "incomputable" in pair:
-            columns.append("cannot be computed")
+            # A measure at 100 USDT that crashed says so (v4-d30), by its error type only.
+            reason = str(pair["incomputable"])
+            columns.append(reason if reason.startswith("reported only:") else "cannot be computed")
         else:
             main, other = pair["main"], pair["other"]
             if field == "ratio":

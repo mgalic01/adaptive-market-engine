@@ -1570,6 +1570,8 @@ def test_an_unexpected_error_in_a_measure_at_100_still_gives_a_verdict(
         "incomputable": "reported only: a measure at 100 USDT failed (ValueError)"
     }
     assert "private detail" not in capsys.readouterr().out + made.page()
+    # The page tells a measure that crashed from one that simply cannot be computed.
+    assert "reported only: a measure at 100 USDT failed (ValueError)" in made.page()
 
 
 def test_an_unexpected_error_in_a_measure_at_a_judged_capital_still_stops_the_step(

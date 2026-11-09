@@ -37,6 +37,7 @@ At `66783a1` and `a58740c`, Bob's review found the design sound in `rule.decide`
 - **Fixed:** a stale count in the `v4-run.yml` header, and the `decide` and `v4_verdict` docstrings, which still read as if every cell counted.
 - **Fixed, a wording choice:** the page now says "A pass says nothing about 100 USDT."
 - **Fixed, at `608066c`'s review:** that catch was too broad. It also hid `_Changed`, the refusal of a summary that changed after it was accepted. A refusal now stops the step at any capital, with a test. The spec's "Reports" and precedence text and the v4-d25 entry now say "at a judged capital".
+- **Fixed, at `79f0f07`'s review:** the verdict's measure counts (68 and about 136), the spec's step-4b text (V10, G1 and W2), and the page, which now shows when a measure at 100 USDT crashed. `_measured` still catches `MemoryError` at 100 USDT: stopping there would cost the verdict the catch exists to protect, and a real shortage would recur at a judged capital and stop the step.
 - **Left to the timing run:** the analysis job's disk and the verdict job's time. No rehearsal scenario forces a stop at 100 USDT; the CLI tests above cover that path.
 - **Goes in the Kali docs PR:** `ubuntu-24.04` is a label, not an image version, and `setup-python` takes the current 3.12 patch, so the registered run's record names both.
 
