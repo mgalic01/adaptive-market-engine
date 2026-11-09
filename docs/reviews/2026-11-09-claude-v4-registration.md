@@ -227,11 +227,18 @@ then takes the owner's word. None of these can give a false pass:
   but the cell counts.
 - **The verdict job fails.** There is no verdict until the one allowed re-run. If that fails too, it
   is computed on the owner's PC with the run's own code and recorded as a deviation (v4-d28).
-- **The dispatch check cannot read GitHub within its deadline.** The verdict is incomplete. The deadline
-  is 20 minutes from the check's start (`DISPATCH_DEADLINE`), and no later than 55 minutes after the
-  job's start (`VERDICT_JOB_BUDGET`). The check is the first step after the setup, so 20 minutes is what
-  applies: a GitHub outage of that length at that moment uses up the verdict. The workflow's comments
-  and the plan say 55 minutes, and the code governs.
+- **The dispatch check cannot read GitHub.** The verdict is incomplete. Each read has five attempts,
+  which take about 4 to 6 minutes (waits of 15, 30, 60 and 120 seconds, and up to 30 seconds per read),
+  or about 10 at most if GitHub asks for longer waits. The whole check has 20 minutes from its start
+  (`DISPATCH_DEADLINE`), and no later than 55 minutes after the job's start (`VERDICT_JOB_BUDGET`). The
+  workflow's comments and the plan say 55 minutes, and the code governs. So a GitHub API outage of about
+  five minutes at that moment is enough. The job does not fail in that case: it writes the incomplete
+  verdict. The plan's step 12a covers a job that failed, so as written it allows no re-run here, although
+  the code would accept one. The owner is asked about this with the go.
+- **The plan job hangs until its 60-minute timeout.** Only the dispatch check inside it has its own limit
+  (25 minutes). The repository's comments say GitHub may report a timed-out job as cancelled, and a
+  cancelled plan job counts, so this would use up the registration with no verdict. I did not check how
+  GitHub reports it.
 - **A cancel before the verdict job has finished, or a second v4-run while this one is queued.** GitHub
   drops a queued run, which counts as cancelled. The run writes no verdict, since the verdict job does
   not start after a cancel and a running one is stopped. It still counts as the one execution, so a
@@ -246,7 +253,9 @@ then takes the owner's word. None of these can give a false pass:
 ## Operating rules
 
 The code does not enforce these, so the people who merge and dispatch must follow them:
-1. Merge with a merge commit only, never squash or rebase.
+1. Merge with a merge commit only, never squash or rebase. A flattened history loses the code pin as an
+   ancestor, and the gate then refuses: checked on a fresh clone, where the gate accepts the head and a
+   real merge commit into B, and refuses the same changes squashed onto B.
 2. Nothing else lands on main from B until the dispatch.
 3. Review fixes touch only `docs/reviews/` or `docs/tasks/`. Anything else stops the PR and goes to
    the owner: a rebuild keeps this trial id before the merge and needs a new one after it.
