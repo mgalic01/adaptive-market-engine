@@ -1520,3 +1520,68 @@ def test_the_document_is_exact_json_and_a_verdict_without_cells_is_incomplete():
     assert _canonical(document)
     assert document["verdict"]["outcome"] == "incomplete"
     assert render_verdict_page(document)
+
+
+# ---- v4-d30: nothing at 100 USDT changes the verdict or stops the step --------------------------
+
+
+def test_a_stopped_v4_main_at_100_is_not_named_as_the_cause_of_a_failure(tmp_path):
+    """Bob's finding on PR #304: the page's headline blamed a stop at 100 USDT for a failure that
+    came from a check at a judged capital."""
+    overrides = {
+        **stopped("v4_main-100-1x"),
+        "v4_main-1000-2x": {"final_after_close": "1", "final_equity": "1"},
+    }
+    made = world(tmp_path, overrides=overrides)
+    assert made.run() == 0
+    verdict = made.document()["verdict"]
+    assert verdict["outcome"] == "fail"
+    assert "reported only: v4_main-100-1x is liquidated" in verdict["reasons"]
+    headline = made.page().split("## The verdict\n")[1]
+    assert "was stopped in at least one cell" not in headline
+    assert "checks do not hold" in headline
+
+
+def test_a_page_says_the_100_cells_are_reported_only_and_a_pass_does_not_cover_them(tmp_path):
+    made = world(tmp_path)
+    assert made.run() == 0
+    section = made.page().split("## The verdict\n")[1]
+    assert "The 100 USDT cells are reported only" in section
+    assert "A pass says nothing about 100 USDT" in section
+
+
+def test_an_unexpected_error_in_a_measure_at_100_still_gives_a_verdict(
+    tmp_path, monkeypatch, capsys
+):
+    """v4-d30: a measure at 100 USDT that crashes must not cost the run its only verdict."""
+    real = v4_verdict.measure_against_hold
+
+    def fails_at_100(first, *rest):
+        if first.capital == 100:
+            raise ValueError("private detail")
+        return real(first, *rest)
+
+    monkeypatch.setattr(v4_verdict, "measure_against_hold", fails_at_100)
+    made = world(tmp_path)
+    assert made.run() == 0
+    document = made.document()
+    assert document["verdict"]["outcome"] == "pass"
+    assert document["pairs"]["v4_main-100-1x"]["hold"] == {
+        "incomputable": "reported only: a measure at 100 USDT failed (ValueError)"
+    }
+    assert "private detail" not in capsys.readouterr().out + made.page()
+
+
+def test_an_unexpected_error_in_a_measure_at_a_judged_capital_still_stops_the_step(
+    tmp_path, monkeypatch
+):
+    real = v4_verdict.measure_against_hold
+
+    def fails_at_1000(first, *rest):
+        if first.capital == 1000:
+            raise ValueError("private detail")
+        return real(first, *rest)
+
+    monkeypatch.setattr(v4_verdict, "measure_against_hold", fails_at_1000)
+    made = world(tmp_path)
+    assert made.run() == 1

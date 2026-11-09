@@ -574,8 +574,12 @@ def _headline(view: _View) -> str:
     checks = view.verdict["checks"]
     failed = sum(1 for check in checks if check["holds"] is False)
     outcome = view.verdict["outcome"]
+    # The precedence's stops: a stop at 100 USDT is reported only (v4-d30), never the cause.
     stopped = any(
-        cell["arm"] == MAIN_ARM and cell["outcome"] in STOP_FAILS for cell in view.cells.values()
+        cell["arm"] == MAIN_ARM
+        and cell["capital"] in CAPITALS_JUDGED
+        and cell["outcome"] in STOP_FAILS
+        for cell in view.cells.values()
     )
     synthetic = SYNTHETIC_RUNS.get(view.mode)
     if outcome == "pass" and synthetic is not None:
@@ -631,7 +635,7 @@ def _verdict_section(view: _View) -> list[str]:
         "",
         "The 100 USDT cells are reported only (owner decision v4-d30): the checks above are at "
         "1,000 and 10,000 USDT, and nothing about a 100 USDT cell changes the verdict, apart from "
-        "a re-run, which breaks the one-shot rule.",
+        "a re-run, which breaks the one-shot rule. A pass says nothing about 100 USDT.",
     ]
     return lines
 

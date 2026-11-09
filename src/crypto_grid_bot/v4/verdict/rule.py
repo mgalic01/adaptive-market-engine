@@ -49,10 +49,9 @@ are skipped for all arms alike.
   Changed by owner decision v4-d25 (2026-10-24): every cell of the run counts (``expected``, the
   expected file's cells at 1,000 and 10,000 USDT: the 48 of a registered run and a rehearsal, the
   44 of a timing run at those capitals, whose verdict is not a result), not only the 8 the
-  conditions read. A
-  ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary, a reported result,
-  and does not by itself make the verdict incomplete (a ``hold_universe`` that stopped still leaves
-  condition 1 incomputable, V7).
+  conditions read. A ``liquidated`` or ``limit_unrestorable`` cell of another arm is a full summary,
+  a reported result, and does not by itself make the verdict incomplete (a ``hold_universe`` that
+  stopped still leaves condition 1 incomputable, V7).
 * **v4-d30, the 100 USDT cells are reported only** (owner, 2026-11-08). The run's 24 cells at 100
   USDT are run and reported, but the precedence reads only the judged capitals: nothing about a
   100 USDT cell, ``v4_main``'s included, fails the verdict or makes it incomplete. Whatever would
@@ -475,12 +474,12 @@ def decide(
     dispatches: Collection[str],
 ) -> Verdict:
     """V10, as owner decision v4-d25 has it. ``expected`` is the run's cells (the expected file's,
-    in order), every one of which counts; ``accepted`` the accepted cells by id; ``missing`` the
-    expected cells that are missing or refused (an accepted or missing cell that is not expected
-    is a caller's ``ValueError``); ``reruns`` what was found of a re-run of a cell and
-    ``dispatches`` of another dispatch of the same registration or a re-run of one of this run's
-    jobs (any at all is incomplete); ``checks`` the conditions computed so far (a check not
-    supplied counts as incomputable)."""
+    in order), every one at a judged capital counting (v4-d30); ``accepted`` the accepted cells by
+    id; ``missing`` the expected cells that are missing or refused (an accepted or missing cell that
+    is not expected is a caller's ``ValueError``); ``reruns`` what was found of a re-run of a cell
+    and ``dispatches`` of another dispatch of the same registration or a re-run of one of this run's
+    jobs (any at all is incomplete); ``checks`` the conditions computed so far (a check not supplied
+    counts as incomputable)."""
     run = set(expected)
     if not run.issuperset(accepted) or not run.issuperset(missing):
         raise ValueError("an accepted or missing cell is not one of the run's expected cells")

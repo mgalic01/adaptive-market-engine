@@ -820,8 +820,8 @@ def test_a_missing_reported_cell_is_incomplete() -> None:
 
 def test_a_timing_run_counts_its_44_cells() -> None:
     """At the judged capitals, a timing run's expected file lists the 44 cells that are not v3:
-    those are the ones that
-    count, and its verdict (not a result) is incomplete through condition 2, which reads v3."""
+    those are the ones that count, and its verdict (not a result) is incomplete through condition
+    2, which reads v3."""
     accepted = run_cells(TIMING)
     timing = [c for c in all_checks(True) if c.condition != 2]  # the step plans no condition 2
     verdict = decided(accepted, timing, expected=TIMING)

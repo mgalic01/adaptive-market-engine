@@ -61,7 +61,7 @@ run-name: v4-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #
 # THE MATRICES: scripts/v4_run_plan.py matrix lists the cells of the mode, the verdict's expected
 # cells (so a cell that runs is a cell that is expected): the cell job takes the 66 that are not
-# v3 (fail-fast off, at most 20 at a time), and the v3-cell job the 4 v3_as_built cells. A timing
+# v3 (fail-fast off, at most 20 at a time), and the v3-cell job the 6 v3_as_built cells. A timing
 # run has no v3 cell, and the v3-cell job is skipped then, since GitHub refuses an empty matrix.
 # GitHub runs at most 256 jobs from one matrix.
 #

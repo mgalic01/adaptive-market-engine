@@ -29,6 +29,16 @@ Written by Claude Code (session c5f98f3b), on main `504a320`.
 
 The registered run happens once. `v3_as_built` maps any V3 stop to `engine_error`, and 100 USDT has never run on this engine with real data, so a failure there is plausible. Under the old "every cell counts" rule, that one failure would leave V4 with no verdict from its only run. Keeping these cells outside the precedence leaves the 48 judged cells exactly as strict as v4-d25 made them.
 
+## Bob's deep review (FLAGGED, answered)
+
+At `66783a1` and `a58740c`, Bob's review found the design sound in `rule.decide` and raised these:
+- **Fixed:** `report._headline` read a stop at 100 USDT as the cause of a failure, which would have put a false sentence on the registered page. It now reads the judged capitals, with a test.
+- **Fixed:** an unexpected error in a measure at 100 USDT would have stopped the verdict step, and so cost the run its only verdict. `v4_verdict._measured` now records it as that pair's reason, by error type only. The same error at a judged capital still stops the step, and both cases have tests.
+- **Fixed:** a stale count in the `v4-run.yml` header, and the `decide` and `v4_verdict` docstrings, which still read as if every cell counted.
+- **Fixed, a wording choice:** the page now says "A pass says nothing about 100 USDT."
+- **Left to the timing run:** the analysis job's disk and the verdict job's time. No rehearsal scenario forces a stop at 100 USDT; the CLI tests above cover that path.
+- **Goes in the Kali docs PR:** `ubuntu-24.04` is a label, not an image version, and `setup-python` takes the current 3.12 patch, so the registered run's record names both.
+
 ## Why it is not tuning
 
 No V4 result at 100 USDT exists. The diagnostic run covered 1,000 and 10,000 USDT only, and the pass rule does not move.
