@@ -25,7 +25,7 @@ pinning data run's log, only pins and counts were read.
   designed.
 - **What happens next.** The reviewers checked this registration, and the owner gave the go on
   2026-11-09. It covers the merge, the second data run, one dispatch and the download. The owner
-  moved them to the morning of 2026-11-11 (see the record).
+  moved them to the night of 2026-11-11, from about 01:30 UTC (see the record).
 - **Real money.** None. This is a historical simulation with no exchange account and no keys.
 
 ## The owner's go (dated record)
@@ -68,6 +68,17 @@ chat, the owner chose these answers, the labels copied exactly:
   to force it from Kali and accepted the risk, but ntfs-3g refused the force and nothing was written.
   The owner then chose a full Windows shutdown before the merge, so step 10's preflight finds the disk
   read-write.
+
+**2026-11-11, the start moved to now.** At about 01:03 UTC (02:03 in Zagreb), the BACKUPS disk
+mounted read-write after the full Windows shutdown, and Claude asked whether to start then or keep
+09:00. The owner chose **"Keep 09:00 (Recommended)"**, then asked in chat why not start right away.
+Claude answered that waiting buys little: no one can re-run a failed cell, any mismatch or red check
+stops and waits for the owner whatever the hour, and a run ending about 09:00 leaves more of the
+artifacts' day for the download. Its cost is a PC and a session left on overnight. Claude asked
+"Should I start now?", and at about 01:07 UTC (02:07 in Zagreb) the owner wrote, exactly: "im fine
+with PC running overnight". Claude takes that as a yes. The start is now: the merge after this
+commit's reviews, step 9's data run, and the dispatch once it matches, at about 04:15 in Zagreb.
+The conditions and the rest of the go are unchanged.
 
 **Who judges answer 3.** Whether a verdict is incomplete only because the dispatch check could not
 read GitHub shows in the verdict's reasons, which are read on the owner's PC only (step 12d). Claude
