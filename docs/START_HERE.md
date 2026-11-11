@@ -23,6 +23,12 @@ in [the run archive](RUN_ARCHIVE.md#the-move-to-kali-linux-2026-11-08) and the a
 [step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md). Runs go on GitHub's
 machines, never the PC, unless it is an emergency.
 
+**Scope note, 2026-11-11:** V4.0's registered run failed
+([verdict](reviews/2026-11-11-claude-v4-verdict.md)): condition 4 does not hold at 1,000 or
+10,000 USDT. V4.0 as registered is not taken forward and is not tuned on its results. What comes
+next is the owner's decision. The 2025-26 window is now seen, so a next hypothesis needs forward
+paper evidence.
+
 **Scope note, 2026-10-20:** V3.1's registered run failed
 ([verdict](reviews/2026-10-17-claude-v3-1-verdict.md)), and the owner then approved the
 V4.0 design ([spec](superpowers/specs/2026-10-17-v4-design.md), PR #289). **V4 is now the

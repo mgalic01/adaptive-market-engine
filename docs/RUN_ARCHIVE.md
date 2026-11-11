@@ -155,9 +155,9 @@ packs, in each pack's `manifest`, so in these two copies. No committed file hold
 
 ## V4 run (`v4-run.yml`): where its artifacts go
 
-Five `v4-run`s have run: two on main `19e3190` after step 4b's merge, a rehearsal on `504a320`
-(superseded and not archived) and two on main `5e3ed10` (the archived ones have sections below).
-The registered run comes in step 5, on the owner's go
+Six `v4-run`s have run: two on main `19e3190` after step 4b's merge, a rehearsal on `504a320`
+(superseded and not archived), two on main `5e3ed10`, and the registered run on main `58aad6f`
+(the archived ones have sections below), dispatched in step 5 on the owner's go
 ([the step-5 plan](superpowers/plans/2026-10-24-v4-step5-registration.md)). Give each run its
 own section here once it is archived, as above.
 
@@ -215,6 +215,23 @@ workflow's header lists them too.
 the root. In `v4-rehearsal-verdict-attempt-<n>` it is under `verdict\`, because that artifact
 uploads three paths and GitHub keeps their common folder. A script that reads both must expect
 both.
+
+## V4 registered run 42953425248 (trial `v4-0-registered-1`)
+
+Verdict **FAIL**. Record: [the verdict review](reviews/2026-11-11-claude-v4-verdict.md). Result
+event status `failed`.
+
+`mode=registered` on main `58aad6f`, dispatched once on 2026-11-11 at 03:32:26 UTC with data run
+42944460786, ended 05:57:09 UTC at attempt 1. Every job it runs succeeded (`scenarios` is
+rehearsal-only and was skipped), and all 72 cells completed.
+
+`/mnt/backups/v4-run-42953425248/`: every one of its 150 artifacts, each zip equal to GitHub's
+digest, in the layout above (about 8.7 GB). `SHA256SUMS.txt` lists 750 files and passed after the
+disk was mounted again; the file's own SHA-256 is
+`1e24e50b3876af6f0335625deea40c77d5fb1bb8f092e8ac97c00b90a75dd4f6`. This is the only copy. Its
+GitHub copies, and data run 42944460786's 44 artifacts, were deleted on 2026-11-11 once the copy
+was verified. Its `v4-data` holds market data from 2025-01 onward, and its cells, verdict and
+analysis are the run's results: they never leave the owner's PC (v4-d10).
 
 ## V4 rehearsal 42581586528 (synthetic)
 
