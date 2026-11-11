@@ -25,7 +25,8 @@ pinning data run's log, only pins and counts were read.
   designed.
 - **What happens next.** The reviewers checked this registration, and the owner gave the go on
   2026-11-09. It covers the merge, the second data run, one dispatch and the download. The owner
-  moved them to the night of 2026-11-11, from about 01:30 UTC (see the record).
+  moved them to the night of 2026-11-11: the merge at about 02:55 and the dispatch at about 04:15
+  in Zagreb (see the record).
 - **Real money.** None. This is a historical simulation with no exchange account and no keys.
 
 ## The owner's go (dated record)
@@ -76,9 +77,15 @@ Claude answered that waiting buys little: no one can re-run a failed cell, any m
 stops and waits for the owner whatever the hour, and a run ending about 09:00 leaves more of the
 artifacts' day for the download. Its cost is a PC and a session left on overnight. Claude asked
 "Should I start now?", and at about 01:07 UTC (02:07 in Zagreb) the owner wrote, exactly: "im fine
-with PC running overnight". Claude takes that as a yes. The start is now: the merge after this
-commit's reviews, step 9's data run, and the dispatch once it matches, at about 04:15 in Zagreb.
-The conditions and the rest of the go are unchanged.
+with PC running overnight". Claude took that as a yes. Bob and claude[bot] flagged that the words do
+not say "start now", so no merge rested on them.
+
+At about 01:35 UTC (02:35 in Zagreb), in a dialog in chat, Claude asked plainly: "Do you want the
+official V4.0 run started now? That means the merge at about 02:55 Zagreb, after one more short
+review round, the second data run, the one dispatch at about 04:15 Zagreb if the data matches, and
+the end around 09:00, with the PC and this session left on overnight." The owner chose, the label
+copied exactly: **"Yes, start now"**. That is the go for the new start. The conditions and the rest of
+the go are unchanged: any red check or mismatch stops and waits for the owner.
 
 **Who judges answer 3.** Whether a verdict is incomplete only because the dispatch check could not
 read GitHub shows in the verdict's reasons, which are read on the owner's PC only (step 12d). Claude
@@ -263,8 +270,9 @@ The plan's "Expected run length" has the measured figures. In short:
 - the verdict step took 57 seconds and the analysis 819 seconds in the timing run. The analysis
   unpacks 8.12 GB of records on a runner with 14 GB.
 
-So the whole takes about 6 to 7 hours from the merge to an archived result. Dispatching in the Zagreb
-morning leaves room for the same-day download.
+So the whole takes about 6 to 7 hours from the merge to an archived result. A dispatch at about 04:15
+in Zagreb ends around 09:00, which leaves most of the artifacts' one day for the download and the one
+re-run step 12a allows.
 
 ## Outcomes that use up the run without a verdict
 
