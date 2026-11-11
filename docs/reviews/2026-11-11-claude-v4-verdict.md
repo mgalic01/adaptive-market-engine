@@ -29,7 +29,7 @@ artifacts on the owner's PC with `python -I` scripts kept outside the archive.
 - **Jobs:** 79 at attempt 1, 78 succeeded. `scenarios` was skipped, as it is in every mode but a
   rehearsal. Plan 03:32:30 to 03:33:15; the 66 V4 cells by about 03:59; v3-pack and v3-picks
   03:33:18 to 05:36:06; the six `v3_as_built` cells 05:36:09 to 05:53:37; verdict 05:53:40 to
-  05:56:50; status ended 05:57:08. The run's conclusion is success.
+  05:56:50; the status job ended 05:57:08, and the run itself at 05:57:09. The run's conclusion is success.
 - **Step 12a** was not needed: the verdict and analysis jobs both succeeded at attempt 1.
 
 ## The archive (steps 12b, 12c and 12f)

@@ -222,8 +222,9 @@ Verdict **FAIL**. Record: [the verdict review](reviews/2026-11-11-claude-v4-verd
 event status `failed`.
 
 `mode=registered` on main `58aad6f`, dispatched once on 2026-11-11 at 03:32:26 UTC with data run
-42944460786, ended 05:57:09 UTC at attempt 1. Every job it runs succeeded (`scenarios` is
-rehearsal-only and was skipped), and all 72 cells completed.
+42944460786, ended 05:57:09 UTC at attempt 1. Every job it runs succeeded: 79 jobs, 78 succeeded
+and `scenarios`, which is rehearsal-only, was skipped (the verdict record has the detail). All 72
+cells completed.
 
 `/mnt/backups/v4-run-42953425248/`: every one of its 150 artifacts, each zip equal to GitHub's
 digest, in the layout above (about 8.7 GB). `SHA256SUMS.txt` lists 750 files and passed after the
