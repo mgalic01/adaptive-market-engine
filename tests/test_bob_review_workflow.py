@@ -193,3 +193,20 @@ def test_head_sha_stays_readable_after_a_very_long_body(
     lines = text.splitlines()
     assert lines[-2].startswith('  "body": ') and lines[-1] == "}"
     assert max(len(line) for line in lines[:-2]) < 100
+
+
+def test_prompt_names_every_input_file_by_its_full_path() -> None:
+    # Bob's file tool rejects relative paths. On PR #307 (2026-11-11) he read
+    # `.bob-input/head.txt` and the rest relative, got an error for each, and gave up
+    # four times without answering; on PR #306 he only got through by retrying with
+    # full paths. So the prompt gives every file under the checkout's absolute path.
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["bob-review"]["steps"]
+    script = next(s["run"] for s in steps if s.get("name") == "IBM Bob review (read-only)")
+    assert 'W="$PWD"' in script
+    listed = [line.strip() for line in script.splitlines() if line.strip().startswith("- ")]
+    files = [line for line in listed if ".bob-input/" in line or line.startswith("- docs/")]
+    assert files, "the prompt lists no input files"
+    for line in files:
+        assert line.startswith("- $W/"), line
+    for name in ("request.txt", "head.txt", "pr.json", "pr.diff", "review-index.md"):
+        assert f"- $W/.bob-input/{name}" in script, name
