@@ -24,8 +24,8 @@ pinning data run's log, only pins and counts were read.
 - **What a pass means.** Promising, not proven: only the period from 2025 on was unseen when V4 was
   designed.
 - **What happens next.** The reviewers checked this registration, and the owner gave the go on
-  2026-11-09. It covers the merge, the second data run, one dispatch and the download, from the
-  morning of 2026-11-10.
+  2026-11-09. It covers the merge, the second data run, one dispatch and the download. The owner
+  moved them to the morning of 2026-11-11 (see the record).
 - **Real money.** None. This is a historical simulation with no exchange account and no keys.
 
 ## The owner's go (dated record)
@@ -54,6 +54,26 @@ recommended option. The labels are copied exactly:
 Conditions: everything green at the final head, and operating rule 8 before the merge. If the merge
 cannot happen on 2026-11-10, or step 9's data run does not match, or a check is red, the dispatch
 waits for the owner's word.
+
+**2026-11-11, the new time.** The merge did not happen on 2026-11-10, so by the condition above the
+run waited for the owner's word. On 2026-11-11 at about 00:47 UTC (01:47 in Zagreb), in a dialog in
+chat, the owner chose these answers, the labels copied exactly:
+- **"This morning, 11 Nov (Recommended)"**: the merge at about 09:00 in Zagreb on 2026-11-11, and the
+  dispatch at about 10:30, after step 9's data run. The same conditions apply, and the go is otherwise
+  unchanged.
+- **"Not run yet"**, asked whether MemTest86+ had run: the PC's RAM is still untested (see "The PC's
+  hardware" under "Limits of this review").
+- **"Full Windows shutdown (Recommended)"**: the BACKUPS disk mounted read-only after a reboot,
+  because Windows had left its NTFS volume in a fast-startup state. Before that, the owner had chosen
+  to force it from Kali and accepted the risk, but ntfs-3g refused the force and nothing was written.
+  The owner then chose a full Windows shutdown before the merge, so step 10's preflight finds the disk
+  read-write.
+
+**Who judges answer 3.** Whether a verdict is incomplete only because the dispatch check could not
+read GitHub shows in the verdict's reasons, which are read on the owner's PC only (step 12d). Claude
+reads them there and reports them, and the owner decides. The event's `stopping` says a re-run makes
+the verdict incomplete. The one re-run that `RERUN_JOBS` allows is not counted as one, as for the
+analysis job.
 
 ## Owner decisions of 2026-11-09
 
@@ -257,7 +277,7 @@ then takes the owner's word. None of these can give a false pass:
   workflow's comments and the plan say 55 minutes, and the code governs. So a GitHub API outage of about
   five minutes at that moment is enough. The job does not fail in that case: it writes the incomplete
   verdict. The plan's step 12a covers a job that failed, so as written it allows no re-run here, although
-  the code would accept one. The owner is asked about this with the go.
+  the code would accept one. The owner's answer 3 in the record above allows that one re-run.
 - **The plan job hangs until its 60-minute timeout.** Only the dispatch check inside it has its own limit
   (25 minutes). The repository's comments say GitHub may report a timed-out job as cancelled, and a
   cancelled plan job counts, so this would use up the registration with no verdict. I did not check how
@@ -285,7 +305,8 @@ The code does not enforce these, so the people who merge and dispatch must follo
 4. One v4-run at a time.
 5. Never cancel a registered dispatch.
 6. Never re-run a cell, the picks, the pack, the plan job or the whole run. The one exception is the
-   plan's step 12a, on the owner's word.
+   plan's step 12a, on the owner's word, widened by the owner's answer 3 in the record above to a
+   verdict made incomplete only by the dispatch check's failure to read GitHub.
 7. One dispatch. The dispatch check refuses a second, but two made in the same second void each other,
    and a run an admin deleted is invisible to it.
 8. Right before the merge, after the commit that records the owner's go, merge the final head into B
